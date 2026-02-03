@@ -6,7 +6,7 @@ Learnings so far
 - `execd` could not complete tasks because `Bun.mkdir` is undefined; switched to `fs/promises` `mkdir` and new exec tasks now complete.
 - The task queue/exec flow works end-to-end with the exec worker once that mkdir issue is fixed.
 - The system currently depends on an LLM API key; without it the agent can’t actually reason or call tools.
-- `GO_AGENTS_LLM_API_KEY` is not set in the host environment and `.env` currently has an empty value.
+- Provider API keys must be set via provider-specific env vars (no generic key).
 
 Ideas from the user request
 - Make the agent self-diagnose stuck or resource-heavy tasks via eventbus signals instead of hard-coded heuristics.
@@ -25,10 +25,10 @@ Experiment log
 - Hypothesis: Without an API key configured, agent runs will fail fast and expose a clear error in the session.
   Test: POST `/api/agents/operator/run` with `{"message":"hello"}` and then GET `/api/sessions/operator`.
   Result: Session `last_output` and `last_error` report “LLM not configured...” and no agent reply was produced.
-  Takeaway: We need a valid `GO_AGENTS_LLM_API_KEY` in `.env` before tool-usage experiments.
+  Takeaway: We need a valid provider-specific API key in `.env` before tool-usage experiments.
 
 Change log
-- Added provider-specific API key env fallbacks (`GO_AGENTS_ANTHROPIC_API_KEY`, `GO_AGENTS_OPENAI_API_KEY`, `GO_AGENTS_GOOGLE_API_KEY`) and documented them in `.env`.
+- Removed the generic `GO_AGENTS_LLM_API_KEY` path; now only provider-specific keys are supported.
 
 Notes from the Pi/OpenClaw blog post
 - Pi has a tiny core prompt and only four tools (Read, Write, Edit, Bash), with most capability pushed into extensions.

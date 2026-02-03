@@ -1,0 +1,33 @@
+services:
+  agentd:
+    build: .
+    working_dir: /work/go-agents
+    command: ["go", "run", "./cmd/agentd"]
+    ports:
+      - "8080:8080"
+    environment:
+      GO_AGENTS_ANTHROPIC_API_KEY: ${GO_AGENTS_ANTHROPIC_API_KEY}
+      GO_AGENTS_OPENAI_API_KEY: ${GO_AGENTS_OPENAI_API_KEY}
+      GO_AGENTS_GOOGLE_API_KEY: ${GO_AGENTS_GOOGLE_API_KEY}
+    volumes:
+      - ..:/work
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+      - bun-cache:/root/.bun
+
+  execd:
+    build: .
+    working_dir: /work/go-agents
+    command: ["bun", "exec/execd.ts", "--api-url", "http://agentd:8080"]
+    depends_on:
+      - agentd
+    volumes:
+      - ..:/work
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+      - bun-cache:/root/.bun
+
+volumes:
+  go-mod-cache:
+  go-build-cache:
+  bun-cache:

@@ -27,10 +27,7 @@ func Load() Config {
 	fileCfg, _ := loadFileConfig([]string{"config.json", filepath.Join(cfg.DataDir, "config.json")})
 	cfg = mergeConfig(cfg, fileCfg)
 	cfg = applyDefaults(cfg)
-	cfg.LLMAPIKey = strings.TrimSpace(os.Getenv("GO_AGENTS_LLM_API_KEY"))
-	if cfg.LLMAPIKey == "" {
-		cfg.LLMAPIKey = strings.TrimSpace(providerAPIKey(cfg.LLMProvider))
-	}
+	cfg.LLMAPIKey = strings.TrimSpace(providerAPIKey(cfg.LLMProvider))
 	return cfg
 }
 
