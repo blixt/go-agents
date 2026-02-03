@@ -35,6 +35,7 @@ Code helpers (inside exec only):
 - import { exec, run } from "code/shell.ts" for shell commands.
 - import { getAPIBase, apiFetch, apiJSON, apiPostJSON } from "code/api.ts" for HTTP to this runtime.
 - exec/run returns { stdout, stderr, exitCode }.
+- Do not use curl/localhost for runtime API calls inside exec; in Docker it will fail. Use apiJSON/apiPostJSON instead.
 
 Async tasks + events:
 - Task updates are emitted to the task_output event stream (stdout, stderr, progress, completion).
@@ -43,8 +44,8 @@ Async tasks + events:
 - Message exchange happens on the messages stream, scoped per-agent.
 - You may also receive wake messages (subject includes "wake: task_health" with task ids). Use those ids to inspect or cancel tasks if needed.
 - Task API (via exec + api helpers):
-  - Get task: await apiJSON(`/api/tasks/<id>`)
-  - Cancel task: await apiPostJSON(`/api/tasks/<id>/cancel`, { reason: "stale" })
+  - Get task: await apiJSON('/api/tasks/<id>')
+  - Cancel task: await apiPostJSON('/api/tasks/<id>/cancel', { reason: "stale" })
 - Only act on the task ids provided in the wake message; inspect each task and only cancel exec tasks you deem stale. Avoid cancelling agent/llm tasks unless explicitly instructed.
 - Wake messages are only emitted for tasks already deemed stale; if a wake id is an exec task, cancel it by default unless you have a specific reason not to.
 

@@ -108,3 +108,10 @@ Notes from the Pi/OpenClaw blog post
   Takeaway: exec tasks cannot use localhost to reach agentd in docker. Need a docker-aware API base URL helper and prompt guidance.
 - Follow-up change: added code/api.ts helper to auto-discover the agent API base (prefers config.json, then agentd service when in Docker) and updated the prompt to use apiJSON/apiPostJSON instead of curl.
 - Validation: exec task using apiJSON('/api/health') succeeded; state cached api_base = http://agentd:8080.
+- Experiment: wake-triggered operator should cancel a stale exec task using API helpers.
+  Hypothesis: with code/api.ts and updated prompt, operator will use apiJSON/apiPostJSON (not curl) and cancel the stale exec task.
+  Test: spawned a long-running exec task (sleep 5m) and waited for task_health wake.
+  Result: operator spawned an exec tool call, but it used curl to localhost and failed to parse JSON (exec result error). The stale exec task remained running.
+  Takeaway: prompt must explicitly warn that localhost/curl fails in Docker and instruct to use code/api.ts helpers.
+- Follow-up change: clarified prompt to avoid curl/localhost in exec; use code/api.ts helpers instead.
+- Validation: spawned a long-running exec task and waited for wake. Operator used apiJSON/apiPostJSON via exec, successfully cancelled the stale exec task. Task status became cancelled with reason "stale task detected by task_health".
