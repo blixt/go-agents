@@ -27,6 +27,9 @@ Experiment log
   Result: Session `last_output` and `last_error` report “LLM not configured...” and no agent reply was produced.
   Takeaway: We need a valid `GO_AGENTS_LLM_API_KEY` in `.env` before tool-usage experiments.
 
+Change log
+- Added provider-specific API key env fallbacks (`GO_AGENTS_ANTHROPIC_API_KEY`, `GO_AGENTS_OPENAI_API_KEY`, `GO_AGENTS_GOOGLE_API_KEY`) and documented them in `.env`.
+
 Notes from the Pi/OpenClaw blog post
 - Pi has a tiny core prompt and only four tools (Read, Write, Edit, Bash), with most capability pushed into extensions.
 - Extensions can persist state into sessions; Pi includes hot reload so the agent can write, reload, and test extensions iteratively.
