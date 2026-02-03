@@ -26,9 +26,17 @@ Experiment log
   Test: POST `/api/agents/operator/run` with `{"message":"hello"}` and then GET `/api/sessions/operator`.
   Result: Session `last_output` and `last_error` report “LLM not configured...” and no agent reply was produced.
   Takeaway: We need a valid provider-specific API key in `.env` before tool-usage experiments.
+- Hypothesis: With a provider key set, the agent will (a) use `exec` when instructed and (b) correctly explain how to add a tool.
+  Test: Cleared DB, restarted containers, sent: “Use exec to compute 2+2... Then explain how to add a new tool.”
+  Result: Agent used `exec` (task completed with result=4). Explanation was generic and not aligned with our actual tool wiring (Go tool registration + `cmd/agentd/main.go` registration).
+  Takeaway: The prompt needs a concrete “How to add tools” section tied to our codebase.
+  Follow-up test: After adding explicit “Adding tools” prompt guidance, repeated the same test on a clean DB.
+  Follow-up result: Agent used `exec` and described the correct tool wiring (Go tool in `internal/agenttools`, register in `cmd/agentd/main.go`, restart).
+  Follow-up takeaway: Prompt update resolved the first-attempt tool explanation failure.
 
 Change log
 - Removed the generic `GO_AGENTS_LLM_API_KEY` path; now only provider-specific keys are supported.
+- Added explicit “Adding tools” guidance to the system prompt to match how tools are wired in this repo.
 
 Notes from the Pi/OpenClaw blog post
 - Pi has a tiny core prompt and only four tools (Read, Write, Edit, Bash), with most capability pushed into extensions.
