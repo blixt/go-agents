@@ -61,6 +61,13 @@ Experiment log
   Ninth follow-up change: Ensure operator receives a full task_health snapshot that includes all running tasks (including subagents), not just operator-owned tasks.
   Ninth follow-up test: After this change, task_health for operator now lists both operator and subagent running tasks.
   Ninth follow-up result: Operator still sends an interim status update before the final answer despite prompt instruction.
+  Tenth follow-up change: Added a wake message on the messages stream when task_health detects stale tasks (with cooldown). This wakes the agent without hard-coded cancellation.
+  Tenth follow-up test: Created a long-running exec task and waited for the next task_health tick.
+  Tenth follow-up result: task_health signals showed the stale exec task, and a wake message (subject "wake: task_health") was emitted to operator.
+  Tenth follow-up takeaway: Wake messages work, but an agent loop must be running to react; we may want a default always-on agent loop.
+  Eleventh follow-up change: Start the operator loop by default at runtime startup so wake messages are handled even without explicit user messages.
+  Eleventh follow-up test: Created a long-running exec task and waited for a task_health wake.
+  Eleventh follow-up result: A wake message triggered an operator LLM task even without any human message, confirming the default loop is active.
 
 Change log
 - Removed the generic `GO_AGENTS_LLM_API_KEY` path; now only provider-specific keys are supported.

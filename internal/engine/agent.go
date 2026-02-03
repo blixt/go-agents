@@ -55,6 +55,9 @@ type Runtime struct {
 
 	inflightMu sync.Mutex
 	inflight   map[string]context.CancelFunc
+
+	wakeMu   sync.Mutex
+	lastWake map[string]time.Time
 }
 
 func NewRuntime(bus *eventbus.Bus, tasksMgr *tasks.Manager, client *ai.Client) *Runtime {
@@ -83,6 +86,7 @@ func NewRuntime(bus *eventbus.Bus, tasksMgr *tasks.Manager, client *ai.Client) *
 		sessions: map[string]Session{},
 		agents:   map[string]*AgentState{},
 		inflight: map[string]context.CancelFunc{},
+		lastWake: map[string]time.Time{},
 	}
 }
 
@@ -91,13 +95,17 @@ func (r *Runtime) Start(ctx context.Context) {
 		ctx = context.Background()
 	}
 	r.baseCtx = ctx
+	if r.Bus != nil {
+		r.EnsureAgentLoop("operator")
+	}
 	if r.Tasks != nil && r.Bus != nil {
 		go r.monitorTaskHealth(ctx)
 	}
 }
 
 func (r *Runtime) monitorTaskHealth(ctx context.Context) {
-	ticker := time.NewTicker(30 * time.Second)
+	const taskHealthInterval = 30 * time.Second
+	ticker := time.NewTicker(taskHealthInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -110,6 +118,8 @@ func (r *Runtime) monitorTaskHealth(ctx context.Context) {
 }
 
 func (r *Runtime) emitTaskHealth(ctx context.Context) {
+	const taskHealthStale = 30 * time.Second
+	const taskHealthWakeCooldown = 30 * time.Second
 	if r.Tasks == nil || r.Bus == nil {
 		return
 	}
@@ -123,6 +133,7 @@ func (r *Runtime) emitTaskHealth(ctx context.Context) {
 
 	now := time.Now().UTC()
 	byTarget := map[string][]map[string]any{}
+	staleByTarget := map[string][]map[string]any{}
 	var all []map[string]any
 	for _, task := range tasksList {
 		target := ""
@@ -150,6 +161,9 @@ func (r *Runtime) emitTaskHealth(ctx context.Context) {
 		}
 		byTarget[target] = append(byTarget[target], entry)
 		all = append(all, entry)
+		if now.Sub(task.UpdatedAt) >= taskHealthStale {
+			staleByTarget[target] = append(staleByTarget[target], entry)
+		}
 	}
 	if len(all) > 0 {
 		byTarget["operator"] = all
@@ -172,6 +186,50 @@ func (r *Runtime) emitTaskHealth(ctx context.Context) {
 			},
 		})
 	}
+
+	for target, list := range staleByTarget {
+		if target == "" || target == "human" {
+			continue
+		}
+		var wakeIDs []string
+		for _, entry := range list {
+			id, _ := entry["id"].(string)
+			if id == "" {
+				continue
+			}
+			if !r.shouldWakeTask(id, now, taskHealthWakeCooldown) {
+				continue
+			}
+			wakeIDs = append(wakeIDs, id)
+		}
+		if len(wakeIDs) == 0 {
+			continue
+		}
+		body := fmt.Sprintf("task_health: stale tasks detected (%d). See signals/task_health. ids=%s", len(wakeIDs), strings.Join(wakeIDs, ","))
+		_, _ = r.Bus.Push(ctx, eventbus.EventInput{
+			Stream:    "messages",
+			ScopeType: "agent",
+			ScopeID:   target,
+			Subject:   "wake: task_health",
+			Body:      body,
+			Metadata: map[string]any{
+				"kind":     "wake",
+				"reason":   "task_health",
+				"task_ids": wakeIDs,
+			},
+		})
+	}
+}
+
+func (r *Runtime) shouldWakeTask(taskID string, now time.Time, cooldown time.Duration) bool {
+	r.wakeMu.Lock()
+	defer r.wakeMu.Unlock()
+	last, ok := r.lastWake[taskID]
+	if ok && now.Sub(last) < cooldown {
+		return false
+	}
+	r.lastWake[taskID] = now
+	return true
 }
 
 func (r *Runtime) EnsureAgentLoop(agentID string) {

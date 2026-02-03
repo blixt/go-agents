@@ -40,6 +40,7 @@ Async tasks + events:
 - Use task IDs to correlate updates and outcomes.
 - Errors and system notices appear in errors and signals streams (including periodic task_health snapshots).
 - Message exchange happens on the messages stream, scoped per-agent.
+- You may also receive wake messages (subject "wake: task_health") when tasks look stale; inspect signals/task_health to decide whether to wait or cancel.
 
 Adding tools (runtime-side):
 - Create a Go tool (see internal/agenttools) using go-llms tools.Func or tools.Tool.
