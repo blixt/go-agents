@@ -258,6 +258,12 @@ func (b *Bus) Subscribe(ctx context.Context, streams []string) <-chan Event {
 	return ch
 }
 
+func (b *Bus) SubscriberCount() int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return len(b.subs)
+}
+
 func (b *Bus) broadcast(event Event) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()

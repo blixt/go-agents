@@ -93,7 +93,7 @@ func (w *Worker) RunTask(ctx context.Context, task Task) error {
 	resultPath := filepath.Join(tmpDir, "result.json")
 	bootstrap := w.BootstrapPath
 	if bootstrap == "" {
-		bootstrap = filepath.Join("tools", "exec", "bootstrap.ts")
+		bootstrap = filepath.Join("exec", "bootstrap.ts")
 	}
 	if !filepath.IsAbs(bootstrap) {
 		if abs, err := filepath.Abs(bootstrap); err == nil {

@@ -2,6 +2,7 @@
 
 import { join, resolve } from "path"
 import { tmpdir } from "os"
+import { mkdir } from "fs/promises"
 
 type Task = {
   id: string
@@ -10,12 +11,87 @@ type Task = {
   payload?: Record<string, unknown>
 }
 
-const API_URL = process.env.GO_AGENTS_API_URL || "http://localhost:8080"
-const SNAPSHOT_DIR = process.env.GO_AGENTS_SNAPSHOT_DIR || "data/exec-snapshots"
-const POLL_MS = parseInt(process.env.GO_AGENTS_POLL_MS || "1000", 10)
+type ConfigFile = {
+  http_addr?: string
+  snapshot_dir?: string
+  webhook_addr?: string
+}
+
 const bootstrapPath = resolve(import.meta.dir, "bootstrap.ts")
-const once = process.argv.includes("--once") || process.env.GO_AGENTS_ONCE === "1"
-const webhookAddr = process.env.GO_AGENTS_WEBHOOK_ADDR
+const once = process.argv.includes("--once")
+
+function getArg(name: string): string | undefined {
+  const direct = process.argv.find((arg) => arg.startsWith(`${name}=`))
+  if (direct) {
+    return direct.split("=", 2)[1]
+  }
+  const idx = process.argv.indexOf(name)
+  if (idx >= 0 && idx + 1 < process.argv.length) {
+    return process.argv[idx + 1]
+  }
+  return undefined
+}
+
+function normalizeHTTPAddr(addr: string): string {
+  if (addr.startsWith("http://") || addr.startsWith("https://")) {
+    return addr
+  }
+  if (addr.startsWith(":")) {
+    return `http://localhost${addr}`
+  }
+  if (addr.startsWith("0.0.0.0:")) {
+    return `http://localhost:${addr.split(":")[1]}`
+  }
+  if (addr.startsWith("[::]:")) {
+    return `http://localhost:${addr.split(":")[2]}`
+  }
+  return `http://${addr}`
+}
+
+async function loadConfig(): Promise<ConfigFile> {
+  const paths = ["config.json", "data/config.json"]
+  for (const path of paths) {
+    try {
+      const text = await Bun.file(path).text()
+      if (!text.trim()) continue
+      return JSON.parse(text) as ConfigFile
+    } catch {
+      // ignore missing/invalid
+    }
+  }
+  return {}
+}
+
+const config = await loadConfig()
+const apiURLArg = getArg("--api-url")
+const snapshotArg = getArg("--snapshot-dir")
+const pollArg = getArg("--poll-ms")
+const webhookArg = getArg("--webhook-addr")
+
+const API_URL = normalizeHTTPAddr(apiURLArg || config.http_addr || ":8080")
+const SNAPSHOT_DIR = snapshotArg || config.snapshot_dir || "data/exec-snapshots"
+const POLL_MS = parseInt(pollArg || "1000", 10)
+const webhookAddr = webhookArg || config.webhook_addr
+
+function startWebhookServer() {
+  if (!webhookAddr) return
+  const [host, portStr] = webhookAddr.split(":")
+  const port = parseInt(portStr || host, 10)
+  const hostname = portStr ? host : "127.0.0.1"
+
+  Bun.serve({
+    hostname,
+    port,
+    async fetch(req) {
+      if (req.method !== "POST" || new URL(req.url).pathname !== "/dispatch") {
+        return new Response("not found", { status: 404 })
+      }
+      const body = (await req.json()) as Task
+      await runTask(body)
+      return new Response("ok")
+    },
+  })
+}
 
 async function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -78,7 +154,7 @@ async function runTask(task: Task) {
   }
 
   const execDir = join(tmpdir(), `go-agents-${task.id}`)
-  await Bun.mkdir(execDir, { recursive: true })
+  await mkdir(execDir, { recursive: true })
 
   const codeFile = join(execDir, "task.ts")
   await Bun.write(codeFile, code)
@@ -137,26 +213,6 @@ async function runTask(task: Task) {
   }
 
   await sendComplete(task.id, result)
-}
-
-function startWebhookServer() {
-  if (!webhookAddr) return
-  const [host, portStr] = webhookAddr.split(":")
-  const port = parseInt(portStr || host, 10)
-  const hostname = portStr ? host : "127.0.0.1"
-
-  Bun.serve({
-    hostname,
-    port,
-    async fetch(req) {
-      if (req.method !== "POST" || new URL(req.url).pathname !== "/dispatch") {
-        return new Response("not found", { status: 404 })
-      }
-      const body = (await req.json()) as Task
-      await runTask(body)
-      return new Response("ok")
-    },
-  })
 }
 
 async function runOnceCycle() {

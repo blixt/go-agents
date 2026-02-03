@@ -40,8 +40,9 @@ func main() {
 	store := state.NewStore(db)
 	bus := eventbus.NewBus(db)
 	manager := tasks.NewManager(db, bus)
-	execTool := agenttools.ExecTool(manager)
 	rt := engine.NewRuntime(bus, manager, nil)
+	execTool := agenttools.ExecTool(manager)
+	sendMessageTool := agenttools.SendMessageTool(bus, rt.EnsureAgentLoop)
 
 	var llmClient *ai.Client
 	if cfg.LLMModel != "" && cfg.LLMAPIKey != "" {
@@ -49,7 +50,7 @@ func main() {
 			Provider: cfg.LLMProvider,
 			Model:    cfg.LLMModel,
 			APIKey:   cfg.LLMAPIKey,
-		}, execTool)
+		}, execTool, sendMessageTool)
 		if err != nil {
 			log.Printf("LLM disabled: %v", err)
 		}
@@ -57,6 +58,7 @@ func main() {
 
 	if llmClient != nil {
 		rt.LLM = llmClient
+		rt.LLMFactory = llmClient.NewSession
 		if rt.Context != nil {
 			rt.Context.Compactor = agentctx.NewLLMCompactor(llmClient)
 		}
@@ -64,7 +66,7 @@ func main() {
 
 	_ = llmClient // reserved for future runtime wiring.
 
-	listener, err := engine.ListenerFromEnv()
+	listener, err := engine.ListenerFromArgs(os.Args)
 	if err != nil {
 		log.Fatalf("listener: %v", err)
 	}
@@ -77,6 +79,7 @@ func main() {
 
 	var httpServer *http.Server
 	serverCtx, serverCancel := context.WithCancel(context.Background())
+	rt.Start(serverCtx)
 
 	restarter := &engine.Restarter{
 		Listener: listener,
@@ -97,7 +100,24 @@ func main() {
 		return nil
 	}
 
-	apiServer := &api.Server{Tasks: manager, Bus: bus, Store: store, Runtime: rt, Restart: restartFn, RestartToken: cfg.RestartToken}
+	apiServer := &api.Server{
+		Tasks:        manager,
+		Bus:          bus,
+		Store:        store,
+		Runtime:      rt,
+		Restart:      restartFn,
+		RestartToken: cfg.RestartToken,
+		StartedAt:    time.Now().UTC(),
+		Info: api.DiagnosticsInfo{
+			HTTPAddr:    cfg.HTTPAddr,
+			DataDir:     cfg.DataDir,
+			DBPath:      cfg.DBPath,
+			SnapshotDir: cfg.SnapshotDir,
+			WebDir:      cfg.WebDir,
+			LLMProvider: cfg.LLMProvider,
+			LLMModel:    cfg.LLMModel,
+		},
+	}
 	webServer := &web.Server{Dir: cfg.WebDir}
 
 	mux := http.NewServeMux()

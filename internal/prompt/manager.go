@@ -21,6 +21,7 @@ type Manager struct {
 	LastState  State
 
 	CacheHint string
+	CodeDir   string
 }
 
 func (m *Manager) BuildSystemPrompt(ctx context.Context, bus *eventbus.Bus) (content.Content, string, error) {
@@ -41,6 +42,12 @@ func (m *Manager) BuildSystemPrompt(ctx context.Context, bus *eventbus.Bus) (con
 
 	builder := NewBuilder()
 	builder.Add(Block{ID: "system", Priority: 100, Content: DefaultSystemPrompt})
+
+	if m.CodeDir != "" {
+		if docs, err := CollectCodeDocs(m.CodeDir); err == nil && docs != "" {
+			builder.Add(Block{ID: "code_apis", Priority: 90, Content: fmt.Sprintf("Code APIs:\n%s", docs)})
+		}
+	}
 
 	if m.Summary != "" {
 		builder.Add(Block{ID: "summary", Priority: 80, Content: fmt.Sprintf("Summary:\n%s", m.Summary)})

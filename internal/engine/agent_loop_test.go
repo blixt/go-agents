@@ -58,7 +58,16 @@ func TestRuntimeRunLoop(t *testing.T) {
 		_ = rt.Run(ctx, "operator")
 	}()
 
-	_, _ = bus.Push(context.Background(), eventbus.EventInput{Stream: "messages", Body: "hello"})
+	_, _ = bus.Push(context.Background(), eventbus.EventInput{
+		Stream:    "messages",
+		ScopeType: "agent",
+		ScopeID:   "operator",
+		Body:      "hello",
+		Metadata: map[string]any{
+			"source": "human",
+			"target": "operator",
+		},
+	})
 
 	deadline := time.After(2 * time.Second)
 	for {

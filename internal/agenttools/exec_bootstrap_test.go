@@ -27,7 +27,7 @@ func TestExecBootstrapSnapshot(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join(cwd, "..", ".."))
 
 	run := func() {
-		cmd := exec.Command("bun", "tools/exec/bootstrap.ts", "--code-file", codePath, "--snapshot-in", snapshotPath, "--snapshot-out", snapshotPath, "--result-path", resultPath)
+		cmd := exec.Command("bun", "exec/bootstrap.ts", "--code-file", codePath, "--snapshot-in", snapshotPath, "--snapshot-out", snapshotPath, "--result-path", resultPath)
 		cmd.Dir = repoRoot
 		out, err := cmd.CombinedOutput()
 		if err != nil {

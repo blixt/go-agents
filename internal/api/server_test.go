@@ -181,14 +181,19 @@ func TestServerTasksAndStreams(t *testing.T) {
 		t.Fatalf("session status: %d body=%s", resp.StatusCode, readBody(t, resp))
 	}
 
-	resp = doJSON(t, client, "POST", "/api/agents/operator/run", map[string]any{"message": "hello"})
-	if resp.StatusCode != http.StatusOK {
+	resp = doJSON(t, client, "POST", "/api/agents/operator/run", map[string]any{"message": "hello", "source": "human"})
+	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("agent run status: %d body=%s", resp.StatusCode, readBody(t, resp))
 	}
 
 	resp = doJSON(t, client, "GET", "/api/sessions/operator", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("session status: %d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+
+	resp = doJSON(t, client, "GET", "/api/diagnostics", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("diagnostics status: %d body=%s", resp.StatusCode, readBody(t, resp))
 	}
 }
 

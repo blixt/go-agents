@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/flitsinc/go-llms/anthropic"
@@ -18,10 +19,30 @@ type Config struct {
 }
 
 type Client struct {
-	LLM *llms.LLM
+	LLM    *llms.LLM
+	config Config
+	tools  []llmtools.Tool
 }
 
-func NewClient(cfg Config, tool llmtools.Tool) (*Client, error) {
+func NewClient(cfg Config, tools ...llmtools.Tool) (*Client, error) {
+	llm, err := newLLM(cfg, tools...)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{LLM: llm, config: cfg, tools: tools}, nil
+}
+
+func (c *Client) NewSession() (*llms.LLM, error) {
+	if c == nil {
+		return nil, errors.New("client is nil")
+	}
+	if c.config.Provider == "" {
+		return nil, errors.New("client config missing provider")
+	}
+	return newLLM(c.config, c.tools...)
+}
+
+func newLLM(cfg Config, tools ...llmtools.Tool) (*llms.LLM, error) {
 	if cfg.Provider == "" {
 		return nil, fmt.Errorf("llm provider is required")
 	}
@@ -46,10 +67,10 @@ func NewClient(cfg Config, tool llmtools.Tool) (*Client, error) {
 		return nil, fmt.Errorf("unsupported provider: %s", cfg.Provider)
 	}
 
-	if tool != nil {
-		return &Client{LLM: llms.New(provider, tool)}, nil
+	if len(tools) > 0 {
+		return llms.New(provider, tools...), nil
 	}
-	return &Client{LLM: llms.New(provider)}, nil
+	return llms.New(provider), nil
 }
 
 func (c *Client) Chat(ctx context.Context, messages []llms.Message) <-chan llms.Update {

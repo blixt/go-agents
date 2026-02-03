@@ -2,12 +2,11 @@ package engine
 
 import (
 	"net"
-	"os"
 	"strconv"
 	"testing"
 )
 
-func TestListenerFromEnv(t *testing.T) {
+func TestListenerFromArgs(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -24,19 +23,9 @@ func TestListenerFromEnv(t *testing.T) {
 	}
 	defer file.Close()
 
-	prevInherit := os.Getenv("GO_AGENTS_INHERIT_FD")
-	prevFD := os.Getenv("GO_AGENTS_FD")
-	defer func() {
-		_ = os.Setenv("GO_AGENTS_INHERIT_FD", prevInherit)
-		_ = os.Setenv("GO_AGENTS_FD", prevFD)
-	}()
-
-	_ = os.Setenv("GO_AGENTS_INHERIT_FD", "1")
-	_ = os.Setenv("GO_AGENTS_FD", strconv.Itoa(int(file.Fd())))
-
-	got, err := ListenerFromEnv()
+	got, err := ListenerFromArgs([]string{"agentd", "--inherit-fd", strconv.Itoa(int(file.Fd()))})
 	if err != nil {
-		t.Fatalf("listener from env: %v", err)
+		t.Fatalf("listener from args: %v", err)
 	}
 	if got == nil {
 		t.Fatalf("expected listener")

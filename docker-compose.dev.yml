@@ -1,0 +1,6 @@
+services:
+  agentd:
+    platform: linux/arm64
+    command: ["watchexec", "-r", "-e", "go,ts,html,css", "-w", ".", "--", "go", "run", "./cmd/agentd"]
+  execd:
+    platform: linux/arm64

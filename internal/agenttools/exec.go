@@ -1,13 +1,13 @@
 package agenttools
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
 	"github.com/flitsinc/go-llms/llms"
 	llmtools "github.com/flitsinc/go-llms/tools"
 
+	"github.com/flitsinc/go-agents/internal/agentcontext"
 	"github.com/flitsinc/go-agents/internal/tasks"
 )
 
@@ -34,17 +34,22 @@ func ExecTool(manager *tasks.Manager) llmtools.Tool {
 				metadata["tool_call_id"] = tc.ID
 				metadata["tool_name"] = tc.Name
 			}
+			if agentID := agentcontext.AgentIDFromContext(r.Context()); agentID != "" {
+				metadata["notify_target"] = agentID
+			}
 
+			parentID := tasks.ParentTaskIDFromContext(r.Context())
 			spec := tasks.Spec{
 				Type:     "exec",
 				Owner:    "llm",
+				ParentID: parentID,
 				Metadata: metadata,
 				Payload: map[string]any{
 					"code": code,
 					"id":   strings.TrimSpace(p.ID),
 				},
 			}
-			task, err := manager.Spawn(context.Background(), spec)
+			task, err := manager.Spawn(r.Context(), spec)
 			if err != nil {
 				return llmtools.ErrorWithLabel("Exec failed", fmt.Errorf("spawn exec task: %w", err))
 			}

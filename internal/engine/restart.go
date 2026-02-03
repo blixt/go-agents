@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 )
 
 type Restarter struct {
@@ -26,10 +27,11 @@ func (r *Restarter) Restart() error {
 		return err
 	}
 
-	cmd := exec.Command(r.Args[0], r.Args[1:]...)
+	args := withInheritFDArgs(r.Args[1:], 3)
+	cmd := exec.Command(r.Args[0], args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = append(append([]string{}, r.Env...), "GO_AGENTS_INHERIT_FD=1", "GO_AGENTS_FD=3")
+	cmd.Env = append([]string{}, r.Env...)
 	cmd.ExtraFiles = []*os.File{file}
 
 	if err := cmd.Start(); err != nil {
@@ -51,17 +53,33 @@ func listenerFile(listener net.Listener) (*os.File, error) {
 	}
 }
 
-func ListenerFromEnv() (net.Listener, error) {
-	if os.Getenv("GO_AGENTS_INHERIT_FD") != "1" {
+func ListenerFromArgs(args []string) (net.Listener, error) {
+	fd := -1
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if strings.HasPrefix(arg, "--inherit-fd=") {
+			value := strings.TrimPrefix(arg, "--inherit-fd=")
+			if value == "" {
+				continue
+			}
+			parsed, err := strconv.Atoi(value)
+			if err != nil {
+				return nil, fmt.Errorf("invalid listener fd: %w", err)
+			}
+			fd = parsed
+			break
+		}
+		if arg == "--inherit-fd" && i+1 < len(args) {
+			parsed, err := strconv.Atoi(args[i+1])
+			if err != nil {
+				return nil, fmt.Errorf("invalid listener fd: %w", err)
+			}
+			fd = parsed
+			break
+		}
+	}
+	if fd < 0 {
 		return nil, nil
-	}
-	fdStr := os.Getenv("GO_AGENTS_FD")
-	if fdStr == "" {
-		fdStr = "3"
-	}
-	fd, err := strconv.Atoi(fdStr)
-	if err != nil {
-		return nil, fmt.Errorf("invalid listener fd: %w", err)
 	}
 	file := os.NewFile(uintptr(fd), "listener")
 	if file == nil {
@@ -72,4 +90,25 @@ func ListenerFromEnv() (net.Listener, error) {
 		return nil, fmt.Errorf("file listener: %w", err)
 	}
 	return ln, nil
+}
+
+func withInheritFDArgs(args []string, fd int) []string {
+	cleaned := make([]string, 0, len(args)+1)
+	skipNext := false
+	for i := 0; i < len(args); i++ {
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		arg := args[i]
+		if strings.HasPrefix(arg, "--inherit-fd=") {
+			continue
+		}
+		if arg == "--inherit-fd" {
+			skipNext = true
+			continue
+		}
+		cleaned = append(cleaned, arg)
+	}
+	return append(cleaned, fmt.Sprintf("--inherit-fd=%d", fd))
 }

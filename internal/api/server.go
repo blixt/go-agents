@@ -21,6 +21,8 @@ type Server struct {
 	Runtime      *engine.Runtime
 	Restart      func() error
 	RestartToken string
+	StartedAt    time.Time
+	Info         DiagnosticsInfo
 }
 
 func (s *Server) Handler() http.Handler {
@@ -40,6 +42,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/streams/ws", s.handleStreamWS)
 	mux.HandleFunc("/api/streams/", s.handleStreams)
 	mux.HandleFunc("/api/admin/restart", s.handleRestart)
+	mux.HandleFunc("/api/diagnostics", s.handleDiagnostics)
 
 	return mux
 }

@@ -9,23 +9,35 @@
   <body>
     <div class="app">
       <header class="topbar">
-        <div class="brand">
-          <div class="badge">go-agents</div>
-          <div>
-            <h1>Control Panel</h1>
-            <p>Runtime status, tasks, memory, and event streams.</p>
-          </div>
-        </div>
+        <pre id="ascii-logo" class="ascii-logo"></pre>
         <div class="status">
+          <span class="status-label">STATUS ::</span>
           <span id="status-indicator" class="dot"></span>
           <span id="status-text">Connecting...</span>
         </div>
       </header>
 
       <main class="grid">
+        <section class="panel" id="panel-agent">
+          <div class="panel-header">
+            <h2>
+              <span class="panel-title">Chat</span>
+              <span class="panel-rule" aria-hidden="true">────────────────────────────────────────────────</span>
+            </h2>
+          </div>
+          <div class="panel-body">
+            <div id="chat-log" class="chat-log"></div>
+            <textarea id="agent-message" class="input chat-input" rows="4" placeholder="Type a message. Enter to send, Shift+Enter for newline."></textarea>
+            <div class="muted chat-hint">Enter to send · Shift+Enter for newline</div>
+          </div>
+        </section>
+
         <section class="panel" id="panel-tasks">
           <div class="panel-header">
-            <h2>Tasks</h2>
+            <h2>
+              <span class="panel-title">Tasks</span>
+              <span class="panel-rule" aria-hidden="true">────────────────────────────────────────────────</span>
+            </h2>
             <button id="refresh-tasks">Refresh</button>
           </div>
           <div class="panel-body">
@@ -45,7 +57,10 @@
 
         <section class="panel" id="panel-updates">
           <div class="panel-header">
-            <h2>Task Updates</h2>
+            <h2>
+              <span class="panel-title">Task Updates</span>
+              <span class="panel-rule" aria-hidden="true">────────────────────────────────────────────────</span>
+            </h2>
             <span id="selected-task" class="muted">Select a task</span>
           </div>
           <div class="panel-body" id="updates-body"></div>
@@ -53,7 +68,10 @@
 
         <section class="panel" id="panel-streams">
           <div class="panel-header">
-            <h2>Streams</h2>
+            <h2>
+              <span class="panel-title">Event Bus</span>
+              <span class="panel-rule" aria-hidden="true">────────────────────────────────────────────────</span>
+            </h2>
             <div class="stream-controls">
               <button data-stream="task_output" class="stream-btn active">task_output</button>
               <button data-stream="errors" class="stream-btn">errors</button>
@@ -66,7 +84,10 @@
 
         <section class="panel" id="panel-agents">
           <div class="panel-header">
-            <h2>Agents</h2>
+            <h2>
+              <span class="panel-title">Agents</span>
+              <span class="panel-rule" aria-hidden="true">────────────────────────────────────────────────</span>
+            </h2>
             <button id="refresh-agents">Refresh</button>
           </div>
           <div class="panel-body" id="agents-body"></div>
@@ -74,7 +95,10 @@
 
         <section class="panel" id="panel-prompt">
           <div class="panel-header">
-            <h2>Prompt Inspector</h2>
+            <h2>
+              <span class="panel-title">Prompt</span>
+              <span class="panel-rule" aria-hidden="true">────────────────────────────────────────────────</span>
+            </h2>
             <button id="refresh-prompt">Refresh</button>
           </div>
           <div class="panel-body">

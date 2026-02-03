@@ -10,6 +10,7 @@ export type ExecOptions = {
   env?: Record<string, string>
 }
 
+// Run a shell command and capture stdout/stderr/exit code.
 export async function exec(command: string, options: ExecOptions = {}): Promise<ExecResult> {
   if (!command.trim()) {
     throw new Error("command is required")
@@ -29,6 +30,7 @@ export async function exec(command: string, options: ExecOptions = {}): Promise<
   return { stdout, stderr, exitCode }
 }
 
+// Alias for exec.
 export async function run(command: string, options: ExecOptions = {}): Promise<ExecResult> {
   return exec(command, options)
 }

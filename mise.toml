@@ -7,13 +7,13 @@ golangci-lint = "latest"
 [tasks.start]
 description = "Run agentd server"
 run = [
-  "go run ./cmd/agentd",
+  "docker compose up --build --remove-orphans",
 ]
 
 [tasks.dev]
 description = "Auto-reload agentd on changes"
 run = [
-  "watchexec -r -e go,ts,html,css -w . -- go run ./cmd/agentd",
+  "docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build --remove-orphans",
 ]
 
 [tasks.test]

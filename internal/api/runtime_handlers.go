@@ -28,17 +28,28 @@ func (s *Server) handleAgentItem(w http.ResponseWriter, r *http.Request) {
 	}
 	var payload struct {
 		Message string `json:"message"`
+		Source  string `json:"source"`
 	}
 	if err := decodeJSON(r.Body, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	session, err := s.Runtime.RunOnce(r.Context(), agentID, payload.Message)
+	source := strings.TrimSpace(payload.Source)
+	if source == "" {
+		source = "human"
+	}
+	s.Runtime.EnsureAgentLoop(agentID)
+	evt, err := s.Runtime.SendMessage(r.Context(), agentID, payload.Message, source)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, session)
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"status":    "queued",
+		"agent_id":  agentID,
+		"event_id":  evt.ID,
+		"recipient": agentID,
+	})
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
