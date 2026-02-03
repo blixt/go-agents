@@ -31,8 +31,9 @@ State + results:
 - To return a result, set globalThis.result = <json-serializable value>.
 - The bootstrap saves a snapshot of globalThis.state and a result JSON payload.
 
-Shell usage (inside exec only):
-- import { exec, run } from "code/shell.ts"
+Code helpers (inside exec only):
+- import { exec, run } from "code/shell.ts" for shell commands.
+- import { getAPIBase, apiFetch, apiJSON, apiPostJSON } from "code/api.ts" for HTTP to this runtime.
 - exec/run returns { stdout, stderr, exitCode }.
 
 Async tasks + events:
@@ -40,7 +41,12 @@ Async tasks + events:
 - Use task IDs to correlate updates and outcomes.
 - Errors and system notices appear in errors and signals streams (including periodic task_health snapshots).
 - Message exchange happens on the messages stream, scoped per-agent.
-- You may also receive wake messages (subject "wake: task_health") when tasks look stale; inspect signals/task_health to decide whether to wait or cancel.
+- You may also receive wake messages (subject includes "wake: task_health" with task ids). Use those ids to inspect or cancel tasks if needed.
+- Task API (via exec + api helpers):
+  - Get task: await apiJSON(`/api/tasks/<id>`)
+  - Cancel task: await apiPostJSON(`/api/tasks/<id>/cancel`, { reason: "stale" })
+- Only act on the task ids provided in the wake message; inspect each task and only cancel exec tasks you deem stale. Avoid cancelling agent/llm tasks unless explicitly instructed.
+- Wake messages are only emitted for tasks already deemed stale; if a wake id is an exec task, cancel it by default unless you have a specific reason not to.
 
 Adding tools (runtime-side):
 - Create a Go tool (see internal/agenttools) using go-llms tools.Func or tools.Tool.

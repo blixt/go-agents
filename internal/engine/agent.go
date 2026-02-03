@@ -30,7 +30,6 @@ type Session struct {
 
 type AgentState struct {
 	ID         string
-	LLM        *llms.LLM
 	Prompt     *agentctx.Manager
 	RootTaskID string
 	mu         sync.Mutex
@@ -210,7 +209,7 @@ func (r *Runtime) emitTaskHealth(ctx context.Context) {
 			Stream:    "messages",
 			ScopeType: "agent",
 			ScopeID:   target,
-			Subject:   "wake: task_health",
+			Subject:   fmt.Sprintf("wake: task_health ids=%s", strings.Join(wakeIDs, ",")),
 			Body:      body,
 			Metadata: map[string]any{
 				"kind":     "wake",
@@ -278,20 +277,11 @@ func (r *Runtime) ensureAgentLLM(state *AgentState) (*llms.LLM, error) {
 	if state == nil {
 		return nil, fmt.Errorf("agent state is nil")
 	}
-	if state.LLM != nil {
-		return state.LLM, nil
-	}
 	if r.LLMFactory != nil {
-		llm, err := r.LLMFactory()
-		if err != nil {
-			return nil, err
-		}
-		state.LLM = llm
-		return llm, nil
+		return r.LLMFactory()
 	}
-	if r.LLM != nil && r.LLM.LLM != nil {
-		state.LLM = r.LLM.LLM
-		return state.LLM, nil
+	if r.LLM != nil {
+		return r.LLM.NewSession()
 	}
 	return nil, fmt.Errorf("LLM not configured")
 }

@@ -18,7 +18,7 @@ services:
   execd:
     build: .
     working_dir: /work/go-agents
-    command: ["bun", "exec/execd.ts", "--api-url", "http://agentd:8080"]
+    command: ["bun", "exec/execd.ts", "--api-url", "http://agentd:8080", "--parallel", "2"]
     depends_on:
       - agentd
     volumes:

@@ -68,6 +68,25 @@ Experiment log
   Eleventh follow-up change: Start the operator loop by default at runtime startup so wake messages are handled even without explicit user messages.
   Eleventh follow-up test: Created a long-running exec task and waited for a task_health wake.
   Eleventh follow-up result: A wake message triggered an operator LLM task even without any human message, confirming the default loop is active.
+  Twelfth follow-up change: Wake message subject now includes the stale task ids so the agent can act without needing event payloads.
+  Twelfth follow-up test: Created a stale exec task and observed the operator response.
+  Twelfth follow-up result: Operator acknowledged the wake but did not inspect or cancel the task; it asked for human direction.
+  Twelfth follow-up takeaway: The agent needs explicit guidance on how to inspect/cancel tasks via the API when woken.
+  Thirteenth follow-up change: Added Task API usage hints (inspect/cancel) to the system prompt so the agent can act on wake messages without extra tooling.
+  Thirteenth follow-up test: Operator attempted to cancel stale tasks using exec + curl, but exec failed because "code/shell.ts" could not be resolved in the exec sandbox.
+  Thirteenth follow-up takeaway: exec needs access to the code/ module path or the prompt should not recommend importing "code/shell.ts".
+  Fourteenth follow-up change: Symlink repo `code/` into exec temp dir node_modules so `import "code/shell.ts"` works inside exec tasks. Added prompt guardrails to only cancel exec tasks from wake ids.
+  Fifteenth follow-up test: With Task API hints and code module access, operator attempted to cancel stale exec tasks on wake.
+  Fifteenth follow-up result: The operator queued an exec task to inspect/cancel, but it was blocked behind the long-running exec (single-worker).
+  Fifteenth follow-up takeaway: execd needs parallelism so recovery exec tasks can run while a long exec is in flight.
+  Sixteenth follow-up change: Added execd parallelism (default 2) and exposed via `--parallel`/`EXEC_PARALLEL`. Updated compose to run execd with parallel=2.
+  Seventeenth follow-up issue: Repeated wake-triggered LLM calls started failing with Anthropic `invalid_request_error` (messages.*.content.*.text.text missing), likely due to reused LLM history across runs with tool calls.
+  Seventeenth follow-up change: Switched to fresh LLM sessions per run (no per-agent LLM caching) to avoid corrupted history.
+  Eighteenth follow-up issue: execd parallel=2 still blocked because the main loop waited for long tasks to finish before claiming new ones; queued cancellation execs never ran.
+  Eighteenth follow-up change: Refactored execd loop to maintain a running set and keep polling/claiming while tasks are in flight (concurrency pool).
+  Nineteenth follow-up test: With execd concurrency fixed, operator exec tasks ran concurrently, but the agent only inspected stale tasks and did not cancel.
+  Nineteenth follow-up takeaway: The agent needs an explicit default action on wake; inspection alone is insufficient.
+  Twentieth follow-up change: Prompt now states that wake ids are already stale and exec tasks should be cancelled by default unless there's a reason not to.
 
 Change log
 - Removed the generic `GO_AGENTS_LLM_API_KEY` path; now only provider-specific keys are supported.
@@ -82,3 +101,10 @@ Notes from the Pi/OpenClaw blog post
 - Extensions can render richer TUI components (spinners, tables, pickers) inside the terminal.
 - Extensions/skills can be created quickly and discarded if they turn out not to be needed.
 - The agent is expected to build and maintain its own functionality (skills and extensions) rather than rely on community catalogs.
+- Experiment: exec task fetch to localhost from inside execd container.
+  Hypothesis: exec tasks can reach agentd at http://localhost:8080.
+  Test: spawned exec task that fetches /api/health via Bun fetch.
+  Result: exec failed with "Unable to connect"; stderr shows inability to access URL.
+  Takeaway: exec tasks cannot use localhost to reach agentd in docker. Need a docker-aware API base URL helper and prompt guidance.
+- Follow-up change: added code/api.ts helper to auto-discover the agent API base (prefers config.json, then agentd service when in Docker) and updated the prompt to use apiJSON/apiPostJSON instead of curl.
+- Validation: exec task using apiJSON('/api/health') succeeded; state cached api_base = http://agentd:8080.

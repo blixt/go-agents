@@ -2,7 +2,7 @@
 
 import { join, resolve } from "path"
 import { tmpdir } from "os"
-import { mkdir } from "fs/promises"
+import { mkdir, symlink } from "fs/promises"
 
 type Task = {
   id: string
@@ -67,10 +67,12 @@ const apiURLArg = getArg("--api-url")
 const snapshotArg = getArg("--snapshot-dir")
 const pollArg = getArg("--poll-ms")
 const webhookArg = getArg("--webhook-addr")
+const parallelArg = getArg("--parallel")
 
 const API_URL = normalizeHTTPAddr(apiURLArg || config.http_addr || ":8080")
 const SNAPSHOT_DIR = snapshotArg || config.snapshot_dir || "data/exec-snapshots"
 const POLL_MS = parseInt(pollArg || "1000", 10)
+const PARALLEL = Math.max(1, parseInt(parallelArg || Bun.env.EXEC_PARALLEL || "2", 10))
 const webhookAddr = webhookArg || config.webhook_addr
 
 function startWebhookServer() {
@@ -97,8 +99,8 @@ async function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-async function claimTasks(): Promise<Task[]> {
-  const url = `${API_URL}/api/tasks/queue?type=exec&limit=1`
+async function claimTasks(limit: number): Promise<Task[]> {
+  const url = `${API_URL}/api/tasks/queue?type=exec&limit=${limit}`
   const res = await fetch(url)
   if (!res.ok) {
     throw new Error(`queue request failed: ${res.status}`)
@@ -155,6 +157,16 @@ async function runTask(task: Task) {
 
   const execDir = join(tmpdir(), `go-agents-${task.id}`)
   await mkdir(execDir, { recursive: true })
+  const nodeModulesDir = join(execDir, "node_modules")
+  await mkdir(nodeModulesDir, { recursive: true })
+  const repoRoot = process.cwd()
+  const codeSource = join(repoRoot, "code")
+  const codeTarget = join(nodeModulesDir, "code")
+  try {
+    await symlink(codeSource, codeTarget, "dir")
+  } catch {
+    // ignore if already exists or symlink not supported
+  }
 
   const codeFile = join(execDir, "task.ts")
   await Bun.write(codeFile, code)
@@ -215,28 +227,38 @@ async function runTask(task: Task) {
   await sendComplete(task.id, result)
 }
 
-async function runOnceCycle() {
-  const tasks = await claimTasks()
-  if (tasks && tasks.length > 0) {
-    for (const task of tasks) {
-      await runTask(task)
-    }
-  }
-  return tasks
-}
-
 async function main() {
   startWebhookServer()
+  const running = new Set<Promise<void>>()
   while (true) {
     try {
-      const tasks = await runOnceCycle()
-      if (once) return
-      if (!tasks || tasks.length === 0) {
-        await sleep(POLL_MS)
+      while (running.size < PARALLEL) {
+        const capacity = PARALLEL - running.size
+        const tasks = await claimTasks(capacity)
+        if (!tasks || tasks.length === 0) {
+          break
+        }
+        for (const task of tasks) {
+          const p = runTask(task).catch((err) => {
+            console.error(`execd error: ${err}`)
+          })
+          running.add(p)
+          p.finally(() => running.delete(p))
+          if (once) break
+        }
+        if (once) break
       }
+      if (once) {
+        if (running.size === 0) return
+      }
+      if (running.size === 0) {
+        await sleep(POLL_MS)
+        continue
+      }
+      await Promise.race([sleep(POLL_MS), ...running])
     } catch (err) {
       console.error(`execd error: ${err}`)
-      if (once) return
+      if (once && running.size === 0) return
       await sleep(POLL_MS)
     }
   }
