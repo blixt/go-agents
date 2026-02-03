@@ -91,6 +91,87 @@ func (r *Runtime) Start(ctx context.Context) {
 		ctx = context.Background()
 	}
 	r.baseCtx = ctx
+	if r.Tasks != nil && r.Bus != nil {
+		go r.monitorTaskHealth(ctx)
+	}
+}
+
+func (r *Runtime) monitorTaskHealth(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			r.emitTaskHealth(ctx)
+		}
+	}
+}
+
+func (r *Runtime) emitTaskHealth(ctx context.Context) {
+	if r.Tasks == nil || r.Bus == nil {
+		return
+	}
+	tasksList, err := r.Tasks.List(ctx, tasks.ListFilter{
+		Status: tasks.StatusRunning,
+		Limit:  200,
+	})
+	if err != nil || len(tasksList) == 0 {
+		return
+	}
+
+	now := time.Now().UTC()
+	byTarget := map[string][]map[string]any{}
+	var all []map[string]any
+	for _, task := range tasksList {
+		target := ""
+		if task.Metadata != nil {
+			if val, ok := task.Metadata["notify_target"].(string); ok {
+				target = val
+			}
+		}
+		if target == "" {
+			target = task.Owner
+		}
+		if target == "" {
+			target = "operator"
+		}
+		entry := map[string]any{
+			"id":              task.ID,
+			"type":            task.Type,
+			"status":          task.Status,
+			"owner":           task.Owner,
+			"parent_id":       task.ParentID,
+			"created_at":      task.CreatedAt,
+			"updated_at":      task.UpdatedAt,
+			"age_seconds":     int64(now.Sub(task.CreatedAt).Seconds()),
+			"updated_seconds": int64(now.Sub(task.UpdatedAt).Seconds()),
+		}
+		byTarget[target] = append(byTarget[target], entry)
+		all = append(all, entry)
+	}
+	if len(all) > 0 {
+		byTarget["operator"] = all
+	}
+
+	for target, list := range byTarget {
+		_, _ = r.Bus.Push(ctx, eventbus.EventInput{
+			Stream:    "signals",
+			Subject:   "task_health",
+			Body:      "task health snapshot",
+			ScopeType: "agent",
+			ScopeID:   target,
+			Payload: map[string]any{
+				"generated_at": now,
+				"tasks":        list,
+			},
+			Metadata: map[string]any{
+				"kind":   "task_health",
+				"target": target,
+			},
+		})
+	}
 }
 
 func (r *Runtime) EnsureAgentLoop(agentID string) {
@@ -370,8 +451,12 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 			},
 		})
 	}
-	if source != "" && source != agentID {
-		_, _ = r.SendMessage(ctx, source, output, agentID)
+	if source != "" && source != agentID && strings.TrimSpace(output) != "" {
+		if agentID == "operator" && source != "human" {
+			_, _ = r.SendMessage(ctx, "human", output, agentID)
+		} else {
+			_, _ = r.SendMessage(ctx, source, output, agentID)
+		}
 	}
 	return session, nil
 }

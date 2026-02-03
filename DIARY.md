@@ -33,6 +33,34 @@ Experiment log
   Follow-up test: After adding explicit “Adding tools” prompt guidance, repeated the same test on a clean DB.
   Follow-up result: Agent used `exec` and described the correct tool wiring (Go tool in `internal/agenttools`, register in `cmd/agentd/main.go`, restart).
   Follow-up takeaway: Prompt update resolved the first-attempt tool explanation failure.
+- Hypothesis: The agent can orchestrate a subagent and return the final result to the human on first attempt.
+  Test: Asked operator to spawn a subagent to compute 6*7 and then reply to human with the number only.
+  Result: Operator spawned the subagent, but then got stuck in a back-and-forth with the subagent and never sent the final answer to the human. It replied “Waiting for the reply...” to the human and then continued dialog with the subagent.
+  Takeaway: The prompt must explicitly tell the agent that the human user is `agent_id="human"` and that it should call `send_message` to human after subagent coordination.
+  Follow-up test: After adding guidance about `agent_id="human"`, repeated the subagent test on a clean DB.
+  Follow-up result: Operator sent a status message to human, but instructed the subagent to reply directly to the human with the answer. Human received “42” from subagent, not operator.
+  Follow-up takeaway: Prompt must explicitly instruct agents to have subagents reply to the parent agent, not to the human.
+  Second follow-up test: After updating prompt to forbid subagents messaging the human, repeated the test.
+  Second follow-up result: Subagent still messaged the human directly, and the system spawned a "human" agent that replied to the subagent (undesired). This created extra chatter and an error response.
+  Second follow-up takeaway: The runtime should never spawn an agent loop for `human`; `send_message` to `human` must not call `ensureAgent`.
+  Third follow-up test: After disabling `ensureAgent` for `human`, repeated the subagent test.
+  Third follow-up result: Subagent still sent `42` directly to the human; operator received no reply because the subagent did not produce plain text (only a tool call).
+  Third follow-up takeaway: Prompt must tell agents that replies to other agents should be plain text (the runtime auto-routes), and send_message should only be used to start conversations/spawn subagents.
+  Fourth follow-up change: Enforce in `send_message` that only the operator can target `human`. Subagents attempting to message human will error and must reply in plain text to the operator.
+  Fifth follow-up change: Route operator plain-text replies to the human when the source is a subagent, to avoid accidental auto-replies back to subagents. Added prompt note explaining this operator behavior.
+  Sixth follow-up test: After routing operator replies to human, repeated the subagent test.
+  Sixth follow-up result: Operator returned the final answer "42" to the human. It still sent an interim "waiting" update first.
+  Sixth follow-up takeaway: Core delegation works now; we may still need to further discourage interim status messages if we want a single final reply.
+  Seventh follow-up change: Strengthened prompt to forbid interim status updates to human unless explicitly requested.
+  Seventh follow-up test: With the strengthened prompt, the operator sent only a status update and the subagent LLM task hung (no reply to operator).
+  Seventh follow-up takeaway: LLM tasks can get stuck; we need a health signal or watchdog and a clean interrupt path that informs the operator.
+  Manual experiment: Cancelled the stuck LLM task via `POST /api/tasks/{id}/cancel`.
+  Manual result: Task moved to `cancelled`, but the operator received no notification.
+  Manual takeaway: We need task health/interrupt signals delivered to the operator so it can react without manual API calls.
+  Eighth follow-up change: Added periodic task_health snapshots on the signals stream for each task owner/target, including age and last-update age, so agents can decide when to interrupt or investigate.
+  Ninth follow-up change: Ensure operator receives a full task_health snapshot that includes all running tasks (including subagents), not just operator-owned tasks.
+  Ninth follow-up test: After this change, task_health for operator now lists both operator and subagent running tasks.
+  Ninth follow-up result: Operator still sends an interim status update before the final answer despite prompt instruction.
 
 Change log
 - Removed the generic `GO_AGENTS_LLM_API_KEY` path; now only provider-specific keys are supported.
