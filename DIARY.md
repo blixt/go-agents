@@ -115,3 +115,4 @@ Notes from the Pi/OpenClaw blog post
   Takeaway: prompt must explicitly warn that localhost/curl fails in Docker and instruct to use code/api.ts helpers.
 - Follow-up change: clarified prompt to avoid curl/localhost in exec; use code/api.ts helpers instead.
 - Validation: spawned a long-running exec task and waited for wake. Operator used apiJSON/apiPostJSON via exec, successfully cancelled the stale exec task. Task status became cancelled with reason "stale task detected by task_health".
+- Note: inserting JavaScript template literals in the Go raw-string prompt broke agentd build. Replaced example backticks with single quotes to keep prompt valid.
