@@ -1,0 +1,247 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
+
+:root {
+  --bg: #0c0f14;
+  --panel: #151a22;
+  --panel-alt: #1b212b;
+  --accent: #ff8a3d;
+  --accent-2: #39c2b5;
+  --text: #f2f2f2;
+  --muted: #9aa4b2;
+  --stroke: #263040;
+  --shadow: rgba(0, 0, 0, 0.4);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "Space Grotesk", sans-serif;
+  color: var(--text);
+  background:
+    radial-gradient(circle at top, rgba(255, 138, 61, 0.25), transparent 45%),
+    radial-gradient(circle at bottom, rgba(57, 194, 181, 0.2), transparent 50%),
+    var(--bg);
+}
+
+.app {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 32px 24px 48px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 28px;
+  padding: 20px;
+  background: linear-gradient(120deg, rgba(255, 138, 61, 0.15), rgba(57, 194, 181, 0.12));
+  border: 1px solid var(--stroke);
+  border-radius: 16px;
+  box-shadow: 0 20px 40px -30px var(--shadow);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.badge {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--stroke);
+  color: var(--accent);
+}
+
+h1 {
+  margin: 0 0 4px;
+  font-size: 28px;
+}
+
+p {
+  margin: 0;
+  color: var(--muted);
+}
+
+h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 13px;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--muted);
+  box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.05);
+}
+
+.dot.online {
+  background: var(--accent-2);
+  box-shadow: 0 0 12px rgba(57, 194, 181, 0.6);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 20px;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--stroke);
+  border-radius: 16px;
+  padding: 16px;
+  min-height: 320px;
+  box-shadow: 0 12px 40px -32px var(--shadow);
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.panel-header h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.panel-body {
+  flex: 1;
+  overflow: auto;
+}
+
+button {
+  border: 1px solid var(--stroke);
+  border-radius: 999px;
+  padding: 6px 14px;
+  background: var(--panel-alt);
+  color: var(--text);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.tasks-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.tasks-table th,
+.tasks-table td {
+  text-align: left;
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--stroke);
+  vertical-align: top;
+}
+
+.tasks-table tbody tr {
+  cursor: pointer;
+}
+
+.tasks-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.tasks-table td.code {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.update-item,
+.stream-item,
+.list-item {
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  border-radius: 12px;
+  background: var(--panel-alt);
+  border: 1px solid var(--stroke);
+}
+
+.update-item h4,
+.stream-item h4,
+.list-item h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.update-item pre,
+.stream-item pre,
+.list-item pre,
+.prompt {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.stream-controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+.stream-btn {
+  white-space: nowrap;
+}
+
+.stream-btn.active {
+  border-color: var(--accent-2);
+  color: var(--accent-2);
+}
+
+.split {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.prompt {
+  min-height: 200px;
+}
+
+@media (max-width: 720px) {
+  .topbar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+}
