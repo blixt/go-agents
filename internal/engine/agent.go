@@ -15,6 +15,7 @@ import (
 	"github.com/flitsinc/go-agents/internal/tasks"
 	"github.com/flitsinc/go-llms/content"
 	"github.com/flitsinc/go-llms/llms"
+	llmtools "github.com/flitsinc/go-llms/tools"
 )
 
 type Session struct {
@@ -413,6 +414,7 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 		}
 		return session, nil
 	}
+	r.attachDebugger(llmClient, agentID, llmTask.ID)
 
 	var output string
 	{
@@ -440,8 +442,55 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 
 		updates := llmClient.ChatWithContext(llmCtx, message)
 		for update := range updates {
-			if textUpdate, ok := update.(llms.TextUpdate); ok {
-				output += textUpdate.Text
+			switch u := update.(type) {
+			case llms.TextUpdate:
+				output += u.Text
+				r.recordLLMUpdate(llmCtx, llmTask.ID, "llm_text", map[string]any{"text": u.Text})
+			case llms.MessageStartUpdate:
+				r.recordLLMUpdate(llmCtx, llmTask.ID, "llm_message_start", map[string]any{"message_id": u.MessageID})
+			case llms.ThinkingUpdate:
+				r.recordLLMUpdate(llmCtx, llmTask.ID, "llm_thinking", map[string]any{
+					"id":      u.ID,
+					"text":    u.Text,
+					"summary": u.Summary,
+				})
+			case llms.ThinkingDoneUpdate:
+				r.recordLLMUpdate(llmCtx, llmTask.ID, "llm_thinking_done", map[string]any{"done": true})
+			case llms.ToolStartUpdate:
+				r.recordLLMUpdate(llmCtx, llmTask.ID, "llm_tool_start", map[string]any{
+					"tool_call_id": u.ToolCallID,
+					"tool_name":    u.Tool.FuncName(),
+					"tool_label":   u.Tool.Label(),
+					"tool_desc":    u.Tool.Description(),
+				})
+			case llms.ToolDeltaUpdate:
+				r.recordLLMUpdate(llmCtx, llmTask.ID, "llm_tool_delta", map[string]any{
+					"tool_call_id": u.ToolCallID,
+					"delta":        string(u.Delta),
+				})
+			case llms.ToolStatusUpdate:
+				r.recordLLMUpdate(llmCtx, llmTask.ID, "llm_tool_status", map[string]any{
+					"tool_call_id": u.ToolCallID,
+					"status":       u.Status,
+					"tool_name":    u.Tool.FuncName(),
+				})
+			case llms.ToolDoneUpdate:
+				payload := map[string]any{
+					"tool_call_id": u.ToolCallID,
+					"tool_name":    u.Tool.FuncName(),
+				}
+				if u.Result != nil {
+					payload["result"] = summarizeToolResult(u.Result)
+				}
+				if u.Metadata != nil {
+					payload["metadata"] = u.Metadata
+				}
+				r.recordLLMUpdate(llmCtx, llmTask.ID, "llm_tool_done", payload)
+			case llms.ImageUpdate:
+				r.recordLLMUpdate(llmCtx, llmTask.ID, "llm_image", map[string]any{
+					"url":       u.URL,
+					"mime_type": u.MimeType,
+				})
 			}
 		}
 		if err := llmClient.Err(); err != nil {
@@ -522,6 +571,81 @@ func (r *Runtime) registerInflight(taskID string, cancel context.CancelFunc) {
 	r.inflightMu.Lock()
 	r.inflight[taskID] = cancel
 	r.inflightMu.Unlock()
+}
+
+func (r *Runtime) recordLLMUpdate(ctx context.Context, taskID, kind string, payload map[string]any) {
+	if r.Tasks == nil || taskID == "" {
+		return
+	}
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		err = r.Tasks.RecordUpdate(ctx, taskID, kind, payload)
+		if err == nil {
+			return
+		}
+		if strings.Contains(err.Error(), "database is locked") {
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		break
+	}
+	if err != nil && r.Bus != nil {
+		_, _ = r.Bus.Push(context.Background(), eventbus.EventInput{
+			Stream:    "signals",
+			ScopeType: "agent",
+			ScopeID:   "operator",
+			Subject:   "llm_update_error",
+			Body:      err.Error(),
+			Metadata: map[string]any{
+				"kind":    "llm_update_error",
+				"task_id": taskID,
+				"update":  kind,
+			},
+		})
+	}
+}
+
+func summarizeToolResult(result llmtools.Result) map[string]any {
+	if result == nil {
+		return nil
+	}
+	out := map[string]any{
+		"label": result.Label(),
+	}
+	if err := result.Error(); err != nil {
+		out["error"] = err.Error()
+	}
+	out["content"] = summarizeContent(result.Content())
+	return out
+}
+
+func summarizeContent(items content.Content) []map[string]any {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		switch v := item.(type) {
+		case *content.Text:
+			out = append(out, map[string]any{"type": "text", "text": v.Text})
+		case *content.JSON:
+			out = append(out, map[string]any{"type": "json", "data": string(v.Data)})
+		case *content.ImageURL:
+			out = append(out, map[string]any{"type": "image", "url": v.URL, "mime_type": v.MimeType})
+		case *content.Thought:
+			out = append(out, map[string]any{
+				"type":    "thought",
+				"id":      v.ID,
+				"text":    v.Text,
+				"summary": v.Summary,
+			})
+		case *content.CacheHint:
+			out = append(out, map[string]any{"type": "cache_hint", "duration": v.Duration})
+		default:
+			out = append(out, map[string]any{"type": fmt.Sprintf("%T", item)})
+		}
+	}
+	return out
 }
 
 func (r *Runtime) clearInflight(taskID string) {

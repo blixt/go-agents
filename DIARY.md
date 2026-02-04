@@ -200,3 +200,26 @@ Experiment log
   Change: Exec tool now supports wait_seconds to block for completion and return result/pending status. Prompt updated to mention wait_seconds and tool-result usage. Also added exec wait_seconds tests and ensured runtime falls back to existing LLM session when config is missing (test clients).
   Result: A wait_seconds run hit provider error `max_tokens` before completing.
   Takeaway: Need to keep tool use concise and/or add retry logic for max_tokens failures.
+
+- E032: LLM visibility instrumentation.
+  Goal: Ensure full visibility into raw LLM requests/events, thinking, tool calls, and output.
+  Change: Added bus debugger (signals stream) for RawRequest/RawEvent with API key redaction, and task_output updates for llm_text/thinking/tool_* events.
+  Result: signals stream shows llm_debug_request with full payload; task_output shows LLM task updates.
+  Takeaway: Debug visibility is working; need to validate tool and thinking streams after fixing thinking budget.
+
+- E033: Anthropic thinking budget validation.
+  Hypothesis: Enabling thinking with budget 512 should work.
+  Result: Anthropic returned 400 invalid_request_error: thinking.enabled.budget_tokens must be >= 1024.
+  Fix: Raised default thinking budget to 1024 in ai client.
+
+- E034: LLM tool update loss due to SQLITE_BUSY.
+  Observation: llm_tool_done updates were missing; signals reported llm_update_error: database is locked (SQLITE_BUSY) during tool_done insert.
+  Change: Added retry with short backoff for llm update writes; log to signals on persistent failure.
+  Next: Re-run a tool-using task to confirm tool_done is recorded.
+
+- E035: LLM visibility validation (thinking + tool calls).
+  Goal: Confirm thinking, tool_start/delta/done, and tool results are captured end-to-end.
+  Test: Asked agent to count dependencies in go.mod (requires exec).
+  Result: task_output now includes llm_thinking, llm_tool_start/delta/done, and llm_text; tool_done payload recorded after retry logic.
+  Takeaway: Full LLM visibility is functional after adding retry for SQLITE_BUSY.
+
