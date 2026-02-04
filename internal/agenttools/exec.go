@@ -3,6 +3,7 @@ package agenttools
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/flitsinc/go-llms/llms"
 	llmtools "github.com/flitsinc/go-llms/tools"
@@ -12,8 +13,9 @@ import (
 )
 
 type ExecParams struct {
-	Code string `json:"code" description:"TypeScript code to run in Bun"`
-	ID   string `json:"id,omitempty" description:"Optional session id for snapshot reuse"`
+	Code        string `json:"code" description:"TypeScript code to run in Bun"`
+	ID          string `json:"id,omitempty" description:"Optional session id for snapshot reuse"`
+	WaitSeconds int    `json:"wait_seconds,omitempty" description:"Optional seconds to wait for completion before returning"`
 }
 
 func ExecTool(manager *tasks.Manager) llmtools.Tool {
@@ -53,10 +55,43 @@ func ExecTool(manager *tasks.Manager) llmtools.Tool {
 			if err != nil {
 				return llmtools.ErrorWithLabel("Exec failed", fmt.Errorf("spawn exec task: %w", err))
 			}
-			return llmtools.Success(map[string]any{
+
+			waitSeconds := p.WaitSeconds
+			if waitSeconds <= 0 {
+				return llmtools.Success(map[string]any{
+					"task_id": task.ID,
+					"status":  task.Status,
+				})
+			}
+
+			timeout := time.Duration(waitSeconds) * time.Second
+			awaited, awaitErr := manager.Await(r.Context(), task.ID, timeout)
+			resp := map[string]any{
 				"task_id": task.ID,
-				"status":  task.Status,
-			})
+				"status":  awaited.Status,
+			}
+			if awaited.Status == tasks.StatusCompleted {
+				resp["result"] = awaited.Result
+			}
+			if awaited.Status == tasks.StatusFailed || awaited.Status == tasks.StatusCancelled {
+				resp["error"] = awaited.Error
+				if awaited.Result != nil {
+					resp["result"] = awaited.Result
+				}
+			}
+			if awaitErr != nil {
+				resp["await_error"] = awaitErr.Error()
+				if tasks.IsAwaitTimeout(awaitErr) {
+					resp["pending"] = true
+				}
+				if wakeErr, ok := tasks.AsWakeError(awaitErr); ok {
+					resp["wake"] = map[string]any{
+						"priority": wakeErr.Priority,
+						"event":    wakeErr.Event.Subject,
+					}
+				}
+			}
+			return llmtools.Success(resp)
 		},
 	)
 }

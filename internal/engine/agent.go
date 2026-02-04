@@ -160,7 +160,7 @@ func (r *Runtime) emitTaskHealth(ctx context.Context) {
 		}
 		byTarget[target] = append(byTarget[target], entry)
 		all = append(all, entry)
-		if now.Sub(task.UpdatedAt) >= taskHealthStale {
+		if task.Type == "exec" && now.Sub(task.UpdatedAt) >= taskHealthStale {
 			staleByTarget[target] = append(staleByTarget[target], entry)
 		}
 	}
@@ -281,7 +281,13 @@ func (r *Runtime) ensureAgentLLM(state *AgentState) (*llms.LLM, error) {
 		return r.LLMFactory()
 	}
 	if r.LLM != nil {
-		return r.LLM.NewSession()
+		if llm, err := r.LLM.NewSession(); err == nil {
+			return llm, nil
+		}
+		if r.LLM.LLM != nil {
+			return r.LLM.LLM, nil
+		}
+		return nil, fmt.Errorf("LLM not configured")
 	}
 	return nil, fmt.Errorf("LLM not configured")
 }

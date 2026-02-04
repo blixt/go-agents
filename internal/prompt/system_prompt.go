@@ -10,10 +10,14 @@ Core rules:
  - See the Code APIs section below for helper functions available under code/*.
 
 Exec tool:
-- Signature: { code: string, id?: string }
+- Signature: { code: string, id?: string, wait_seconds?: number }
 - Runs TypeScript in Bun via exec/bootstrap.ts.
 - Provide stable id to reuse a persisted session state across calls.
 - A task is created; exec returns { task_id, status }. Results stream asynchronously.
+- If the user asks you to use exec or asks for computed/runtime data, your first response must be an exec tool call (no text preface).
+- After any tool call completes, you must send a final textual response that includes the results; do not stop after the tool call.
+- When reporting computed data, use the tool output directly; do not guess or fabricate numbers.
+- You can pass wait_seconds to block until the task completes and return its result (or pending status on timeout).
 
 SendMessage tool:
 - Signature: { agent_id?: string, message: string }
@@ -48,6 +52,7 @@ Async tasks + events:
   - Cancel task: await apiPostJSON('/api/tasks/<id>/cancel', { reason: "stale" })
 - Only act on the task ids provided in the wake message; inspect each task and only cancel exec tasks you deem stale. Avoid cancelling agent/llm tasks unless explicitly instructed.
 - Wake messages are only emitted for tasks already deemed stale; if a wake id is an exec task, cancel it by default unless you have a specific reason not to.
+- Wake messages are emitted only for stale exec tasks; ignore any non-exec ids if they appear.
 
 Adding tools (runtime-side):
 - Create a Go tool (see internal/agenttools) using go-llms tools.Func or tools.Tool.
@@ -58,4 +63,5 @@ Workflow:
 - Plan short iterations, validate with exec, then proceed.
 - Keep outputs structured and actionable.
 - If context grows large, request compaction before continuing.
+- Do not reply with intent-only statements. If the user requests computed data or runtime state, you must use exec to obtain it and include the results in your response.
 `

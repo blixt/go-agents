@@ -34,9 +34,9 @@ Notes from the Pi/OpenClaw blog post
 - The agent is expected to build and maintain its own functionality (skills and extensions) rather than rely on community catalogs.
 
 Future experiment ideas
-- E027: Validate wake + cancel for LLM tasks (interrupt handling path).
-- E028: Test parallel async parent/child tasks where parent cancel kills child.
-- E029: Test subagent bidirectional messaging without human involvement (baseline agent-to-agent symmetry).
+- Validate wake + cancel for LLM tasks (interrupt handling path).
+- Test parallel async parent/child tasks where parent cancel kills child.
+- Test subagent bidirectional messaging without human involvement (baseline agent-to-agent symmetry).
 
 Experiment log
 - E001: No API key configured.
@@ -170,3 +170,33 @@ Experiment log
   Test: Spawned a long exec task (sleep 5m), waited for task_health wake.
   Result: Task was cancelled with reason "stale task detected by task_health" after ~1 minute.
   Takeaway: Wake + cancel pipeline still works after DB reset.
+
+- E026: Runtime health report (real-world ops goal).
+  Goal: Produce a concise runtime health report (task counts by status/type, top 3 oldest running tasks, queued exec flag).
+  Test: Sent a human request to operator to compute the report using exec + apiJSON.
+  Result: LLM task ran, spawned exec subtasks, but became stale and was cancelled with reason "stale from wake message" before completing the report.
+  Takeaway: Wake logic can derail user-facing LLM tasks; stale detection should avoid targeting non-exec tasks.
+
+- E027: Wake filtering for exec tasks only.
+  Change: In task_health wake logic, only mark exec tasks as stale; keep full snapshots for all tasks. Updated prompt to state wake messages are exec-only.
+  Next: Re-run the health report goal after rebuild to verify the LLM task completes without being cancelled.
+
+- E028: Health report after wake filtering.
+  Goal: Produce a concise runtime health report using exec + apiJSON.
+  Result: LLM returned intent-only text and no exec tasks were created; report was not generated.
+  Takeaway: Prompt needs stronger enforcement to avoid intent-only replies.
+
+- E029: Enforce exec-first responses.
+  Change: Prompt now forbids intent-only replies and requires exec as the first response when computed data is requested.
+  Result: LLM issued an exec tool call, but returned an empty final output; exec results were computed but not surfaced.
+  Takeaway: Need explicit instruction to surface tool results and avoid silent completions.
+
+- E030: Tool-result usage + exec thrash.
+  Change: Prompt required final textual response after tool calls and to avoid fabricating data.
+  Result: LLM spawned many exec tasks, hallucinated a backlog, and produced an inaccurate report despite successful exec results.
+  Takeaway: Async exec results are hard for the model to retrieve reliably; need a sync/await path.
+
+- E031: Add exec wait_seconds (sync/await).
+  Change: Exec tool now supports wait_seconds to block for completion and return result/pending status. Prompt updated to mention wait_seconds and tool-result usage. Also added exec wait_seconds tests and ensured runtime falls back to existing LLM session when config is missing (test clients).
+  Result: A wait_seconds run hit provider error `max_tokens` before completing.
+  Takeaway: Need to keep tool use concise and/or add retry logic for max_tokens failures.
