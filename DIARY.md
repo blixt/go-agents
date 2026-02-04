@@ -34,9 +34,9 @@ Notes from the Pi/OpenClaw blog post
 - The agent is expected to build and maintain its own functionality (skills and extensions) rather than rely on community catalogs.
 
 Future experiment ideas
-- E024: Validate wake + cancel for LLM tasks (interrupt handling path).
-- E025: Test parallel async parent/child tasks where parent cancel kills child.
-- E026: Test subagent bidirectional messaging without human involvement (baseline agent-to-agent symmetry).
+- E027: Validate wake + cancel for LLM tasks (interrupt handling path).
+- E028: Test parallel async parent/child tasks where parent cancel kills child.
+- E029: Test subagent bidirectional messaging without human involvement (baseline agent-to-agent symmetry).
 
 Experiment log
 - E001: No API key configured.
@@ -154,3 +154,19 @@ Experiment log
 - E023: Prompt string literal fix.
   Issue: Using JS template literal backticks inside Go raw-string prompt broke agentd build.
   Fix: Switched to single-quoted examples in prompt.
+
+## 2026-02-04
+Experiment log
+- E024: Execd queue failures after restart (DB corruption).
+  Hypothesis: Restart should not break exec queue; if it does, agentd should still return queue results.
+  Test: Restarted compose and attempted to claim exec queue from execd.
+  Result: execd saw 400s; manual curl from execd to /api/tasks/queue?type=exec returned error: database disk image is malformed (11).
+  Takeaway: DB corruption blocks exec workers; recovery requires recreating the DB.
+  Fix: Stopped compose, removed data/go-agents.db (+-wal/-shm), and restarted to recreate a clean DB.
+  Validation: execd queue requests returned null (OK).
+
+- E025: Wake + cancel after DB reset.
+  Hypothesis: After clean restart, the default operator loop will still cancel stale exec tasks via apiJSON/apiPostJSON.
+  Test: Spawned a long exec task (sleep 5m), waited for task_health wake.
+  Result: Task was cancelled with reason "stale task detected by task_health" after ~1 minute.
+  Takeaway: Wake + cancel pipeline still works after DB reset.
