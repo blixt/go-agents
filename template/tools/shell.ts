@@ -15,6 +15,7 @@ export async function exec(command: string, options: ExecOptions = {}): Promise<
   if (!command.trim()) {
     throw new Error("command is required")
   }
+
   const proc = Bun.spawn({
     cmd: ["/bin/sh", "-lc", command],
     cwd: options.cwd,
@@ -31,6 +32,6 @@ export async function exec(command: string, options: ExecOptions = {}): Promise<
 }
 
 // Alias for exec.
-export async function run(command: string, options: ExecOptions = {}): Promise<ExecResult> {
+export async function run(command: string, options: ExecOptions = {}) {
   return exec(command, options)
 }

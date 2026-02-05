@@ -11,6 +11,7 @@ import (
 	"github.com/flitsinc/go-agents/internal/agentcontext"
 	"github.com/flitsinc/go-agents/internal/ai"
 	"github.com/flitsinc/go-agents/internal/eventbus"
+	"github.com/flitsinc/go-agents/internal/karna"
 	agentctx "github.com/flitsinc/go-agents/internal/prompt"
 	"github.com/flitsinc/go-agents/internal/tasks"
 	"github.com/flitsinc/go-llms/content"
@@ -61,21 +62,11 @@ type Runtime struct {
 }
 
 func NewRuntime(bus *eventbus.Bus, tasksMgr *tasks.Manager, client *ai.Client) *Runtime {
-	ctxMgr := &agentctx.Manager{
-		Policy: agentctx.StreamPolicy{
-			UpdateStreams: []string{"messages", "task_output", "errors", "signals", "external"},
-			Reader:        "operator",
-			Limit:         50,
-			Order:         "lifo",
-			Ack:           true,
-		},
-		MaxUpdates: 200,
-		CacheHint:  "short",
-		CodeDir:    "code",
+	home, err := karna.EnsureHome()
+	if err != nil {
+		home = ""
 	}
-	if client != nil {
-		ctxMgr.Compactor = agentctx.NewLLMCompactor(client)
-	}
+	ctxMgr := &agentctx.Manager{Home: home}
 
 	return &Runtime{
 		Bus:      bus,
@@ -266,7 +257,7 @@ func (r *Runtime) ensureAgentState(agentID string) *AgentState {
 	if !ok {
 		state = &AgentState{
 			ID:     agentID,
-			Prompt: clonePromptManager(r.Context, agentID),
+			Prompt: clonePromptManager(r.Context),
 		}
 		r.agents[agentID] = state
 	}
@@ -293,19 +284,11 @@ func (r *Runtime) ensureAgentLLM(state *AgentState) (*llms.LLM, error) {
 	return nil, fmt.Errorf("LLM not configured")
 }
 
-func clonePromptManager(src *agentctx.Manager, agentID string) *agentctx.Manager {
+func clonePromptManager(src *agentctx.Manager) *agentctx.Manager {
 	if src == nil {
 		return nil
 	}
-	policy := src.Policy
-	policy.Reader = agentID
-	return &agentctx.Manager{
-		Policy:     policy,
-		Compactor:  src.Compactor,
-		MaxUpdates: src.MaxUpdates,
-		CacheHint:  src.CacheHint,
-		CodeDir:    src.CodeDir,
-	}
+	return &agentctx.Manager{Home: src.Home}
 }
 
 func (r *Runtime) RunOnce(ctx context.Context, agentID, message string) (Session, error) {
@@ -333,8 +316,7 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 		promptContent = prompt
 		promptText = text
 	} else {
-		promptText = agentctx.DefaultSystemPrompt
-		promptContent = content.FromText(promptText)
+		return Session{}, fmt.Errorf("prompt unavailable")
 	}
 
 	var rootTask tasks.Task
@@ -782,7 +764,7 @@ func (r *Runtime) BuildSession(ctx context.Context, agentID string) (Session, er
 		agentID = "operator"
 	}
 	state := r.ensureAgentState(agentID)
-	if state == nil || state.Prompt == nil || r.Bus == nil {
+	if state == nil || state.Prompt == nil {
 		session := Session{AgentID: agentID, UpdatedAt: time.Now().UTC()}
 		r.SetSession(session)
 		return session, nil
@@ -794,6 +776,21 @@ func (r *Runtime) BuildSession(ctx context.Context, agentID string) (Session, er
 	session := Session{AgentID: agentID, Prompt: promptText, UpdatedAt: time.Now().UTC()}
 	r.SetSession(session)
 	return session, nil
+}
+
+func (r *Runtime) BuildPrompt(ctx context.Context, agentID string) (string, error) {
+	if agentID == "" {
+		agentID = "operator"
+	}
+	state := r.ensureAgentState(agentID)
+	if state == nil || state.Prompt == nil {
+		return "", fmt.Errorf("prompt unavailable")
+	}
+	_, promptText, err := state.Prompt.BuildSystemPrompt(ctx, r.Bus)
+	if err != nil {
+		return "", err
+	}
+	return promptText, nil
 }
 
 func (r *Runtime) Run(ctx context.Context, agentID string) error {

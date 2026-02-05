@@ -15,10 +15,13 @@ func Open(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("create db dir: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	dsn := fmt.Sprintf("%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)", path)
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(4)
 
 	pragmas := []string{
 		"PRAGMA journal_mode = WAL;",

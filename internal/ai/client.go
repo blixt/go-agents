@@ -61,6 +61,7 @@ func newLLM(cfg Config, tools ...llmtools.Tool) (*llms.LLM, error) {
 		provider = openai.NewChatCompletionsAPI(cfg.APIKey, cfg.Model)
 	case "anthropic":
 		model := anthropic.New(cfg.APIKey, cfg.Model)
+		model.WithMaxTokens(62976)
 		model.WithThinking(1024)
 		provider = model
 	case "google":

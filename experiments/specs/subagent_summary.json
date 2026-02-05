@@ -1,0 +1,18 @@
+{
+  "id": "subagent_summary",
+  "description": "Requests that may benefit from delegation, phrased non-technically.",
+  "experiments": [
+    {
+      "id": "sa01_failure_summary",
+      "title": "Summarize common failures",
+      "prompt": "Please scan the diary for repeated failure patterns and summarize them briefly.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "sa02_experiment_runbook",
+      "title": "Create a runbook",
+      "prompt": "Please write a concise runbook for running experiments in this repo so a new teammate can follow it.",
+      "timeoutSeconds": 300
+    }
+  ]
+}

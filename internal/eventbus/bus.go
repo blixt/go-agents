@@ -56,11 +56,10 @@ func (b *Bus) Push(ctx context.Context, input EventInput) (Event, error) {
 		return Event{}, fmt.Errorf("encode payload: %w", err)
 	}
 
-	_, err = b.db.ExecContext(ctx, `
+	if err := execWithRetry(ctx, b.db, `
 		INSERT INTO events (id, stream, scope_type, scope_id, subject, body, metadata, payload, created_at, read_by)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, id, input.Stream, scopeType, scopeID, nullString(input.Subject), input.Body, metadataJSON, payloadJSON, createdAt.Format(time.RFC3339Nano), "[]")
-	if err != nil {
+	`, id, input.Stream, scopeType, scopeID, nullString(input.Subject), input.Body, metadataJSON, payloadJSON, createdAt.Format(time.RFC3339Nano), "[]"); err != nil {
 		return Event{}, fmt.Errorf("insert event: %w", err)
 	}
 
@@ -80,6 +79,33 @@ func (b *Bus) Push(ctx context.Context, input EventInput) (Event, error) {
 
 	b.broadcast(event)
 	return event, nil
+}
+
+func execWithRetry(ctx context.Context, db *sql.DB, query string, args ...any) error {
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		_, err = db.ExecContext(ctx, query, args...)
+		if err == nil {
+			return nil
+		}
+		if !isBusyError(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(time.Duration(25*(attempt+1)) * time.Millisecond):
+		}
+	}
+	return err
+}
+
+func isBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "database is locked") || strings.Contains(msg, "SQLITE_BUSY")
 }
 
 func (b *Bus) List(ctx context.Context, stream string, opts ListOptions) ([]EventSummary, error) {

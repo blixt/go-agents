@@ -1,0 +1,12 @@
+{
+  "id": "file_output",
+  "description": "Request likely to produce large output, phrased non-technically.",
+  "experiments": [
+    {
+      "id": "fo01_go_file_lines",
+      "title": "Largest Go files",
+      "prompt": "Please find the five largest Go source files in this project (by line count) and tell me their names and line counts.",
+      "timeoutSeconds": 300
+    }
+  ]
+}

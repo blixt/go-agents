@@ -16,7 +16,7 @@ import (
 	"github.com/flitsinc/go-agents/internal/config"
 	"github.com/flitsinc/go-agents/internal/engine"
 	"github.com/flitsinc/go-agents/internal/eventbus"
-	agentctx "github.com/flitsinc/go-agents/internal/prompt"
+	"github.com/flitsinc/go-agents/internal/karna"
 	"github.com/flitsinc/go-agents/internal/state"
 	"github.com/flitsinc/go-agents/internal/tasks"
 	"github.com/flitsinc/go-agents/internal/web"
@@ -29,6 +29,9 @@ func main() {
 	}
 	if err := os.MkdirAll(cfg.SnapshotDir, 0o755); err != nil {
 		log.Fatalf("create snapshot dir: %v", err)
+	}
+	if _, err := karna.EnsureHome(); err != nil {
+		log.Fatalf("ensure karna home: %v", err)
 	}
 
 	db, err := state.Open(cfg.DBPath)
@@ -59,9 +62,6 @@ func main() {
 	if llmClient != nil {
 		rt.LLM = llmClient
 		rt.LLMFactory = llmClient.NewSession
-		if rt.Context != nil {
-			rt.Context.Compactor = agentctx.NewLLMCompactor(llmClient)
-		}
 	}
 
 	_ = llmClient // reserved for future runtime wiring.

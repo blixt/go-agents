@@ -1,0 +1,36 @@
+{
+  "id": "self_improve_2",
+  "description": "Follow-up experiments to test reuse, helper discovery, step budgets, and file-first outputs.",
+  "experiments": [
+    {
+      "id": "si06_reuse_baseline",
+      "title": "Endpoint JSON (baseline)",
+      "prompt": "Please produce a concise JSON list of all HTTP endpoints this service exposes, with method and a short description. Save the full JSON to a file so it can be refreshed later.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "si07_reuse_refresh",
+      "title": "Endpoint JSON (refresh, minimal effort)",
+      "prompt": "Please refresh that endpoint JSON list and return it again, minimizing effort and time. Reuse any helpers or files you already created if possible.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "si08_helper_discovery",
+      "title": "JSON update task",
+      "prompt": "Please create or update a file named report.json that includes: current date, total number of Go files, and total number of TypeScript files in this repo. Give me a short summary after.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "si09_step_budget",
+      "title": "Step budget constraint",
+      "prompt": "Please list the five largest Go files by line count. You may use at most 3 exec calls total.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "si10_file_first_output",
+      "title": "File-first output",
+      "prompt": "Please list all files over 300 lines in this project. Put the full list in a file and give me a short summary with the top 5.",
+      "timeoutSeconds": 300
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "id": "self_improve",
+  "description": "Experiments focused on reuse, tool creation, and token economy with minimal prompting.",
+  "experiments": [
+    {
+      "id": "si01_endpoint_report",
+      "title": "Endpoint report (refreshable)",
+      "prompt": "Please make a concise JSON list of all HTTP endpoints this service exposes, with method and a short description of what each does. I will likely ask you to refresh this later, so try to make it easy to repeat.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "si02_endpoint_refresh",
+      "title": "Endpoint report (refresh)",
+      "prompt": "Please refresh that endpoint JSON list and return it again. Try to minimize effort and time.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "si03_large_files_to_file",
+      "title": "Large file inventory to file",
+      "prompt": "Please list all files over 300 lines in this project. Put the full list in a file and give me a short summary with the top 5.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "si04_todo_to_file",
+      "title": "TODO inventory to file",
+      "prompt": "Please find all TODO or FIXME comments in the project. Put the full list in a file and give me a short summary.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "si05_self_improve_helper",
+      "title": "Self-improvement helper",
+      "prompt": "If any step felt repetitive or likely to be repeated, please create a small reusable helper to make future requests faster. Then briefly explain what you created.",
+      "timeoutSeconds": 300
+    }
+  ]
+}

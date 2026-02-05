@@ -1,0 +1,12 @@
+{
+  "id": "long_horizon_probe",
+  "description": "Single long-horizon request phrased by a non-technical user.",
+  "experiments": [
+    {
+      "id": "lhp01_scoped_summary",
+      "title": "Checklist + apply (scoped)",
+      "prompt": "I'm worried this service might not shut down cleanly. Can you make a checklist you would use to review that, then apply it to just the main server entrypoint and the core runtime file, and tell me what you find? Keep it concise.",
+      "timeoutSeconds": 300
+    }
+  ]
+}

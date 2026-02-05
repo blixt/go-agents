@@ -1,0 +1,36 @@
+{
+  "id": "nontechnical_suite",
+  "description": "Non-technical, real-world requests to evaluate minimal prompting, reuse, and file-first outputs without biasing solutions.",
+  "experiments": [
+    {
+      "id": "nt01_project_intro",
+      "title": "Project intro with optional details",
+      "prompt": "I'm new here. In two or three short paragraphs, tell me what this project does and how to get it running. If there are lots of details, save them somewhere so I can read them later.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "nt02_project_intro_refresh",
+      "title": "Refresh intro details",
+      "prompt": "I might share that later. Please refresh or improve the detailed version you saved, and keep the short summary short.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "nt03_shutdown_risks",
+      "title": "Shutdown risk overview",
+      "prompt": "I'm worried about losing work if the server stops suddenly. Give me the five biggest risk areas and point me to where they're handled in the project.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "nt04_interface_inventory",
+      "title": "Ways to interact with the app",
+      "prompt": "List the ways a person or another system can interact with this app. Keep the full list somewhere; just show a short list here.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "nt05_running_requirements",
+      "title": "What is required to run",
+      "prompt": "Tell me everything I need to provide to run this app (keys, settings, files). If it's long, keep a full checklist somewhere and give me a short version here.",
+      "timeoutSeconds": 300
+    }
+  ]
+}

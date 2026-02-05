@@ -1,73 +1,56 @@
 package prompt
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/flitsinc/go-agents/internal/eventbus"
+	"github.com/flitsinc/go-agents/internal/karna"
 	"github.com/flitsinc/go-llms/content"
 )
 
-type Compactor interface {
-	Summarize(ctx context.Context, input string) (string, error)
-}
-
 type Manager struct {
-	Policy     StreamPolicy
-	Compactor  Compactor
-	MaxUpdates int
-	Summary    string
-	LastState  State
-
-	CacheHint string
-	CodeDir   string
+	Home string
 }
 
-func (m *Manager) BuildSystemPrompt(ctx context.Context, bus *eventbus.Bus) (content.Content, string, error) {
-	updates, err := CollectUpdates(ctx, bus, m.Policy)
+func (m *Manager) BuildSystemPrompt(ctx context.Context, _ *eventbus.Bus) (content.Content, string, error) {
+	text, err := BuildPrompt(ctx, m.Home)
 	if err != nil {
 		return nil, "", err
 	}
-	updatesText := RenderUpdates(updates)
+	return content.FromText(text), text, nil
+}
 
-	if m.MaxUpdates > 0 && len(updates.Events) > m.MaxUpdates && m.Compactor != nil {
-		summary, err := m.Compactor.Summarize(ctx, updatesText)
+func BuildPrompt(ctx context.Context, home string) (string, error) {
+	if home == "" {
+		var err error
+		home, err = karna.EnsureHome()
 		if err != nil {
-			return nil, "", err
-		}
-		m.Summary = summary
-		updatesText = ""
-	}
-
-	builder := NewBuilder()
-	builder.Add(Block{ID: "system", Priority: 100, Content: DefaultSystemPrompt})
-
-	if m.CodeDir != "" {
-		if docs, err := CollectCodeDocs(m.CodeDir); err == nil && docs != "" {
-			builder.Add(Block{ID: "code_apis", Priority: 90, Content: fmt.Sprintf("Code APIs:\n%s", docs)})
+			return "", err
 		}
 	}
-
-	if m.Summary != "" {
-		builder.Add(Block{ID: "summary", Priority: 80, Content: fmt.Sprintf("Summary:\n%s", m.Summary)})
+	promptPath := filepath.Join(home, "PROMPT.ts")
+	cmd := exec.CommandContext(ctx, "bun", promptPath)
+	cmd.Dir = home
+	cmd.Env = append(os.Environ(), fmt.Sprintf("KARNA_HOME=%s", home))
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		details := strings.TrimSpace(stderr.String())
+		if details != "" {
+			return "", fmt.Errorf("prompt builder failed: %s", details)
+		}
+		return "", fmt.Errorf("prompt builder failed: %w", err)
 	}
-	if updatesText != "" {
-		builder.Add(Block{ID: "updates", Priority: 60, Content: fmt.Sprintf("Updates:\n%s", updatesText)})
+	text := strings.TrimSpace(string(out))
+	if text == "" {
+		return "", fmt.Errorf("prompt builder returned empty prompt")
 	}
-
-	text := strings.TrimSpace(builder.Build())
-	prompt := content.FromText(text)
-	if m.CacheHint != "" {
-		prompt = append(prompt, &content.CacheHint{Duration: m.CacheHint})
-	}
-	return prompt, text, nil
-}
-
-func (m *Manager) Snapshot(state State) {
-	m.LastState = state
-}
-
-func (m *Manager) Diff(state State) State {
-	return Diff(m.LastState, state)
+	return text, nil
 }

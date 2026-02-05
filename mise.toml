@@ -13,7 +13,7 @@ run = [
 [tasks.dev]
 description = "Auto-reload agentd on changes"
 run = [
-  "docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build --remove-orphans",
+  "watchexec -r -w . -w ../go-llms -- docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build --remove-orphans",
 ]
 
 [tasks.test]

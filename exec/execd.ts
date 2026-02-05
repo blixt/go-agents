@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 
 import { join, resolve } from "path"
-import { tmpdir } from "os"
-import { mkdir, symlink } from "fs/promises"
+import { homedir, tmpdir } from "os"
+import { mkdir, readdir, stat, symlink, copyFile } from "fs/promises"
 
 type Task = {
   id: string
@@ -18,6 +18,9 @@ type ConfigFile = {
 }
 
 const bootstrapPath = resolve(import.meta.dir, "bootstrap.ts")
+const bunBin = process.execPath || "bun"
+const KARNA_HOME = Bun.env.KARNA_HOME || join(homedir(), ".karna")
+const TEMPLATE_ROOT = resolve(import.meta.dir, "..", "template")
 const once = process.argv.includes("--once")
 
 function getArg(name: string): string | undefined {
@@ -99,6 +102,37 @@ async function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+async function copyDir(src: string, dest: string) {
+  await mkdir(dest, { recursive: true })
+  const entries = await readdir(src, { withFileTypes: true })
+  for (const entry of entries) {
+    const from = join(src, entry.name)
+    const to = join(dest, entry.name)
+    if (entry.isDirectory()) {
+      await copyDir(from, to)
+    } else if (entry.isFile()) {
+      if (entry.name.endsWith(".go")) {
+        continue
+      }
+      await mkdir(join(to, ".."), { recursive: true })
+      await copyFile(from, to)
+    }
+  }
+}
+
+async function ensureKarnaHome() {
+  try {
+    const info = await stat(KARNA_HOME)
+    if (!info.isDirectory()) {
+      throw new Error(`${KARNA_HOME} exists and is not a directory`)
+    }
+    return
+  } catch (err: any) {
+    if (err?.code !== "ENOENT") throw err
+  }
+  await copyDir(TEMPLATE_ROOT, KARNA_HOME)
+}
+
 async function claimTasks(limit: number): Promise<Task[]> {
   const url = `${API_URL}/api/tasks/queue?type=exec&limit=${limit}`
   const res = await fetch(url)
@@ -159,11 +193,17 @@ async function runTask(task: Task) {
   await mkdir(execDir, { recursive: true })
   const nodeModulesDir = join(execDir, "node_modules")
   await mkdir(nodeModulesDir, { recursive: true })
-  const repoRoot = process.cwd()
-  const codeSource = join(repoRoot, "code")
-  const codeTarget = join(nodeModulesDir, "code")
+  const toolsSource = join(KARNA_HOME, "tools")
+  const coreSource = join(KARNA_HOME, "core")
+  const toolsTarget = join(nodeModulesDir, "tools")
+  const coreTarget = join(nodeModulesDir, "core")
   try {
-    await symlink(codeSource, codeTarget, "dir")
+    await symlink(toolsSource, toolsTarget, "dir")
+  } catch {
+    // ignore if already exists or symlink not supported
+  }
+  try {
+    await symlink(coreSource, coreTarget, "dir")
   } catch {
     // ignore if already exists or symlink not supported
   }
@@ -180,7 +220,7 @@ async function runTask(task: Task) {
   await sendUpdate(task.id, "start", { session_id: sessionId })
 
   const cmd = [
-    "bun",
+    bunBin,
     bootstrapPath,
     "--code-file",
     codeFile,
@@ -194,10 +234,12 @@ async function runTask(task: Task) {
 
   const proc = Bun.spawn({
     cmd,
+    cwd: KARNA_HOME,
     stdout: "pipe",
     stderr: "pipe",
     env: {
       ...process.env,
+      KARNA_HOME,
     },
   })
 
@@ -228,6 +270,7 @@ async function runTask(task: Task) {
 }
 
 async function main() {
+  await ensureKarnaHome()
   startWebhookServer()
   const running = new Set<Promise<void>>()
   while (true) {

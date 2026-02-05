@@ -5,11 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
+
+	"github.com/flitsinc/go-agents/internal/karna"
 )
 
 type Task struct {
@@ -46,7 +50,8 @@ func (w *Worker) PollOnce(ctx context.Context) ([]Task, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("queue status %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("queue status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	var tasks []Task
 	if err := json.NewDecoder(resp.Body).Decode(&tasks); err != nil {
@@ -73,6 +78,20 @@ func (w *Worker) RunTask(ctx context.Context, task Task) error {
 		return err
 	}
 	defer os.RemoveAll(tmpDir)
+
+	home, err := karna.EnsureHome()
+	if err != nil {
+		return err
+	}
+
+	nodeModules := filepath.Join(tmpDir, "node_modules")
+	if err := os.MkdirAll(nodeModules, 0o755); err != nil {
+		return err
+	}
+	toolsSource := filepath.Join(home, "tools")
+	coreSource := filepath.Join(home, "core")
+	_ = os.Symlink(toolsSource, filepath.Join(nodeModules, "tools"))
+	_ = os.Symlink(coreSource, filepath.Join(nodeModules, "core"))
 
 	codePath := filepath.Join(tmpDir, "task.ts")
 	if err := os.WriteFile(codePath, []byte(code), 0o600); err != nil {
@@ -103,7 +122,11 @@ func (w *Worker) RunTask(ctx context.Context, task Task) error {
 
 	_ = w.sendUpdate(ctx, task.ID, "start", map[string]any{"session_id": id})
 
-	args := []string{"bun", bootstrap, "--code-file", codePath, "--result-path", resultPath}
+	bunPath, err := exec.LookPath("bun")
+	if err != nil {
+		bunPath = "bun"
+	}
+	args := []string{bunPath, bootstrap, "--code-file", codePath, "--result-path", resultPath}
 	if snapshotPath != "" {
 		args = append(args, "--snapshot-in", snapshotPath, "--snapshot-out", snapshotPath)
 	}
@@ -111,6 +134,8 @@ func (w *Worker) RunTask(ctx context.Context, task Task) error {
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
+	cmd.Dir = home
+	cmd.Env = append(os.Environ(), fmt.Sprintf("KARNA_HOME=%s", home))
 	if err := cmd.Run(); err != nil {
 		_ = w.sendUpdate(ctx, task.ID, "exit", map[string]any{"exit_code": 1})
 		return w.sendFail(ctx, task.ID, err.Error())

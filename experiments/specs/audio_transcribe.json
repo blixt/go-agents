@@ -1,0 +1,12 @@
+{
+  "id": "audio_transcribe",
+  "description": "Audio transcription request phrased non-technically.",
+  "experiments": [
+    {
+      "id": "at01_transcribe_voice_sample",
+      "title": "Transcribe audio from a link",
+      "prompt": "Here's a link to an audio file: https://raw.githubusercontent.com/pdx-cs-sound/wavs/main/voice.wav. Please transcribe it for me.",
+      "timeoutSeconds": 600
+    }
+  ]
+}

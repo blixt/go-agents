@@ -292,16 +292,14 @@ func (m *Manager) RecordUpdate(ctx context.Context, taskID, kind string, payload
 		return fmt.Errorf("encode payload: %w", err)
 	}
 
-	_, err = m.db.ExecContext(ctx, `
+	if err := execWithRetry(ctx, m.db, `
 		INSERT INTO task_updates (id, task_id, kind, payload, created_at)
 		VALUES (?, ?, ?, ?, ?)
-	`, id, taskID, kind, payloadJSON, createdAt.Format(time.RFC3339Nano))
-	if err != nil {
+	`, id, taskID, kind, payloadJSON, createdAt.Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("insert task update: %w", err)
 	}
 
-	_, err = m.db.ExecContext(ctx, `UPDATE tasks SET updated_at = ? WHERE id = ?`, createdAt.Format(time.RFC3339Nano), taskID)
-	if err != nil {
+	if err := execWithRetry(ctx, m.db, `UPDATE tasks SET updated_at = ? WHERE id = ?`, createdAt.Format(time.RFC3339Nano), taskID); err != nil {
 		return fmt.Errorf("update task timestamp: %w", err)
 	}
 
@@ -622,11 +620,13 @@ func (m *Manager) ClaimQueued(ctx context.Context, taskType string, limit int) (
 		if _, err := tx.ExecContext(ctx, `UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?`, StatusRunning, updatedAt, task.ID); err != nil {
 			return nil, fmt.Errorf("mark running: %w", err)
 		}
-		_ = m.RecordUpdate(ctx, task.ID, "started", map[string]any{"status": StatusRunning})
 	}
 
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit claim: %w", err)
+	}
+	for _, task := range tasks {
+		_ = m.RecordUpdate(context.Background(), task.ID, "started", map[string]any{"status": StatusRunning})
 	}
 	return tasks, nil
 }
@@ -867,4 +867,31 @@ func extractError(payload map[string]any) any {
 		return reason
 	}
 	return nil
+}
+
+func execWithRetry(ctx context.Context, db *sql.DB, query string, args ...any) error {
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		_, err = db.ExecContext(ctx, query, args...)
+		if err == nil {
+			return nil
+		}
+		if !isBusyError(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(time.Duration(25*(attempt+1)) * time.Millisecond):
+		}
+	}
+	return err
+}
+
+func isBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "database is locked") || strings.Contains(msg, "SQLITE_BUSY")
 }
