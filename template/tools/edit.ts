@@ -19,3 +19,18 @@ export async function replaceText(path: string, oldText: string, newText: string
   await Bun.write(path, updated)
   return { replaced: 1 }
 }
+
+export async function replaceAllText(path: string, oldText: string, newText: string): Promise<EditResult> {
+  const file = Bun.file(path)
+  if (!(await file.exists())) {
+    throw new Error(`File not found: ${path}`)
+  }
+  const content = await file.text()
+  if (!content.includes(oldText)) {
+    throw new Error(`Old text not found in ${path}`)
+  }
+  const count = content.split(oldText).length - 1
+  const updated = content.split(oldText).join(newText)
+  await Bun.write(path, updated)
+  return { replaced: count }
+}

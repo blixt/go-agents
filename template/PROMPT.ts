@@ -42,13 +42,16 @@ State + results:
 - The bootstrap saves a snapshot of globalThis.state and a result JSON payload.
 
 Tools in ~/.karna:
-- import { exec, run } from "tools/shell.ts" for shell commands.
-- import { readText, readJSON } from "tools/read.ts" for file reads.
-- import { writeText, writeJSON, appendText } from "tools/write.ts" for file writes.
-- import { replaceText } from "tools/edit.ts" for precise edits.
+- You can use Bun's built-ins directly: Bun.$ for shell, Bun.spawn for more control,
+  Bun.file(...) and Bun.write(...) for file I/O.
+- If you want a thin wrapper, import { $, sh } from "tools/shell.ts".
+  sh supports pipelines via arrays and optional stdin for piping data in.
+- import { readText, readJSON } from "tools/read.ts" for file reads (thin wrappers around Bun.file).
+- import { writeText, writeJSON, appendText } from "tools/write.ts" for file writes (thin wrappers around Bun.write).
+- import { replaceText, replaceAllText } from "tools/edit.ts" for precise or bulk search/replace.
 - You can create your own helpers under tools/ or core/ as needed.
 
-Shell helpers:
+Shell helpers and CLI tools:
 - Use jq for JSON transformations and filtering when running shell commands.
 - Use ag (the silver searcher) for fast search across files.
 
