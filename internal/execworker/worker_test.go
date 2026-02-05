@@ -9,7 +9,6 @@ import (
 
 	"github.com/flitsinc/go-agents/internal/api"
 	"github.com/flitsinc/go-agents/internal/eventbus"
-	"github.com/flitsinc/go-agents/internal/state"
 	"github.com/flitsinc/go-agents/internal/tasks"
 	"github.com/flitsinc/go-agents/internal/testutil"
 )
@@ -24,8 +23,7 @@ func TestWorkerPollOnce(t *testing.T) {
 
 	bus := eventbus.NewBus(db)
 	mgr := tasks.NewManager(db, bus)
-	store := state.NewStore(db)
-	server := &api.Server{Tasks: mgr, Bus: bus, Store: store}
+	server := &api.Server{Tasks: mgr, Bus: bus}
 	client := testutil.NewInProcessClient(server.Handler())
 
 	code := "globalThis.result = { ok: true };"

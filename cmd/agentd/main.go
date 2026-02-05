@@ -40,7 +40,6 @@ func main() {
 	}
 	defer db.Close()
 
-	store := state.NewStore(db)
 	bus := eventbus.NewBus(db)
 	manager := tasks.NewManager(db, bus)
 	rt := engine.NewRuntime(bus, manager, nil)
@@ -81,42 +80,10 @@ func main() {
 	serverCtx, serverCancel := context.WithCancel(context.Background())
 	rt.Start(serverCtx)
 
-	restarter := &engine.Restarter{
-		Listener: listener,
-		Args:     os.Args,
-		Env:      os.Environ(),
-	}
-	restartFn := func() error {
-		if err := restarter.Restart(); err != nil {
-			return err
-		}
-		go func() {
-			time.Sleep(750 * time.Millisecond)
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = httpServer.Shutdown(ctx)
-			os.Exit(0)
-		}()
-		return nil
-	}
-
 	apiServer := &api.Server{
-		Tasks:        manager,
-		Bus:          bus,
-		Store:        store,
-		Runtime:      rt,
-		Restart:      restartFn,
-		RestartToken: cfg.RestartToken,
-		StartedAt:    time.Now().UTC(),
-		Info: api.DiagnosticsInfo{
-			HTTPAddr:    cfg.HTTPAddr,
-			DataDir:     cfg.DataDir,
-			DBPath:      cfg.DBPath,
-			SnapshotDir: cfg.SnapshotDir,
-			WebDir:      cfg.WebDir,
-			LLMProvider: cfg.LLMProvider,
-			LLMModel:    cfg.LLMModel,
-		},
+		Tasks:   manager,
+		Bus:     bus,
+		Runtime: rt,
 	}
 	webServer := &web.Server{Dir: cfg.WebDir}
 

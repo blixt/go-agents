@@ -13,7 +13,6 @@ import (
 	"github.com/flitsinc/go-agents/internal/ai"
 	"github.com/flitsinc/go-agents/internal/engine"
 	"github.com/flitsinc/go-agents/internal/eventbus"
-	"github.com/flitsinc/go-agents/internal/state"
 	"github.com/flitsinc/go-agents/internal/tasks"
 	"github.com/flitsinc/go-agents/internal/testutil"
 	"github.com/flitsinc/go-llms/content"
@@ -21,72 +20,37 @@ import (
 	llmtools "github.com/flitsinc/go-llms/tools"
 )
 
-func TestServerTasksAndStreams(t *testing.T) {
+func TestServerStateAndQueue(t *testing.T) {
 	db, closeFn := testutil.OpenTestDB(t)
 	defer closeFn()
 
 	bus := eventbus.NewBus(db)
 	mgr := tasks.NewManager(db, bus)
-	store := state.NewStore(db)
-	restartCalled := false
 
 	runtimeClient := &ai.Client{LLM: llms.New(&apiFakeProvider{})}
 	rt := engine.NewRuntime(bus, mgr, runtimeClient)
 
-	server := &Server{Tasks: mgr, Bus: bus, Store: store, Runtime: rt, Restart: func() error { restartCalled = true; return nil }, RestartToken: "token"}
+	server := &Server{Tasks: mgr, Bus: bus, Runtime: rt}
 	h := server.Handler()
 	client := testutil.NewInProcessClient(h)
 
-	// Create a task.
-	createBody := map[string]any{
-		"type":  "exec",
-		"owner": "tester",
-		"payload": map[string]any{
+	// Create a task directly.
+	task, err := mgr.Spawn(context.Background(), tasks.Spec{
+		Type:  "exec",
+		Owner: "operator",
+		Payload: map[string]any{
 			"code": "globalThis.result = 1",
 		},
-	}
-	resp := doJSON(t, client, "POST", "/api/tasks", createBody)
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("unexpected status: %d body=%s", resp.StatusCode, readBody(t, resp))
-	}
-	var task tasks.Task
-	decodeJSONResponse(t, resp, &task)
-	if task.ID == "" {
-		t.Fatalf("expected task id")
-	}
-
-	// List tasks.
-	resp = doJSON(t, client, "GET", "/api/tasks?limit=5", nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("list status: %d body=%s", resp.StatusCode, readBody(t, resp))
-	}
-	var list []tasks.Task
-	decodeJSONResponse(t, resp, &list)
-	if len(list) == 0 {
-		t.Fatalf("expected task list")
-	}
-
-	// Get task.
-	resp = doJSON(t, client, "GET", "/api/tasks/"+task.ID, nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("get status: %d body=%s", resp.StatusCode, readBody(t, resp))
+	})
+	if err != nil {
+		t.Fatalf("spawn task: %v", err)
 	}
 
 	// Post update.
 	updatePayload := map[string]any{"kind": "progress", "payload": map[string]any{"pct": 10}}
-	resp = doJSON(t, client, "POST", "/api/tasks/"+task.ID+"/updates", updatePayload)
+	resp := doJSON(t, client, "POST", "/api/tasks/"+task.ID+"/updates", updatePayload)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("update status: %d body=%s", resp.StatusCode, readBody(t, resp))
-	}
-
-	resp = doJSON(t, client, "GET", "/api/tasks/"+task.ID+"/updates?limit=5", nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("updates list status: %d body=%s", resp.StatusCode, readBody(t, resp))
-	}
-	var updates []tasks.Update
-	decodeJSONResponse(t, resp, &updates)
-	if len(updates) == 0 {
-		t.Fatalf("expected updates")
 	}
 
 	// Complete task.
@@ -106,94 +70,21 @@ func TestServerTasksAndStreams(t *testing.T) {
 		t.Fatalf("expected no queued tasks")
 	}
 
-	// Events endpoint.
-	resp = doJSON(t, client, "POST", "/api/events", map[string]any{
-		"stream":  "errors",
-		"subject": "oops",
-		"body":    "failed",
-	})
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("events status: %d body=%s", resp.StatusCode, readBody(t, resp))
-	}
-
-	// Streams list/read/ack
-	resp = doJSON(t, client, "GET", "/api/streams/errors?limit=5", nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("streams list status: %d body=%s", resp.StatusCode, readBody(t, resp))
-	}
-	var summaries []eventbus.EventSummary
-	decodeJSONResponse(t, resp, &summaries)
-	if len(summaries) == 0 {
-		t.Fatalf("expected stream items")
-	}
-
-	resp = doJSON(t, client, "POST", "/api/streams/errors/read", map[string]any{"ids": []string{summaries[0].ID}, "reader": "tester"})
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("streams read status: %d body=%s", resp.StatusCode, readBody(t, resp))
-	}
-
-	resp = doJSON(t, client, "POST", "/api/streams/errors/ack", map[string]any{"ids": []string{summaries[0].ID}, "reader": "tester"})
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("streams ack status: %d body=%s", resp.StatusCode, readBody(t, resp))
-	}
-
-	// Restart endpoint with token.
-	req, _ := http.NewRequest(http.MethodPost, "http://in-process/api/admin/restart", nil)
-	req.Header.Set("X-Restart-Token", "token")
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("restart request: %v", err)
-	}
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("restart status: %d body=%s", resp.StatusCode, readBody(t, resp))
-	}
-	if !restartCalled {
-		t.Fatalf("expected restart to be called")
-	}
-
-	// Agents endpoint.
-	resp = doJSON(t, client, "POST", "/api/agents", map[string]any{"profile": "operator", "status": "idle"})
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("agents create status: %d body=%s", resp.StatusCode, readBody(t, resp))
-	}
-	resp = doJSON(t, client, "GET", "/api/agents?limit=5", nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("agents list status: %d body=%s", resp.StatusCode, readBody(t, resp))
-	}
-
-	// Actions endpoint.
-	resp = doJSON(t, client, "POST", "/api/actions", map[string]any{"content": "run", "status": "queued"})
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("actions create status: %d body=%s", resp.StatusCode, readBody(t, resp))
-	}
-	resp = doJSON(t, client, "GET", "/api/actions?limit=5", nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("actions list status: %d body=%s", resp.StatusCode, readBody(t, resp))
-	}
-
-	resp = doJSON(t, client, "GET", "/api/prompt", nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("prompt status: %d body=%s", resp.StatusCode, readBody(t, resp))
-	}
-
-	resp = doJSON(t, client, "GET", "/api/sessions/operator", nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("session status: %d body=%s", resp.StatusCode, readBody(t, resp))
-	}
-
+	// Agent run enqueues work via the event bus.
 	resp = doJSON(t, client, "POST", "/api/agents/operator/run", map[string]any{"message": "hello", "source": "human"})
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("agent run status: %d body=%s", resp.StatusCode, readBody(t, resp))
 	}
 
-	resp = doJSON(t, client, "GET", "/api/sessions/operator", nil)
+	// State snapshot.
+	resp = doJSON(t, client, "GET", "/api/state?tasks=10&updates=10&streams=10", nil)
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("session status: %d body=%s", resp.StatusCode, readBody(t, resp))
+		t.Fatalf("state status: %d body=%s", resp.StatusCode, readBody(t, resp))
 	}
-
-	resp = doJSON(t, client, "GET", "/api/diagnostics", nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("diagnostics status: %d body=%s", resp.StatusCode, readBody(t, resp))
+	var snapshot map[string]any
+	decodeJSONResponse(t, resp, &snapshot)
+	if snapshot["tasks"] == nil {
+		t.Fatalf("expected tasks in snapshot")
 	}
 }
 
@@ -203,9 +94,8 @@ func TestServerStreamSubscribe(t *testing.T) {
 
 	bus := eventbus.NewBus(db)
 	mgr := tasks.NewManager(db, bus)
-	store := state.NewStore(db)
 	rt := engine.NewRuntime(bus, mgr, nil)
-	server := &Server{Tasks: mgr, Bus: bus, Store: store, Runtime: rt}
+	server := &Server{Tasks: mgr, Bus: bus, Runtime: rt}
 	mux := server.Handler()
 
 	req := testutil.NewRequest(http.MethodGet, "/api/streams/subscribe?streams=task_output", nil)

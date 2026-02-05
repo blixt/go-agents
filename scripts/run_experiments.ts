@@ -55,6 +55,12 @@ const postJSON = (base: string, path: string, body: any) =>
     body: JSON.stringify(body),
   });
 
+const fetchState = (base: string, params?: string) =>
+  apiFetch(
+    base,
+    `/api/state?tasks=200&updates=2000&streams=2000${params ? `&${params}` : ""}`,
+  );
+
 const normalizeISO = (value: string) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
@@ -105,7 +111,7 @@ const computeExecMetrics = (execTasks: any[]) => {
 
   const reuseRegex = new RegExp('from\\s+["\\\'](code|tools|core)/');
   const writeRegex = new RegExp(
-    "writeText\\(|appendText\\(|writeFile\\(|fs\\.writeFile|\\bcat\\s+[^\\n>]+\\s*>|\\btee\\b|\\bprintf\\b.*>",
+    "Bun\\.write\\(|writeText\\(|appendText\\(|writeFile\\(|fs\\.writeFile|\\bcat\\s+[^\\n>]+\\s*>|\\btee\\b|\\bprintf\\b.*>",
   );
   const toolCreateRegex = new RegExp("(code|tools|core|exec|scripts)/[A-Za-z0-9._/-]+");
 
@@ -344,12 +350,15 @@ const main = async () => {
     });
 
     let llmTask: any = null;
+    let latestState: any = null;
     for (let i = 0; i < 60; i++) {
-      const listResp = await apiFetch(
-        base,
-        "/api/tasks?owner=operator&type=llm&limit=5",
+      const stateResp = await fetchState(base);
+      latestState = stateResp.json;
+      const tasks = Array.isArray(latestState?.tasks) ? latestState.tasks : [];
+      const llmCandidates = tasks.filter(
+        (task: any) => task.type === "llm" && task.owner === "operator",
       );
-      llmTask = findNewestTask(listResp.json, startedAt);
+      llmTask = findNewestTask(llmCandidates, startedAt);
       if (llmTask) break;
       await sleep(500);
     }
@@ -365,8 +374,13 @@ const main = async () => {
     const deadline = Date.now() + timeout;
     let llmTaskFinal = llmTask;
     while (Date.now() < deadline) {
-      const taskResp = await apiFetch(base, `/api/tasks/${llmTask.id}`);
-      llmTaskFinal = taskResp.json;
+      const stateResp = await fetchState(base);
+      latestState = stateResp.json;
+      const tasks = Array.isArray(latestState?.tasks) ? latestState.tasks : [];
+      const candidate = tasks.find((task: any) => task.id === llmTask.id);
+      if (candidate) {
+        llmTaskFinal = candidate;
+      }
       if (
         llmTaskFinal &&
         ["completed", "failed", "cancelled"].includes(llmTaskFinal.status)
@@ -382,53 +396,33 @@ const main = async () => {
       await postJSON(base, `/api/tasks/${llmTask.id}/cancel`, {
         reason: "experiment timeout",
       });
-      const taskResp = await apiFetch(base, `/api/tasks/${llmTask.id}`);
-      llmTaskFinal = taskResp.json;
+      const stateResp = await fetchState(base);
+      latestState = stateResp.json;
+      const tasks = Array.isArray(latestState?.tasks) ? latestState.tasks : [];
+      const candidate = tasks.find((task: any) => task.id === llmTask.id);
+      if (candidate) {
+        llmTaskFinal = candidate;
+      }
     }
 
-    const updatesResp = await apiFetch(
-      base,
-      `/api/tasks/${llmTask.id}/updates?limit=2000`,
-    );
-    const sessionResp = await apiFetch(base, "/api/sessions/operator");
+    const updatesByTask = latestState?.updates || {};
+    const updatesForLLM = updatesByTask[llmTask.id] || [];
+    const sessions = latestState?.sessions || {};
+    const session = sessions.operator || null;
 
-    const execListResp = await apiFetch(base, "/api/tasks?type=exec&limit=1000");
-    const execTasks = Array.isArray(execListResp.json)
-      ? execListResp.json
-      : [];
+    const execTasks = (latestState?.tasks || []).filter(
+      (task: any) => task.type === "exec",
+    );
     const execTasksForRun = filterExecTasks(execTasks, llmTask.id, startedAt);
     const metrics = computeExecMetrics(execTasksForRun);
-    const execDetails: any[] = [];
-    for (const task of execTasksForRun) {
-      const detailResp = await apiFetch(base, `/api/tasks/${task.id}`);
-      const updates = await apiFetch(
-        base,
-        `/api/tasks/${task.id}/updates?limit=2000`,
-      );
-      execDetails.push({
-        task: detailResp.json,
-        updates: updates.json,
-      });
-    }
+    const execDetails = execTasksForRun.map((task: any) => ({
+      task,
+      updates: updatesByTask[task.id] || [],
+    }));
 
-    const signalsListResp = await apiFetch(
-      base,
-      "/api/streams/signals?limit=2000&order=desc&reader=operator",
-    );
-    const signalSummaries = Array.isArray(signalsListResp.json)
-      ? signalsListResp.json
-      : [];
-    const signalIDs = signalSummaries.map((evt: any) => evt.id).filter(Boolean);
-    const signalsReadResp =
-      signalIDs.length > 0
-        ? await postJSON(base, "/api/streams/signals/read", {
-            ids: signalIDs,
-            reader: "operator",
-          })
-        : { json: [] };
     const startedMs = startedAt.getTime();
-    const signals = Array.isArray(signalsReadResp.json)
-      ? signalsReadResp.json.filter((evt: any) => {
+    const signals = Array.isArray(latestState?.streams?.signals)
+      ? latestState.streams.signals.filter((evt: any) => {
           const ts = normalizeISO(evt.created_at);
           return ts && ts.getTime() >= startedMs - 1000;
         })
@@ -436,15 +430,15 @@ const main = async () => {
 
     const debug = parseDebugUsage(signals);
     const llmMessages = extractDebugMessages(signals);
-    const llmText = extractLLMText(updatesResp.json);
-    const llmToolInputs = extractToolInputs(updatesResp.json);
-    const llmToolDeltas = extractToolDeltas(updatesResp.json);
+    const llmText = extractLLMText(updatesForLLM);
+    const llmToolInputs = extractToolInputs(updatesForLLM);
+    const llmToolDeltas = extractToolDeltas(updatesForLLM);
     const llmToolDeltaStats = summarizeToolDeltas(llmToolDeltas);
 
     await writeJSON(join(expDir, "result.json"), {
       llm_task: llmTaskFinal,
-      updates: updatesResp.json,
-      session: sessionResp.json,
+      updates: updatesForLLM,
+      session,
       exec_tasks: execDetails,
       metrics,
       llm_text: llmText,

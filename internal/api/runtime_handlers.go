@@ -51,30 +51,3 @@ func (s *Server) handleAgentItem(w http.ResponseWriter, r *http.Request) {
 		"recipient": agentID,
 	})
 }
-
-func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeMethodNotAllowed(w)
-		return
-	}
-	if s.Runtime == nil {
-		writeError(w, http.StatusInternalServerError, errNotFound("runtime"))
-		return
-	}
-	path := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
-	agentID := strings.Trim(path, "/")
-	if agentID == "" {
-		writeError(w, http.StatusNotFound, errNotFound("session"))
-		return
-	}
-	session, ok := s.Runtime.GetSession(agentID)
-	if !ok {
-		var err error
-		session, err = s.Runtime.BuildSession(r.Context(), agentID)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-	}
-	writeJSON(w, http.StatusOK, session)
-}

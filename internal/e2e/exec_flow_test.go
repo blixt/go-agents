@@ -12,7 +12,6 @@ import (
 
 	"github.com/flitsinc/go-agents/internal/api"
 	"github.com/flitsinc/go-agents/internal/eventbus"
-	"github.com/flitsinc/go-agents/internal/state"
 	"github.com/flitsinc/go-agents/internal/tasks"
 	"github.com/flitsinc/go-agents/internal/testutil"
 )
@@ -35,22 +34,16 @@ func TestExecFlowEndToEnd(t *testing.T) {
 
 	bus := eventbus.NewBus(db)
 	mgr := tasks.NewManager(db, bus)
-	store := state.NewStore(db)
-	server := &api.Server{Tasks: mgr, Bus: bus, Store: store}
+	server := &api.Server{Tasks: mgr, Bus: bus}
 	client := testutil.NewInProcessClient(server.Handler())
 
 	code := "globalThis.state.count = (globalThis.state.count || 0) + 1; globalThis.result = { count: globalThis.state.count };"
-	createResp := doJSON(t, client, "POST", "/api/tasks", map[string]any{
-		"type":    "exec",
-		"payload": map[string]any{"code": code, "id": "session-1"},
+	created, err := mgr.Spawn(context.Background(), tasks.Spec{
+		Type:    "exec",
+		Payload: map[string]any{"code": code, "id": "session-1"},
 	})
-	if createResp.StatusCode != http.StatusCreated {
-		t.Fatalf("create status: %d", createResp.StatusCode)
-	}
-	var created taskResponse
-	decodeJSON(t, createResp, &created)
-	if created.ID == "" {
-		t.Fatalf("expected task id")
+	if err != nil {
+		t.Fatalf("spawn task: %v", err)
 	}
 
 	queueResp := doJSON(t, client, "GET", "/api/tasks/queue?type=exec&limit=1", nil)
@@ -94,14 +87,25 @@ func TestExecFlowEndToEnd(t *testing.T) {
 		t.Fatalf("complete status: %d", completeResp.StatusCode)
 	}
 
-	finalResp := doJSON(t, client, "GET", "/api/tasks/"+created.ID, nil)
+	finalResp := doJSON(t, client, "GET", "/api/state?tasks=10&updates=10&streams=10", nil)
 	if finalResp.StatusCode != http.StatusOK {
-		t.Fatalf("get status: %d", finalResp.StatusCode)
+		t.Fatalf("state status: %d", finalResp.StatusCode)
 	}
-	var final taskResponse
-	decodeJSON(t, finalResp, &final)
-	if final.Status != string(tasks.StatusCompleted) {
-		t.Fatalf("expected completed status")
+	var state map[string]any
+	decodeJSON(t, finalResp, &state)
+	items, _ := state["tasks"].([]any)
+	found := false
+	for _, item := range items {
+		task, _ := item.(map[string]any)
+		if task["id"] == created.ID {
+			if task["status"] != string(tasks.StatusCompleted) {
+				t.Fatalf("expected completed status")
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected task in state")
 	}
 }
 
