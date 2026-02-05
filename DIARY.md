@@ -460,3 +460,29 @@ Experiment log (new prompt system)
   - The agent now self-creates tools in `~/.karna/tools` without prompting, which is promising.
   - Some tools are over-broad and not tied to actual needs (helpers include HTTP, CSV, etc. without use).
   - Endpoint extraction is still unreliable; agent tends to “infer” endpoints rather than parse routes precisely.
+
+## 2026-02-05
+Experiment log
+- Simplified API surface to match the realtime UI + experiment needs.
+  - Kept: /api/state (snapshot), /api/streams/subscribe (SSE), /api/agents/{id}/run, /api/tasks/queue (exec worker), /api/tasks/{id}/updates|complete|fail|send|cancel|kill.
+  - Removed: /api/tasks list/create/get, /api/events, /api/prompt, /api/diagnostics, /api/sessions, /api/streams list/read/ack, /api/streams/ws, /api/actions, /api/agents list/create, /api/admin/restart.
+  - Updated the experiment runner to use /api/state only.
+
+- Experiment: file_output (largest Go files) after API simplification.
+  Hypothesis: Agent will create an LLM task, use exec, and return correct Go file counts.
+  Test: ran `bun scripts/run_experiments.ts experiments/specs/file_output.json`.
+  Result: LLM task not found. Root cause: PROMPT.ts had backticks inside the prompt string (e.g., `$.env()`), which caused the Bun prompt builder to fail; HandleMessage exited before spawning tasks.
+  Fix: removed backticks from PROMPT.ts, then copied the updated file into the running container at /root/.karna/PROMPT.ts.
+  Takeaway: prompt build failures silently prevent task creation; we should surface prompt build errors or add a preflight check. Also note that template updates do not reach existing ~/.karna without a rebuild or manual sync.
+
+- Experiment: file_output re-run with prompt build fixed.
+  Hypothesis: With a valid prompt, the agent will use exec to compute Go file sizes.
+  Result: LLM task completed and used exec, but reported “no Go files” because it ran find in ~/.karna (default working directory), not the repo. Output was incorrect.
+  Takeaway: Success path now executes tools, but the default cwd is wrong for repo inspection. We need either prompt guidance to cd into /app/go-agents when asked about “this project,” or a small helper that resolves project root.
+  What worked: LLM spawned exec tasks and streamed tool deltas; wait_seconds usage appeared in tool calls.
+  What didn’t: The agent did not infer the repo location; it defaulted to ~/.karna.
+
+Next replication targets (post-API simplification)
+- Re-run a “health report” style request, ensuring the prompt builds and the agent can reach the correct data sources.
+- Re-run a task-cancellation wake scenario and verify task_health + wake behavior still functions with the new API surface.
+- Add a minimal “project root” hint (or helper) and re-run file_output to confirm correct file discovery.

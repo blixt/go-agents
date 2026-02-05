@@ -43,8 +43,8 @@ State + results:
 
 Tools in ~/.karna:
 - Use Bun built-ins directly:
-  - Bun.$ for shell commands (template literal). It supports `.text()`, `.json()`, `.arrayBuffer()`, `.blob()`,
-    and utilities like `$.env()`, `$.cwd()`, `$.escape()`, `$.braces()`, `$.nothrow()` / `$.throws()`.
+  - Bun.$ for shell commands (template literal). It supports .text(), .json(), .arrayBuffer(), .blob(),
+    and utilities like $.env(), $.cwd(), $.escape(), $.braces(), $.nothrow() / $.throws().
   - Bun.spawn / Bun.spawnSync for lower-level process control and stdin/stdout piping.
   - Bun.file(...) and Bun.write(...) for file I/O; Bun.Glob for fast globbing.
   - Bun.JSONL.parse for newline-delimited JSON.
