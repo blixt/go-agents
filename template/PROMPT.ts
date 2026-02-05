@@ -48,7 +48,7 @@ Tools in ~/.karna:
   - Bun.spawn / Bun.spawnSync for lower-level process control and stdin/stdout piping.
   - Bun.file(...) and Bun.write(...) for file I/O; Bun.Glob for fast globbing.
   - Bun.JSONL.parse for newline-delimited JSON.
-- For edits: import { replaceText, replaceAllText, applyUnifiedDiff } from "tools/edit.ts".
+- For edits: import { replaceText, replaceAllText, replaceTextFuzzy, applyUnifiedDiff, generateUnifiedDiff } from "tools/edit.ts".
 - You can create your own helpers under tools/ or core/ as needed.
 
 Shell helpers and CLI tools:
