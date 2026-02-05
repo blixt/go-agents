@@ -43,7 +43,14 @@ State + results:
 
 Tools in ~/.karna:
 - import { exec, run } from "tools/shell.ts" for shell commands.
+- import { readText, readJSON } from "tools/read.ts" for file reads.
+- import { writeText, writeJSON, appendText } from "tools/write.ts" for file writes.
+- import { replaceText } from "tools/edit.ts" for precise edits.
 - You can create your own helpers under tools/ or core/ as needed.
+
+Shell helpers:
+- Use jq for JSON transformations and filtering when running shell commands.
+- Use ag (the silver searcher) for fast search across files.
 
 Workflow:
 - Plan short iterations, validate with exec, then proceed.
