@@ -29,6 +29,8 @@ func (s *Server) handleAgentItem(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		Message string `json:"message"`
 		Source  string `json:"source"`
+		System  string `json:"system"`
+		Model   string `json:"model"`
 	}
 	if err := decodeJSON(r.Body, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -38,7 +40,14 @@ func (s *Server) handleAgentItem(w http.ResponseWriter, r *http.Request) {
 	if source == "" {
 		source = "human"
 	}
+	if payload.System != "" {
+		s.Runtime.SetAgentSystem(agentID, payload.System)
+	}
+	if payload.Model != "" {
+		s.Runtime.SetAgentModel(agentID, payload.Model)
+	}
 	s.Runtime.EnsureAgentLoop(agentID)
+	rootTask, _ := s.Runtime.EnsureRootTask(r.Context(), agentID)
 	evt, err := s.Runtime.SendMessage(r.Context(), agentID, payload.Message, source)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -49,5 +58,6 @@ func (s *Server) handleAgentItem(w http.ResponseWriter, r *http.Request) {
 		"agent_id":  agentID,
 		"event_id":  evt.ID,
 		"recipient": agentID,
+		"task_id":   rootTask.ID,
 	})
 }

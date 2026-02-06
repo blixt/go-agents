@@ -11,6 +11,13 @@ type Task = {
   payload?: Record<string, unknown>
 }
 
+type TaskUpdate = {
+  id: string
+  task_id: string
+  kind: string
+  payload?: Record<string, unknown>
+}
+
 type ConfigFile = {
   http_addr?: string
   snapshot_dir?: string
@@ -77,6 +84,8 @@ const SNAPSHOT_DIR = snapshotArg || config.snapshot_dir || "data/exec-snapshots"
 const POLL_MS = parseInt(pollArg || "1000", 10)
 const PARALLEL = Math.max(1, parseInt(parallelArg || Bun.env.EXEC_PARALLEL || "2", 10))
 const webhookAddr = webhookArg || config.webhook_addr
+
+process.env.KARNA_API_URL = API_URL
 
 function startWebhookServer() {
   if (!webhookAddr) return
@@ -166,6 +175,20 @@ async function sendFail(taskId: string, error: string) {
   })
 }
 
+async function fetchInputs(taskId: string, afterId: string) {
+  const params = new URLSearchParams()
+  params.set("kind", "input")
+  params.set("limit", "50")
+  if (afterId) {
+    params.set("after_id", afterId)
+  }
+  const res = await fetch(`${API_URL}/api/tasks/${taskId}/updates?${params.toString()}`)
+  if (!res.ok) {
+    throw new Error(`inputs request failed: ${res.status}`)
+  }
+  return (await res.json()) as TaskUpdate[]
+}
+
 async function forwardStream(taskId: string, kind: string, stream: ReadableStream<Uint8Array> | null) {
   if (!stream) return
   const reader = stream.getReader()
@@ -237,6 +260,7 @@ async function runTask(task: Task) {
     cwd: KARNA_HOME,
     stdout: "pipe",
     stderr: "pipe",
+    stdin: "pipe",
     env: {
       ...process.env,
       KARNA_HOME,
@@ -245,9 +269,80 @@ async function runTask(task: Task) {
 
   const stdoutPromise = forwardStream(task.id, "stdout", proc.stdout)
   const stderrPromise = forwardStream(task.id, "stderr", proc.stderr)
+  const inputPromise = (async () => {
+    const stdin = proc.stdin as
+      | undefined
+      | { getWriter?: () => { write: (chunk: Uint8Array) => Promise<void>; close?: () => Promise<void> } }
+      | { write?: (chunk: Uint8Array) => boolean; once?: (event: string, cb: () => void) => void; end?: () => void }
+    if (!stdin) return
+
+    let writeChunk: ((chunk: Uint8Array) => Promise<void>) | null = null
+    let closeWriter: (() => Promise<void> | void) | null = null
+
+    if (typeof stdin.getWriter === "function") {
+      const writer = stdin.getWriter()
+      writeChunk = (chunk) => writer.write(chunk)
+      closeWriter = () => writer.close?.()
+    } else if (typeof (stdin as any).write === "function") {
+      const stream = stdin as any
+      writeChunk = (chunk) =>
+        new Promise<void>((resolve) => {
+          const ok = stream.write(chunk)
+          if (ok) {
+            resolve()
+            return
+          }
+          if (typeof stream.once === "function") {
+            stream.once("drain", resolve)
+          } else {
+            resolve()
+          }
+        })
+      closeWriter = () => stream.end?.()
+    }
+
+    if (!writeChunk) return
+
+    const encoder = new TextEncoder()
+    let afterId = ""
+    let done = false
+    proc.exited.then(() => {
+      done = true
+    })
+    while (!done) {
+      try {
+        const updates = await fetchInputs(task.id, afterId)
+        if (updates.length > 0) {
+          afterId = updates[updates.length - 1].id
+        }
+        for (const upd of updates) {
+          const payload = upd.payload || {}
+          let text = ""
+          if (typeof payload.text === "string") {
+            text = payload.text
+          } else if (payload !== null && payload !== undefined) {
+            text = JSON.stringify(payload)
+          }
+          if (text !== "") {
+            await writeChunk(encoder.encode(text + "\n"))
+          }
+        }
+      } catch {
+        // ignore transient fetch errors
+      }
+      await sleep(200)
+    }
+    try {
+      await closeWriter?.()
+    } catch {
+      // ignore
+    }
+  })().catch(async (err) => {
+    await sendUpdate(task.id, "input_error", { error: String(err) })
+  })
 
   const exitCode = await proc.exited
-  await Promise.all([stdoutPromise, stderrPromise])
+  await Promise.all([stdoutPromise, stderrPromise, inputPromise])
 
   await sendUpdate(task.id, "exit", { exit_code: exitCode })
 

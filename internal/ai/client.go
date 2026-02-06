@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/flitsinc/go-llms/anthropic"
 	"github.com/flitsinc/go-llms/google"
@@ -42,6 +43,20 @@ func (c *Client) NewSession() (*llms.LLM, error) {
 	return newLLM(c.config, c.tools...)
 }
 
+func (c *Client) NewSessionWithModel(model string) (*llms.LLM, error) {
+	if c == nil {
+		return nil, errors.New("client is nil")
+	}
+	if c.config.Provider == "" {
+		return nil, errors.New("client config missing provider")
+	}
+	cfg := c.config
+	if strings.TrimSpace(model) != "" {
+		cfg.Model = resolveModelAlias(cfg.Provider, model)
+	}
+	return newLLM(cfg, c.tools...)
+}
+
 func newLLM(cfg Config, tools ...llmtools.Tool) (*llms.LLM, error) {
 	if cfg.Provider == "" {
 		return nil, fmt.Errorf("llm provider is required")
@@ -74,6 +89,24 @@ func newLLM(cfg Config, tools ...llmtools.Tool) (*llms.LLM, error) {
 		return llms.New(provider, tools...), nil
 	}
 	return llms.New(provider), nil
+}
+
+func resolveModelAlias(provider, model string) string {
+	alias := strings.ToLower(strings.TrimSpace(model))
+	if alias == "" {
+		return model
+	}
+	if provider == "anthropic" {
+		switch alias {
+		case "fast":
+			return "claude-3-5-haiku-latest"
+		case "balanced":
+			return "claude-3-5-sonnet-latest"
+		case "smart":
+			return "claude-3-opus-latest"
+		}
+	}
+	return model
 }
 
 func (c *Client) Chat(ctx context.Context, messages []llms.Message) <-chan llms.Update {

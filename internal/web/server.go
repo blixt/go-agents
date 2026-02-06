@@ -7,5 +7,11 @@ type Server struct {
 }
 
 func (s *Server) Handler() http.Handler {
-	return http.FileServer(http.Dir(s.Dir))
+	fs := http.FileServer(http.Dir(s.Dir))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+		fs.ServeHTTP(w, r)
+	})
 }

@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "https://esm.sh/react@18.3.1";
-import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
-import { Streamdown } from "https://esm.sh/streamdown@2.1.0";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createRoot } from "react-dom/client";
+import { marked } from "marked";
+import DOMPurify from "dompurify";
 
 const API_BASE = "";
 const AGENT_ID = "operator";
@@ -98,6 +99,117 @@ function buildTaskIndex(tasks) {
   return byId;
 }
 
+function collectAgentIDs(sessions, tasks) {
+  const ids = new Set(Object.keys(sessions || {}));
+  (tasks || []).forEach((task) => {
+    if (task.owner) ids.add(task.owner);
+    const meta = task.metadata || {};
+    if (meta.agent_id) ids.add(meta.agent_id);
+    if (meta.notify_target) ids.add(meta.notify_target);
+  });
+  if (ids.size === 0) ids.add(AGENT_ID);
+  return Array.from(ids);
+}
+
+function tasksForAgent(tasks, agentID) {
+  return (tasks || []).filter((task) => {
+    if (task.owner === agentID) return true;
+    const meta = task.metadata || {};
+    if (meta.agent_id === agentID) return true;
+    if (meta.notify_target === agentID) return true;
+    return false;
+  });
+}
+
+function lastUpdate(updates) {
+  if (!updates || updates.length === 0) return null;
+  return updates[updates.length - 1];
+}
+
+function describeLLMState(task, updates) {
+  if (!task) return { label: "idle", status: "idle", detail: "no active LLM task" };
+  if (task.status === "queued") {
+    return { label: "queued", status: "queued", detail: "awaiting slot" };
+  }
+  if (task.status === "failed") {
+    return { label: "failed", status: "failed", detail: "check error" };
+  }
+  if (task.status === "cancelled") {
+    return { label: "cancelled", status: "cancelled", detail: "stopped" };
+  }
+  if (task.status === "completed") {
+    return { label: "completed", status: "completed", detail: "last run finished" };
+  }
+
+  const latest = lastUpdate(updates);
+  if (!latest) {
+    return { label: "running", status: "running", detail: "awaiting updates" };
+  }
+  const kind = latest.kind;
+  const payload = latest.payload || {};
+  if (kind === "llm_thinking") {
+    return { label: "thinking", status: "thinking", detail: "reasoning" };
+  }
+  if (kind === "llm_text") {
+    return { label: "responding", status: "responding", detail: "streaming output" };
+  }
+  if (kind === "llm_tool_start" || kind === "llm_tool_delta" || kind === "llm_tool_status") {
+    const toolName = payload.tool_name || payload.tool_label || "tool";
+    const toolStatus = payload.status ? ` · ${payload.status}` : "";
+    return { label: "waiting tool", status: "tool", detail: `${toolName}${toolStatus}` };
+  }
+  if (kind === "llm_tool_done") {
+    const toolName = payload.tool_name || payload.tool_label || "tool";
+    return { label: "processing", status: "running", detail: `finished ${toolName}` };
+  }
+  if (kind === "await_timeout") {
+    return { label: "sleeping", status: "sleeping", detail: "awaiting events" };
+  }
+  if (kind === "input") {
+    return { label: "running", status: "running", detail: "received input" };
+  }
+  return { label: "running", status: "running", detail: kind };
+}
+
+function deriveAgents(sessions, tasks, updatesByTask) {
+  const agentIDs = collectAgentIDs(sessions, tasks);
+  return agentIDs
+    .map((agentID) => {
+      const session = sessions?.[agentID] || null;
+      const ownedTasks = tasksForAgent(tasks, agentID);
+      const activeTasks = ownedTasks.filter((task) => task.status === "running" || task.status === "queued");
+      const llmTask = session?.llm_task_id
+        ? tasks.find((task) => task.id === session.llm_task_id)
+        : ownedTasks
+            .filter((task) => task.type === "llm")
+            .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))[0];
+      const llmUpdates = llmTask ? updatesByTask?.[llmTask.id] || [] : [];
+      let state = describeLLMState(llmTask, llmUpdates);
+      if (!llmTask && session?.llm_task_id) {
+        state = { label: "running", status: "running", detail: "llm task pending" };
+      }
+      if (!llmTask && activeTasks.length > 0) {
+        state = { label: "running", status: "running", detail: `${activeTasks.length} active tasks` };
+      }
+      if (!llmTask && activeTasks.length === 0) {
+        state = { label: "idle", status: "idle", detail: "no active tasks" };
+      }
+      return {
+        id: agentID,
+        session,
+        state,
+        activeCount: activeTasks.length,
+        totalCount: ownedTasks.length,
+        llmTask,
+      };
+    })
+    .sort((a, b) => {
+      const aTime = a.session?.updated_at || a.llmTask?.updated_at || "";
+      const bTime = b.session?.updated_at || b.llmTask?.updated_at || "";
+      return new Date(bTime) - new Date(aTime);
+    });
+}
+
 function normalizeState(data) {
   const tasks = data?.tasks || [];
   const updates = data?.updates || {};
@@ -143,7 +255,11 @@ function applyTaskUpdate(state, evt) {
       cancelled: "cancelled",
       killed: "cancelled",
     };
-    next.status = statusMap[kind] || next.status;
+    const settled = ["completed", "failed", "cancelled"].includes(existing.status);
+    const isCancel = kind === "cancelled" || kind === "killed";
+    if (!(settled && isCancel)) {
+      next.status = statusMap[kind] || next.status;
+    }
     if (kind === "completed") {
       next.result = update.payload || next.result;
     }
@@ -289,6 +405,7 @@ function buildTrace(updates, promptText) {
 
   const toolMap = new Map();
   let assistantItem = null;
+  let thinkingItem = null;
 
   updates.forEach((update, index) => {
     const kind = update.kind;
@@ -297,6 +414,7 @@ function buildTrace(updates, promptText) {
       const message = payload.message || payload.text || "";
       if (message) {
         assistantItem = null;
+        thinkingItem = null;
         items.push({ id: update.id || `input-${index}`, role: "user", text: message });
       }
       return;
@@ -307,16 +425,23 @@ function buildTrace(updates, promptText) {
         assistantItem = { id: update.id || `llm-${index}`, role: "assistant", text: "" };
         items.push(assistantItem);
       }
+      thinkingItem = null;
       assistantItem.text += payload.text || "";
       return;
     }
 
     if (kind === "llm_thinking") {
-      items.push({
-        id: update.id || `thinking-${index}`,
-        role: "thinking",
-        text: payload.summary || payload.text || "",
-      });
+      const text = payload.summary || payload.text || "";
+      if (thinkingItem) {
+        thinkingItem.text += text ? `\n${text}` : "";
+      } else {
+        thinkingItem = {
+          id: update.id || `thinking-${index}`,
+          role: "thinking",
+          text,
+        };
+        items.push(thinkingItem);
+      }
       return;
     }
 
@@ -380,16 +505,73 @@ function buildTrace(updates, promptText) {
   return items;
 }
 
+const markdownSanitizer =
+  DOMPurify && typeof DOMPurify.sanitize === "function"
+    ? DOMPurify
+    : DOMPurify && DOMPurify.default && typeof DOMPurify.default.sanitize === "function"
+      ? DOMPurify.default
+      : null;
+
+function renderMarkdown(text) {
+  if (!text) return "";
+  const html = marked.parse(text, {
+    breaks: true,
+    gfm: true,
+    mangle: false,
+    headerIds: false,
+  });
+  return markdownSanitizer ? markdownSanitizer.sanitize(html) : html;
+}
+
 function Markdown({ text }) {
   if (!text) {
     return React.createElement("div", { className: "markdown empty" }, "-");
   }
-  return React.createElement(Streamdown, { className: "markdown" }, text);
+  const html = renderMarkdown(text);
+  return React.createElement("div", { className: "markdown", dangerouslySetInnerHTML: { __html: html } });
 }
 
-function StatusBadge({ status }) {
+function StatusBadge({ status, label }) {
   const cls = `status-pill status-${status || "unknown"}`;
-  return React.createElement("span", { className: cls }, status || "unknown");
+  return React.createElement("span", { className: cls }, label || status || "unknown");
+}
+
+function escapeHtml(value) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function ToolInput({ toolName, raw }) {
+  if (!raw) return null;
+  if (toolName && toolName.toLowerCase() === "exec") {
+    try {
+      const parsed = JSON.parse(raw);
+      const code = typeof parsed.code === "string" ? parsed.code : "";
+      const rest = { ...parsed };
+      delete rest.code;
+      return React.createElement(
+        "div",
+        { className: "tool-input-block" },
+        code
+          ? React.createElement(
+              "pre",
+              { className: "code-block language-ts" },
+              React.createElement("code", { dangerouslySetInnerHTML: { __html: escapeHtml(code) } }),
+            )
+          : null,
+        Object.keys(rest).length > 0
+          ? React.createElement(Markdown, { text: `\n\n\`\`\`json\n${JSON.stringify(rest, null, 2)}\n\`\`\`\n` })
+          : null,
+      );
+    } catch (_) {
+      // fall through
+    }
+  }
+  return React.createElement(Markdown, { text: raw });
 }
 
 function App() {
@@ -399,9 +581,14 @@ function App() {
   const [activeStream, setActiveStream] = useState("messages");
   const [messageInput, setMessageInput] = useState("");
   const [sendStatus, setSendStatus] = useState(null);
+  const traceRef = useRef(null);
 
   const tasks = useMemo(() => Object.values(state.tasksById || {}), [state.tasksById]);
   const taskTree = useMemo(() => buildTaskTree(state.tasksById || {}), [state.tasksById]);
+  const activeTasks = useMemo(
+    () => tasks.filter((task) => task.status === "running" || task.status === "queued"),
+    [tasks],
+  );
   const latestTask = useMemo(
     () => tasks.slice().sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))[0],
     [tasks],
@@ -425,6 +612,11 @@ function App() {
 
   const chatMessages = (state.streams?.messages || []).slice().sort(
     (a, b) => new Date(a.created_at) - new Date(b.created_at),
+  );
+
+  const agents = useMemo(
+    () => deriveAgents(state.sessions || {}, tasks, state.updatesByTask || {}),
+    [state.sessions, tasks, state.updatesByTask],
   );
 
   const totalTasks = tasks.length;
@@ -465,6 +657,13 @@ function App() {
       setSendStatus(`error:${err.message || err}`);
     }
   }, [messageInput]);
+
+  useEffect(() => {
+    if (activeTab !== "trace") return;
+    const node = traceRef.current;
+    if (!node) return;
+    node.scrollTop = node.scrollHeight;
+  }, [trace, activeTab]);
 
   return React.createElement(
     "div",
@@ -533,6 +732,43 @@ function App() {
           React.createElement(
             "div",
             { className: "panel-header" },
+            React.createElement("h2", null, "Agents"),
+          ),
+          React.createElement(
+            "div",
+            { className: "panel-body agent-list" },
+            agents.length === 0
+              ? React.createElement("div", { className: "muted" }, "No agents yet.")
+              : agents.map((agent) =>
+                  React.createElement(
+                    "div",
+                    { key: agent.id, className: "agent-row" },
+                    React.createElement(
+                      "div",
+                      { className: "agent-main" },
+                      React.createElement(
+                        "div",
+                        { className: "agent-title" },
+                        React.createElement("span", { className: "agent-id" }, agent.id),
+                        React.createElement("span", { className: "agent-count" }, `${agent.activeCount} active`),
+                      ),
+                      React.createElement(
+                        "div",
+                        { className: "agent-detail" },
+                        agent.state.detail,
+                      ),
+                    ),
+                    React.createElement(StatusBadge, { status: agent.state.status, label: agent.state.label }),
+                  ),
+                ),
+          ),
+        ),
+        React.createElement(
+          "section",
+          { className: "panel" },
+          React.createElement(
+            "div",
+            { className: "panel-header" },
             React.createElement("h2", null, "Tasks"),
           ),
           React.createElement(
@@ -540,26 +776,60 @@ function App() {
             { className: "panel-body task-list" },
             taskTree.length === 0
               ? React.createElement("div", { className: "muted" }, "No tasks yet.")
-              : taskTree.map(({ task, depth }) =>
+              : React.createElement(
+                  React.Fragment,
+                  null,
                   React.createElement(
-                    "button",
-                    {
-                      key: task.id,
-                      className: `task-row ${selectedTaskId === task.id ? "active" : ""}`,
-                      onClick: () => setSelectedTaskId(task.id),
-                    },
+                    "div",
+                    { className: "task-group" },
                     React.createElement(
-                      "span",
-                      { className: "task-indent", style: { width: `${depth * 12}px` } },
-                      depth > 0 ? "└" : "",
+                      "div",
+                      { className: "task-group-title" },
+                      `Active (${activeTasks.length})`,
                     ),
+                    activeTasks.length === 0
+                      ? React.createElement("div", { className: "muted" }, "No active tasks.")
+                      : activeTasks
+                          .slice()
+                          .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))
+                          .map((task) =>
+                            React.createElement(
+                              "button",
+                              {
+                                key: `active-${task.id}`,
+                                className: `task-row ${selectedTaskId === task.id ? "active" : ""}`,
+                                onClick: () => setSelectedTaskId(task.id),
+                              },
+                              React.createElement("span", { className: "task-main" },
+                                React.createElement("span", { className: "task-type" }, task.type),
+                                React.createElement("span", { className: "task-id" }, task.id.slice(0, 8)),
+                              ),
+                              React.createElement(StatusBadge, { status: task.status }),
+                            ),
+                          ),
+                  ),
+                  React.createElement("div", { className: "task-group-title" }, "All"),
+                  taskTree.map(({ task, depth }) =>
                     React.createElement(
-                      "span",
-                      { className: "task-main" },
-                      React.createElement("span", { className: "task-type" }, task.type),
-                      React.createElement("span", { className: "task-id" }, task.id.slice(0, 8)),
+                      "button",
+                      {
+                        key: task.id,
+                        className: `task-row ${selectedTaskId === task.id ? "active" : ""}`,
+                        onClick: () => setSelectedTaskId(task.id),
+                      },
+                      React.createElement(
+                        "span",
+                        { className: "task-indent", style: { width: `${depth * 12}px` } },
+                        depth > 0 ? "└" : "",
+                      ),
+                      React.createElement(
+                        "span",
+                        { className: "task-main" },
+                        React.createElement("span", { className: "task-type" }, task.type),
+                        React.createElement("span", { className: "task-id" }, task.id.slice(0, 8)),
+                      ),
+                      React.createElement(StatusBadge, { status: task.status }),
                     ),
-                    React.createElement(StatusBadge, { status: task.status }),
                   ),
                 ),
           ),
@@ -581,7 +851,6 @@ function App() {
               [
                 { id: "trace", label: "Trace" },
                 { id: "chat", label: "Chat" },
-                { id: "graph", label: "Graph" },
                 { id: "events", label: "Events" },
                 { id: "task", label: "Task" },
               ].map((tab) =>
@@ -604,48 +873,73 @@ function App() {
               ? React.createElement(
                   "div",
                   { className: "trace" },
-                  llmTask
-                    ? React.createElement(
-                        "div",
-                        { className: "trace-header" },
-                        React.createElement("span", { className: "muted" }, `LLM Task: ${llmTask.id.slice(0, 8)} · ${llmTask.status}`),
-                        React.createElement("span", { className: "muted" }, formatDateTime(llmTask.updated_at)),
-                      )
-                    : React.createElement("div", { className: "muted" }, "No LLM task found."),
-                  trace.map((item) => {
-                    if (item.role === "tool") {
+                  React.createElement(
+                    "div",
+                    { className: "trace-scroll", ref: traceRef },
+                    llmTask
+                      ? React.createElement(
+                          "div",
+                          { className: "trace-header" },
+                          React.createElement("span", { className: "muted" }, `LLM Task: ${llmTask.id.slice(0, 8)} · ${llmTask.status}`),
+                          React.createElement("span", { className: "muted" }, formatDateTime(llmTask.updated_at)),
+                        )
+                      : React.createElement("div", { className: "muted" }, "No LLM task found."),
+                    trace.map((item) => {
+                      if (item.role === "tool") {
+                        return React.createElement(
+                          "div",
+                          { className: "trace-item trace-tool", key: item.id },
+                          React.createElement(
+                            "div",
+                            { className: "trace-meta trace-tool-meta" },
+                            React.createElement("span", null, item.name || "tool"),
+                            React.createElement(StatusBadge, { status: item.status, label: item.status }),
+                          ),
+                          item.input ? React.createElement(ToolInput, { toolName: item.name, raw: item.input }) : null,
+                          item.result ? React.createElement(Markdown, { text: toMarkdown(item.result) }) : null,
+                        );
+                      }
+                      if (item.role === "thinking") {
+                        return React.createElement(
+                          "details",
+                          { className: "trace-item trace-thinking", key: item.id },
+                          React.createElement("summary", null, "Thinking"),
+                          React.createElement(Markdown, { text: item.text }),
+                        );
+                      }
                       return React.createElement(
                         "div",
-                        { className: "trace-item trace-tool", key: item.id },
+                        { className: `trace-item trace-${item.role}`, key: item.id },
                         React.createElement(
                           "div",
                           { className: "trace-meta" },
-                          React.createElement("span", null, `Tool · ${item.name}`),
-                          React.createElement("span", { className: "muted" }, item.status),
+                          item.role.toUpperCase(),
                         ),
-                        item.input ? React.createElement(Markdown, { text: item.input }) : null,
-                        item.result ? React.createElement(Markdown, { text: toMarkdown(item.result) }) : null,
-                      );
-                    }
-                    if (item.role === "thinking") {
-                      return React.createElement(
-                        "details",
-                        { className: "trace-item trace-thinking", key: item.id },
-                        React.createElement("summary", null, "Thinking"),
                         React.createElement(Markdown, { text: item.text }),
                       );
-                    }
-                    return React.createElement(
+                    }),
+                  ),
+                  React.createElement(
+                    "div",
+                    { className: "trace-chat" },
+                    React.createElement("input", {
+                      className: "trace-chat-input",
+                      value: messageInput,
+                      onChange: (event) => setMessageInput(event.target.value),
+                      onKeyDown: (event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          handleSend();
+                        }
+                      },
+                      placeholder: "Message the agent…",
+                    }),
+                    React.createElement(
                       "div",
-                      { className: `trace-item trace-${item.role}`, key: item.id },
-                      React.createElement(
-                        "div",
-                        { className: "trace-meta" },
-                        item.role.toUpperCase(),
-                      ),
-                      React.createElement(Markdown, { text: item.text }),
-                    );
-                  }),
+                      { className: "muted" },
+                      sendStatus ? `Status: ${sendStatus}` : "Enter to send",
+                    ),
+                  ),
                 )
               : null,
             activeTab === "chat"
@@ -671,31 +965,7 @@ function App() {
                           );
                         }),
                   ),
-                  React.createElement(
-                    "div",
-                    { className: "chat-input" },
-                    React.createElement("textarea", {
-                      value: messageInput,
-                      onChange: (event) => setMessageInput(event.target.value),
-                      onKeyDown: (event) => {
-                        if (event.key === "Enter" && !event.shiftKey) {
-                          event.preventDefault();
-                          handleSend();
-                        }
-                      },
-                      placeholder: "Message the agent. Enter to send, Shift+Enter for newline.",
-                      rows: 4,
-                    }),
-                    React.createElement(
-                      "div",
-                      { className: "muted" },
-                      sendStatus ? `Status: ${sendStatus}` : "Enter to send · Shift+Enter for newline",
-                    ),
-                  ),
                 )
-              : null,
-            activeTab === "graph"
-              ? React.createElement(TaskGraph, { tasks })
               : null,
             activeTab === "events"
               ? React.createElement(
@@ -779,90 +1049,6 @@ function TaskDetail({ task }) {
       React.createElement("h4", null, "Result"),
       React.createElement(Markdown, { text: toMarkdown(task.result || task.error || "-") }),
     ),
-  );
-}
-
-function TaskGraph({ tasks }) {
-  if (!tasks || tasks.length === 0) {
-    return React.createElement("div", { className: "muted" }, "No tasks yet.");
-  }
-  const nodes = tasks.map((task) => ({
-    id: task.id,
-    parent: task.parent_id || task.metadata?.parent_id || null,
-    label: task.type,
-  }));
-
-  const depthMap = {};
-  const childrenMap = {};
-  nodes.forEach((node) => {
-    if (!childrenMap[node.parent]) childrenMap[node.parent] = [];
-    childrenMap[node.parent].push(node);
-  });
-
-  function assignDepth(node, depth) {
-    depthMap[node.id] = depth;
-    (childrenMap[node.id] || []).forEach((child) => assignDepth(child, depth + 1));
-  }
-
-  (childrenMap[null] || childrenMap[""] || []).forEach((root) => assignDepth(root, 0));
-
-  const nodesByDepth = {};
-  nodes.forEach((node) => {
-    const depth = depthMap[node.id] || 0;
-    if (!nodesByDepth[depth]) nodesByDepth[depth] = [];
-    nodesByDepth[depth].push(node);
-  });
-
-  const positions = {};
-  const columnWidth = 180;
-  const rowHeight = 90;
-  const depths = Object.keys(nodesByDepth).map(Number).sort((a, b) => a - b);
-
-  depths.forEach((depth) => {
-    const column = nodesByDepth[depth];
-    column.forEach((node, index) => {
-      positions[node.id] = {
-        x: depth * columnWidth + 60,
-        y: index * rowHeight + 40,
-      };
-    });
-  });
-
-  const width = Math.max(400, (depths.length + 1) * columnWidth);
-  const maxRows = Math.max(...Object.values(nodesByDepth).map((arr) => arr.length), 1);
-  const height = Math.max(300, maxRows * rowHeight + 80);
-
-  return React.createElement(
-    "svg",
-    { className: "task-graph", viewBox: `0 0 ${width} ${height}` },
-    nodes.map((node) => {
-      if (!node.parent) return null;
-      const from = positions[node.parent];
-      const to = positions[node.id];
-      if (!from || !to) return null;
-      return React.createElement("line", {
-        key: `${node.parent}-${node.id}`,
-        x1: from.x + 40,
-        y1: from.y,
-        x2: to.x - 40,
-        y2: to.y,
-        className: "task-edge",
-      });
-    }),
-    nodes.map((node) => {
-      const pos = positions[node.id];
-      if (!pos) return null;
-      return React.createElement(
-        "g",
-        { key: node.id, transform: `translate(${pos.x - 40}, ${pos.y - 20})` },
-        React.createElement("rect", { className: "task-node", width: 120, height: 40, rx: 4, ry: 4 }),
-        React.createElement(
-          "text",
-          { x: 60, y: 24, className: "task-node-label", textAnchor: "middle" },
-          node.label,
-        ),
-      );
-    }),
   );
 }
 

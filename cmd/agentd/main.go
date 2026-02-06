@@ -45,6 +45,10 @@ func main() {
 	rt := engine.NewRuntime(bus, manager, nil)
 	execTool := agenttools.ExecTool(manager)
 	sendMessageTool := agenttools.SendMessageTool(bus, rt.EnsureAgentLoop)
+	awaitTaskTool := agenttools.AwaitTaskTool(manager)
+	sendTaskTool := agenttools.SendTaskTool(manager, bus)
+	cancelTaskTool := agenttools.CancelTaskTool(manager)
+	killTaskTool := agenttools.KillTaskTool(manager)
 
 	var llmClient *ai.Client
 	if cfg.LLMModel != "" && cfg.LLMAPIKey != "" {
@@ -52,7 +56,7 @@ func main() {
 			Provider: cfg.LLMProvider,
 			Model:    cfg.LLMModel,
 			APIKey:   cfg.LLMAPIKey,
-		}, execTool, sendMessageTool)
+		}, execTool, sendMessageTool, awaitTaskTool, sendTaskTool, cancelTaskTool, killTaskTool)
 		if err != nil {
 			log.Printf("LLM disabled: %v", err)
 		}

@@ -1,0 +1,9 @@
+{
+  "name": "go-agents-ui",
+  "version": "dev",
+  "description": "",
+  "type": "module",
+  "exports": {
+    ".": "./app.js"
+  }
+}

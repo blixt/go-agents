@@ -5,7 +5,7 @@
     {
       "id": "fo01_go_file_lines",
       "title": "Largest Go files",
-      "prompt": "Please find the five largest Go source files in this project (by line count) and tell me their names and line counts.",
+      "prompt": "Please use the repository at https://github.com/cli/cli. Find the five largest Go source files in that repo (by line count) and tell me their names and line counts.",
       "timeoutSeconds": 300
     }
   ]

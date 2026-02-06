@@ -5,31 +5,31 @@
     {
       "id": "si06_reuse_baseline",
       "title": "Endpoint JSON (baseline)",
-      "prompt": "Please produce a concise JSON list of all HTTP endpoints this service exposes, with method and a short description. Save the full JSON to a file so it can be refreshed later.",
+      "prompt": "Please use the repository at https://github.com/docker/compose. Produce a concise JSON list of all HTTP endpoints this service exposes, with method and a short description. Save the full JSON to a file so it can be refreshed later.",
       "timeoutSeconds": 300
     },
     {
       "id": "si07_reuse_refresh",
       "title": "Endpoint JSON (refresh, minimal effort)",
-      "prompt": "Please refresh that endpoint JSON list and return it again, minimizing effort and time. Reuse any helpers or files you already created if possible.",
+      "prompt": "Please refresh that endpoint JSON list for the docker/compose repo and return it again, minimizing effort and time. Reuse any helpers or files you already created if possible.",
       "timeoutSeconds": 300
     },
     {
       "id": "si08_helper_discovery",
       "title": "JSON update task",
-      "prompt": "Please create or update a file named report.json that includes: current date, total number of Go files, and total number of TypeScript files in this repo. Give me a short summary after.",
+      "prompt": "Please use the repository at https://github.com/docker/compose. Create or update a file named report.json that includes: current date, total number of Go files, and total number of TypeScript files in that repo. Give me a short summary after.",
       "timeoutSeconds": 300
     },
     {
       "id": "si09_step_budget",
       "title": "Step budget constraint",
-      "prompt": "Please list the five largest Go files by line count. You may use at most 3 exec calls total.",
+      "prompt": "Please use the repository at https://github.com/docker/compose. List the five largest Go files by line count. You may use at most 3 exec calls total.",
       "timeoutSeconds": 300
     },
     {
       "id": "si10_file_first_output",
       "title": "File-first output",
-      "prompt": "Please list all files over 300 lines in this project. Put the full list in a file and give me a short summary with the top 5.",
+      "prompt": "Please use the repository at https://github.com/docker/compose. List all files over 300 lines in that repo. Put the full list in a file and give me a short summary with the top 5.",
       "timeoutSeconds": 300
     }
   ]

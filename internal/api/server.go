@@ -78,23 +78,34 @@ func (s *Server) handleTaskItem(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTaskUpdates(w http.ResponseWriter, r *http.Request, taskID string) {
-	if r.Method != http.MethodPost {
+	switch r.Method {
+	case http.MethodGet:
+		kind := r.URL.Query().Get("kind")
+		afterID := r.URL.Query().Get("after_id")
+		limit := parseInt(r.URL.Query().Get("limit"), 200)
+		updates, err := s.Tasks.ListUpdatesSince(r.Context(), taskID, afterID, kind, limit)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, updates)
+	case http.MethodPost:
+		var payload struct {
+			Kind    string         `json:"kind"`
+			Payload map[string]any `json:"payload"`
+		}
+		if err := decodeJSON(r.Body, &payload); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := s.Tasks.RecordUpdate(r.Context(), taskID, payload.Kind, payload.Payload); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	default:
 		writeMethodNotAllowed(w)
-		return
 	}
-	var payload struct {
-		Kind    string         `json:"kind"`
-		Payload map[string]any `json:"payload"`
-	}
-	if err := decodeJSON(r.Body, &payload); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	if err := s.Tasks.RecordUpdate(r.Context(), taskID, payload.Kind, payload.Payload); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handleTaskComplete(w http.ResponseWriter, r *http.Request, taskID string) {

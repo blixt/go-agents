@@ -4,22 +4,20 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/oklog/ulid/v2"
-
 	"github.com/flitsinc/go-agents/internal/agentcontext"
 	"github.com/flitsinc/go-agents/internal/eventbus"
 	"github.com/flitsinc/go-llms/tools"
 )
 
 type SendMessageParams struct {
-	AgentID string `json:"agent_id" description:"Target agent id (empty to spawn a new subagent)"`
+	AgentID string `json:"agent_id" description:"Target agent id"`
 	Message string `json:"message" description:"Message to send"`
 }
 
 func SendMessageTool(bus *eventbus.Bus, ensureAgent func(string)) tools.Tool {
 	return tools.Func(
 		"SendMessage",
-		"Send a message to another agent (or spawn a new subagent if no agent_id is provided)",
+		"Send a message to another agent",
 		"send_message",
 		func(r tools.Runner, p SendMessageParams) tools.Result {
 			if bus == nil {
@@ -32,7 +30,7 @@ func SendMessageTool(bus *eventbus.Bus, ensureAgent func(string)) tools.Tool {
 
 			agentID := strings.TrimSpace(p.AgentID)
 			if agentID == "" {
-				agentID = fmt.Sprintf("subagent-%s", ulid.Make().String())
+				return tools.Errorf("agent_id is required")
 			}
 
 			source := agentcontext.AgentIDFromContext(r.Context())
@@ -40,8 +38,8 @@ func SendMessageTool(bus *eventbus.Bus, ensureAgent func(string)) tools.Tool {
 				source = "system"
 			}
 
-			if agentID == "human" && source != "operator" {
-				return tools.Errorf("only the operator may message the human")
+			if agentID == "human" {
+				return tools.Errorf("send_message is for agent-to-agent messaging only")
 			}
 
 			if ensureAgent != nil && agentID != "human" {

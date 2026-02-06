@@ -5,13 +5,13 @@
     {
       "id": "sa01_failure_summary",
       "title": "Summarize common failures",
-      "prompt": "Please scan the diary for repeated failure patterns and summarize them briefly.",
+      "prompt": "Please use the repository at https://github.com/helm/helm. Scan for repeated TODO or FIXME patterns and summarize them briefly.",
       "timeoutSeconds": 300
     },
     {
       "id": "sa02_experiment_runbook",
       "title": "Create a runbook",
-      "prompt": "Please write a concise runbook for running experiments in this repo so a new teammate can follow it.",
+      "prompt": "Please use the repository at https://github.com/helm/helm. Write a concise runbook for building and running this project so a new teammate can follow it.",
       "timeoutSeconds": 300
     }
   ]

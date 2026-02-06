@@ -72,11 +72,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		for agentID := range agentIDs {
 			session, ok := s.Runtime.GetSession(agentID)
 			if !ok {
-				built, err := s.Runtime.BuildSession(r.Context(), agentID)
-				if err != nil {
-					continue
-				}
-				session = built
+				session = engine.Session{AgentID: agentID, UpdatedAt: time.Now().UTC()}
 			}
 			resp.Sessions[agentID] = session
 		}

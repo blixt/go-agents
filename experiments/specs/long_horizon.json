@@ -5,19 +5,19 @@
     {
       "id": "lh01_shutdown_checklist",
       "title": "Checklist + apply",
-      "prompt": "I'm worried this service might not shut down cleanly. Can you make a checklist you would use to review that, then apply it to this project and tell me what you find? Keep it concise.",
+      "prompt": "I'm worried this service might not shut down cleanly. Please use the repository at https://github.com/caddyserver/caddy. Make a checklist you would use to review that, then apply it to that repo and tell me what you find. Keep it concise.",
       "timeoutSeconds": 300
     },
     {
       "id": "lh02_api_inventory",
       "title": "Endpoints overview",
-      "prompt": "Please figure out what HTTP endpoints this service exposes and summarize them for me.",
+      "prompt": "Please use the repository at https://github.com/caddyserver/caddy. Figure out what HTTP endpoints this service exposes and summarize them for me.",
       "timeoutSeconds": 300
     },
     {
       "id": "lh03_dependency_upgrade_plan",
       "title": "Dependency review",
-      "prompt": "Please review the dependencies and tell me which ones might be risky or need upgrades, and why.",
+      "prompt": "Please use the repository at https://github.com/caddyserver/caddy. Review the dependencies and tell me which ones might be risky or need upgrades, and why.",
       "timeoutSeconds": 300
     }
   ]

@@ -5,19 +5,19 @@
     {
       "id": "lhb01_shutdown_checklist_scoped",
       "title": "Checklist + apply (scoped)",
-      "prompt": "I'm worried this service might not shut down cleanly. Can you make a checklist you would use to review that, then apply it to just the main server entrypoint and the core runtime file, and tell me what you find? Keep it concise.",
+      "prompt": "I'm worried this service might not shut down cleanly. Please use the repository at https://github.com/caddyserver/caddy. Make a checklist you would use to review that, then apply it to just the main server entrypoint and the core runtime file in that repo, and tell me what you find. Keep it concise.",
       "timeoutSeconds": 300
     },
     {
       "id": "lhb02_api_inventory_scoped",
       "title": "Endpoints overview (scoped)",
-      "prompt": "Please figure out what HTTP endpoints this service exposes. Focus on the main server entrypoint and the API server file.",
+      "prompt": "Please use the repository at https://github.com/caddyserver/caddy. Figure out what HTTP endpoints this service exposes. Focus on the main server entrypoint and the API server file.",
       "timeoutSeconds": 300
     },
     {
       "id": "lhb03_dependency_review_scoped",
       "title": "Dependency review (scoped)",
-      "prompt": "Please review the dependencies in go.mod and tell me which ones might be risky or need upgrades, and why.",
+      "prompt": "Please use the repository at https://github.com/caddyserver/caddy. Review the dependencies in go.mod and tell me which ones might be risky or need upgrades, and why.",
       "timeoutSeconds": 300
     }
   ]
