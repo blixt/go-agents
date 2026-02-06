@@ -203,57 +203,64 @@ Status update (implemented in this branch):
 
 ### Critical
 
-1. **Queue claim race can duplicate work under parallel workers**
-   - `tasks.ClaimQueued` selects queued rows then updates without a guard on current status.
-   - With concurrent claimers, the same task can be claimed twice.
-   - Impact: duplicate `exec` execution, nondeterministic side effects.
+1. **Message ack currently occurs regardless of turn success**
+   - Runtime acks message events even when `HandleMessage` returns an error.
+   - Impact: transient failures can become permanent message loss.
 
-2. **Best-effort in-memory fanout can drop events for slow consumers**
+2. **Task status transitions are not guarded**
+   - `Complete`/`Fail`/`Cancel` use unconditional status updates.
+   - Impact: terminal state races can overwrite each other under retries/concurrency.
+
+3. **Best-effort in-memory fanout can drop events for slow consumers**
    - `eventbus.broadcast` drops when subscriber channel is full.
-   - Runtime loops consume from this channel; if dropped, message may remain durable but unprocessed by agent loops.
-   - Impact: stuck unread messages and missed wake/interrupt signals.
+   - Agent loops recover message drops via unread replay, but other subscribers still rely on live delivery.
+   - Impact: missed wake/interrupt/control events for non-loop subscribers.
 
 ### High
 
-3. **`Await`/`AwaitAny` subscription lifecycle leaks subscribers**
-   - New `Subscribe` call in each loop iteration; old subs live until context timeout/cancel.
-   - Impact: memory/channel growth and unnecessary event fanout overhead.
+4. **No lease/heartbeat reclaim for running tasks**
+   - Claimed tasks can remain `running` if workers die mid-execution.
+   - Impact: stuck tasks and manual/operator intervention.
 
-4. **Wake/interrupt in `Await` is not scope-filtered**
-   - `Await` subscribes to global wake streams but does not filter event scope/target.
-   - Impact: unrelated signal events can wake/interrupt unrelated tasks.
+5. **No supervisor abstraction for agent loops**
+   - Per-agent loops are goroutines without explicit restart/backoff policy.
+   - Impact: reduced resilience during runtime faults.
 
-5. **Single-threaded per-agent run loop can amplify event drops**
+6. **Single-threaded per-agent run loop can amplify event drops**
    - `Run` handles each message synchronously through full LLM/tool cycle.
    - Under long calls, channel backlog can overflow and trigger dropped message fanout.
 
 ### Medium
 
-6. **Task tree operations are metadata-scan based**
+7. **Task tree operations are metadata-scan based**
    - Parent linkage is stored in metadata JSON; child discovery scans all tasks.
    - Impact: O(N) scans and weaker query/index semantics for hierarchy operations.
 
-7. **Prompt build is runtime Bun execution on every run**
+8. **Prompt build is runtime Bun execution on every run**
    - Flexible but adds latency and operational dependency on `bun` + user home scripts.
    - Impact: startup/runtime fragility if prompt scripts fail.
 
-8. **API has no authn/authz boundaries**
+9. **API has no authn/authz boundaries**
    - Full control endpoints exposed by default.
    - Impact: unsafe for any non-local deployment.
 
+10. **Two worker paths increase maintenance drift**
+   - `exec/execd.ts` and `internal/execworker/*` overlap.
+   - Impact: duplicated behavior surface and test burden.
+
 ## 9) Recommended Evolution Path
 
-1. **Make task claiming atomic**
-   - Use guarded update (`WHERE status='queued'`) + affected-row check.
-   - Prefer claim token / leased owner semantics for retries and recovery.
+1. **Add lease + heartbeat semantics to task claiming**
+   - Extend claim model with `claimed_by` + `lease_until`.
+   - Reclaim stale running tasks automatically.
 
 2. **Promote DB-backed queue semantics for message consumption**
    - Keep fanout for UI, but agent loops should claim/lease messages from durable storage.
    - Preserve at-least-once guarantees with explicit ack deadlines.
 
-3. **Fix subscriber lifecycle in `Await`**
-   - Subscribe once per await invocation (outside loop), not once per iteration.
-   - Add scope-target filtering for wake events.
+3. **Guard task lifecycle transitions**
+   - Enforce allowed status transitions in SQL updates.
+   - Record rejected transitions as diagnostic updates.
 
 4. **Normalize task hierarchy in schema**
    - Add explicit `parent_id` column + index.
@@ -278,10 +285,210 @@ Current tests cover key flows well:
 
 Missing stress areas:
 
-1. parallel worker duplicate-claim tests with >1 claimer.
-2. prolonged await loops to catch subscription growth.
-3. message burst tests validating no dropped agent work under load.
+1. status transition race tests (`complete` vs `cancel`/`fail`) with concurrent writers.
+2. worker crash + stale lease reclaim tests for `running` task recovery.
+3. message failure semantics tests (retry/dead-letter vs immediate ack).
+4. high-volume control-stream tests for wake/interrupt reliability under fanout pressure.
 
 ## 11) Architectural Takeaway
 
 The core design is a good foundation: a local-first agent control plane with durable introspection and composable tools. The next step is reliability hardening around queue/stream semantics so the agentic framework remains correct under concurrency and sustained throughput, not just under light interactive load.
+
+## 12) Comparative Review vs `../karna`
+
+This section compares `go-agents` to `../karna` with focus on the agent runtime model.
+
+### 12.1 Runtime Topology Comparison
+
+```mermaid
+flowchart TB
+  subgraph G[go-agents]
+    GAPI[HTTP API]
+    GRUN[engine.Runtime per agent loop]
+    GTASK[(SQLite tasks + updates)]
+    GBUS[(SQLite events + in-memory fanout)]
+    GEX[execd Bun worker]
+    GAPI --> GRUN
+    GRUN --> GTASK
+    GRUN --> GBUS
+    GEX --> GAPI
+    GEX --> GTASK
+  end
+
+  subgraph K[karna]
+    KSUP[OTP Supervisor Tree]
+    KRUN[Karna.Agent.Runtime GenServer]
+    KSTREAM[Karna.Stream GenServer + scoped subscriptions]
+    KASYNC[Karna.AsyncTask GenServer]
+    KSNAP[Snapshotter + Context Store]
+    KSUP --> KRUN
+    KSUP --> KSTREAM
+    KSUP --> KASYNC
+    KRUN --> KSTREAM
+    KRUN --> KASYNC
+    KRUN --> KSNAP
+  end
+```
+
+### 12.2 Architectural Delta Summary
+
+| Dimension | `go-agents` | `karna` |
+|---|---|---|
+| Runtime model | Per-agent goroutine loop (`internal/engine/agent.go`) | GenServer runtime with explicit state machine (`lib/karna/agent/runtime.ex`) |
+| Failure recovery | Best effort; loop recreated via `EnsureAgentLoop` call path | OTP supervision + restart strategy (`lib/karna/application.ex`) |
+| Stream semantics | Durable DB events + lossy in-memory fanout (`internal/eventbus/bus.go`) | Scoped stream process with filtered subscriptions, wake routing, unread checks (`lib/karna/stream.ex`) |
+| Async task orchestration | SQLite task rows + update rows (`internal/tasks/manager.go`) | AsyncTask lifecycle process with command dispatch/signal/cancel hooks (`lib/karna/async_task.ex`) |
+| Agent policy model | Single runtime behavior, optional system/model override | Profile-driven runtime (`operator`, `front_desk`, `subagent`, `controller`) |
+| Context lifecycle | Prompt rebuilt each run; no runtime snapshot restore | Snapshot + compaction + resume workflows (`lib/karna/agent/runtime.ex`) |
+| Safety boundary | No API authn/authz in server handlers | Guardian + stronger process isolation posture |
+| Tool execution governance | Tool set assembled at startup; no policy layer | Toolbox choice modes + action logging wrappers (`lib/karna/tools/toolbox.ex`) |
+
+### 12.3 Findings (Severity Ordered)
+
+#### Critical
+
+1. **No supervised self-healing loop hierarchy**
+   - `go-agents` loops are goroutines tracked in-memory (`internal/engine/agent.go`), but there is no dedicated supervisor with restart backoff or crash telemetry.
+   - `karna` uses OTP supervision as a first-class runtime primitive (`lib/karna/application.ex`).
+   - Risk: runtime stalls after goroutine exits due internal error without deterministic restart policy.
+
+2. **Message event is acked even when `HandleMessage` fails**
+   - In `handleMessageEvent`, message ack happens regardless of `HandleMessage` error (`internal/engine/agent.go`).
+   - Risk: at-least-once delivery degrades to at-most-once under transient LLM/tool failures.
+
+3. **Task status transitions are not guarded by current state**
+   - `updateStatus` overwrites status without a transition guard (`internal/tasks/manager.go`).
+   - `Cancel`/`Kill` can overwrite terminal states recursively.
+   - Risk: inconsistent lifecycle state under race/retry conditions.
+
+#### High
+
+4. **Await path can miss pre-existing wake/interrupt events**
+   - `Await` subscribes then waits on live fanout without first reading unread wake events (`internal/tasks/manager.go`).
+   - `karna` pre-checks unread events before blocking (`lib/karna/agent/awaiter.ex`).
+   - Risk: slow interrupt response or spurious await timeouts.
+
+5. **Queue model lacks leases/heartbeats/reclaim**
+   - Claimed tasks move to `running`, but reclaim policy for crashed workers is indirect (`internal/tasks/manager.go`, `internal/engine/agent.go` task health wake signal).
+   - `karna` models cancellable async tasks with command signals and lifecycle hooks (`lib/karna/async_task.ex`).
+   - Risk: stuck `running` tasks and manual cleanup burden.
+
+6. **Lossy subscriber fanout remains part of control signaling**
+   - `eventbus.broadcast` drops events for slow subscribers (`internal/eventbus/bus.go`).
+   - Agent loop now has unread replay for `messages`, but other consumers still depend on live fanout.
+   - Risk: missed control events under burst load.
+
+#### Medium
+
+7. **Task hierarchy is metadata-encoded instead of schema-first**
+   - Child traversal scans all tasks and parses metadata JSON (`internal/tasks/manager.go`).
+   - Risk: poor scale characteristics and weaker referential integrity.
+
+8. **Runtime has no profile-level policy abstraction**
+   - `go-agents` can target many agent IDs but all share one behavior.
+   - `karna` profile interface allows agent-specific model/tool/stream policy (`lib/karna/agent/runtime.ex` + profile modules).
+   - Risk: policy drift as features grow (front desk, operator, subagents) with ad hoc conditionals.
+
+9. **Two exec worker implementations increase drift risk**
+   - `exec/execd.ts` is active path; `internal/execworker/*` duplicates similar behavior.
+   - Risk: inconsistent semantics and duplicated maintenance/test surface.
+
+10. **Control plane endpoints are unauthenticated**
+   - `/api/tasks/*`, `/api/agents/*`, `/api/streams/subscribe` currently have no auth guards (`internal/api/server.go`).
+   - Risk: unsafe outside localhost.
+
+### 12.4 Side-by-Side Runtime Samples
+
+`go-agents` message loop (synchronous message-to-turn execution):
+
+```go
+// internal/engine/agent.go
+sub := r.Bus.Subscribe(ctx, []string{"messages"})
+for {
+  select {
+  case evt := <-sub:
+    r.handleMessageEvent(ctx, agentID, evt)
+  }
+}
+```
+
+`karna` runtime (stateful process + pending work scheduler):
+
+```elixir
+# lib/karna/agent/runtime.ex
+def handle_info(:process_pending_work, state) do
+  if ready_for_work?(state) do
+    {:noreply, process_pending_work(state)}
+  else
+    {:noreply, state}
+  end
+end
+```
+
+## 13) Potential Improvements for `go-agents` Runtime
+
+Prioritized list intended for discussion and staged implementation.
+
+### 13.1 Phase 1 (Reliability Core)
+
+1. Introduce a **runtime supervisor** for agent loops:
+   - Owned restart policy (backoff, max retries, fatal state surfacing).
+   - Persist loop liveness state in DB for ops visibility.
+
+2. Add a **task state machine** with transition guards:
+   - Allowed transitions only (`queued -> running -> completed|failed|cancelled`).
+   - Reject terminal-to-terminal overwrites unless explicit force flag.
+
+3. Build **lease-based queue claiming**:
+   - `claimed_by`, `lease_until`, heartbeat updates, and timed reclaim.
+   - Keep current `ClaimQueued` API but back it with lease semantics.
+
+4. Make message ack conditional on success policy:
+   - Ack on success.
+   - On transient failure: retry with capped attempt metadata.
+   - On permanent failure: dead-letter stream plus ack.
+
+### 13.2 Phase 2 (Agentic Capabilities)
+
+5. Add a **profile interface** for agent classes:
+   - Runtime callbacks: `poll`, `build_turn`, `toolset`, `stream_policy`, `max_turns`.
+   - Start with `operator` and `front_desk` profiles.
+
+6. Move await/wake to **unread-first semantics**:
+   - Pre-check unread wake/task_output before subscribe-wait.
+   - Add task_id/priority filters to subscriptions.
+
+7. Normalize schema for hierarchy and routing:
+   - Add explicit `parent_id`, `notify_target`, `input_target`, `mode` columns.
+   - Keep metadata for non-indexed extension fields only.
+
+8. Consolidate worker runtime:
+   - Pick one exec worker path (`execd.ts` or Go worker) and remove the other.
+   - Preserve feature parity with snapshot + stdin streaming + cancellation.
+
+### 13.3 Phase 3 (Operations and Safety)
+
+9. Add authn/authz boundary:
+   - Localhost-only default.
+   - Optional bearer token or mTLS for remote operation.
+
+10. Add runtime observability contract:
+   - Metrics for loop lag, queue depth, retries, wake interrupts, lease expiry.
+   - Correlation IDs from API request -> task -> tool updates -> stream events.
+
+11. Add snapshot/resume support:
+   - Snapshot runtime session state periodically.
+   - Resume unfinished turns after restart with replay protection.
+
+12. Add policy guardrails for tools:
+   - Per-agent tool allowlists.
+   - Timeout/cost budget policies.
+   - Structured audit trail for tool calls.
+
+## 14) Suggested Discussion Order
+
+1. Reliability contract: decide target guarantees (`at-most-once` vs `at-least-once`) for messages and tasks.
+2. Runtime model: decide whether to stay goroutine-centric or introduce a supervised runtime manager.
+3. Profile model: decide minimum profile abstraction needed for operator/front_desk split.
+4. Worker strategy: choose a single long-term exec worker implementation.
+5. Security envelope: define localhost-only vs remote multi-user deployment requirements.

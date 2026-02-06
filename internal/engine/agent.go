@@ -989,7 +989,9 @@ func (r *Runtime) handleMessageEvent(ctx context.Context, agentID string, evt ev
 			source = val
 		}
 	}
-	_, _ = r.HandleMessage(ctx, agentID, source, evt.Body)
+	if _, err := r.HandleMessage(ctx, agentID, source, evt.Body); err != nil {
+		return false
+	}
 	_ = r.Bus.Ack(ctx, "messages", []string{evt.ID}, agentID)
 	return true
 }

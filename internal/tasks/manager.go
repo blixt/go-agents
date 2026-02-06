@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -69,7 +70,22 @@ type Manager struct {
 }
 
 var ErrAwaitTimeout = errors.New("await timeout")
+var ErrInvalidStatusTransition = errors.New("invalid task status transition")
 var WakeGrace = 200 * time.Millisecond
+
+type StatusTransitionError struct {
+	TaskID string
+	From   Status
+	To     Status
+}
+
+func (e *StatusTransitionError) Error() string {
+	return fmt.Sprintf("invalid task status transition for %s: %s -> %s", e.TaskID, e.From, e.To)
+}
+
+func (e *StatusTransitionError) Unwrap() error {
+	return ErrInvalidStatusTransition
+}
 
 type WakeError struct {
 	Event    eventbus.Event
@@ -327,9 +343,23 @@ func (m *Manager) MarkRunning(ctx context.Context, taskID string) error {
 		return fmt.Errorf("task_id is required")
 	}
 	updatedAt := time.Now().UTC()
-	_, err := m.db.ExecContext(ctx, `UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?`, StatusRunning, updatedAt.Format(time.RFC3339Nano), taskID)
+	res, err := m.db.ExecContext(ctx, `UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND status = ?`, StatusRunning, updatedAt.Format(time.RFC3339Nano), taskID, StatusQueued)
 	if err != nil {
 		return fmt.Errorf("update task status: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update task status rows affected: %w", err)
+	}
+	if affected == 0 {
+		current, err := m.currentStatus(ctx, taskID)
+		if err != nil {
+			return err
+		}
+		if current == StatusRunning {
+			return nil
+		}
+		return &StatusTransitionError{TaskID: taskID, From: current, To: StatusRunning}
 	}
 	return m.RecordUpdate(ctx, taskID, "started", map[string]any{"status": StatusRunning})
 }
@@ -413,6 +443,16 @@ func (m *Manager) Await(ctx context.Context, taskID string, timeout time.Duratio
 		}
 
 		targets := awaitTargetsForTask(task)
+		if evt, priority, ok, err := m.nextUnreadWakeEvent(ctx, targets, 25); err != nil {
+			return task, err
+		} else if ok {
+			if err := applyWakeGrace(ctx, evt); err != nil {
+				return task, err
+			}
+			_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, defaultAwaitReader)
+			current, _ := m.Get(ctx, taskID)
+			return current, &WakeError{Event: evt, Priority: priority}
+		}
 
 		select {
 		case <-ctx.Done():
@@ -496,6 +536,19 @@ func (m *Manager) AwaitAny(ctx context.Context, taskIDs []string, timeout time.D
 			for target := range awaitTargetsForTask(task) {
 				targets[target] = struct{}{}
 			}
+		}
+		if evt, priority, ok, err := m.nextUnreadWakeEvent(ctx, targets, 25); err != nil {
+			return AwaitAnyResult{}, err
+		} else if ok {
+			if err := applyWakeGrace(ctx, evt); err != nil {
+				return AwaitAnyResult{PendingIDs: pending}, err
+			}
+			_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, defaultAwaitReader)
+			return AwaitAnyResult{
+				PendingIDs:   pending,
+				WakeEvent:    &evt,
+				WakePriority: priority,
+			}, &WakeError{Event: evt, Priority: priority}
 		}
 
 		if m.bus == nil {
@@ -727,17 +780,42 @@ func (m *Manager) ClaimQueued(ctx context.Context, taskType string, limit int) (
 }
 
 func (m *Manager) updateStatus(ctx context.Context, taskID string, status Status, payload map[string]any, kind string) error {
+	current, err := m.currentStatus(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if current == status {
+		return nil
+	}
+	if !canTransition(current, status) {
+		return &StatusTransitionError{TaskID: taskID, From: current, To: status}
+	}
+
 	resultJSON, err := encodeJSON(payload)
 	if err != nil {
 		return fmt.Errorf("encode result: %w", err)
 	}
 	updatedAt := time.Now().UTC()
 
-	_, err = m.db.ExecContext(ctx, `
-		UPDATE tasks SET status = ?, updated_at = ?, result = ?, error = ? WHERE id = ?
-	`, status, updatedAt.Format(time.RFC3339Nano), resultJSON, extractError(payload), taskID)
+	res, err := m.db.ExecContext(ctx, `
+		UPDATE tasks SET status = ?, updated_at = ?, result = ?, error = ? WHERE id = ? AND status = ?
+	`, status, updatedAt.Format(time.RFC3339Nano), resultJSON, extractError(payload), taskID, current)
 	if err != nil {
 		return fmt.Errorf("update task status: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update task status rows affected: %w", err)
+	}
+	if affected == 0 {
+		latest, err := m.currentStatus(ctx, taskID)
+		if err != nil {
+			return err
+		}
+		if latest == status {
+			return nil
+		}
+		return &StatusTransitionError{TaskID: taskID, From: latest, To: status}
 	}
 
 	return m.RecordUpdate(ctx, taskID, kind, payload)
@@ -817,6 +895,122 @@ func (m *Manager) childTaskIDs(ctx context.Context, parentID string) ([]string, 
 		return nil, fmt.Errorf("iterate child tasks: %w", err)
 	}
 	return out, nil
+}
+
+func (m *Manager) currentStatus(ctx context.Context, taskID string) (Status, error) {
+	if taskID == "" {
+		return "", fmt.Errorf("task_id is required")
+	}
+	var status Status
+	err := m.db.QueryRowContext(ctx, `SELECT status FROM tasks WHERE id = ?`, taskID).Scan(&status)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", fmt.Errorf("task not found")
+		}
+		return "", fmt.Errorf("load task status: %w", err)
+	}
+	return status, nil
+}
+
+func canTransition(from, to Status) bool {
+	if from == to {
+		return true
+	}
+	switch from {
+	case StatusQueued:
+		return to == StatusRunning || to == StatusCompleted || to == StatusFailed || to == StatusCancelled
+	case StatusRunning:
+		return to == StatusCompleted || to == StatusFailed || to == StatusCancelled
+	case StatusCompleted, StatusFailed, StatusCancelled:
+		return false
+	default:
+		return false
+	}
+}
+
+type wakeEventRef struct {
+	Stream    string
+	ID        string
+	CreatedAt time.Time
+}
+
+func (m *Manager) nextUnreadWakeEvent(ctx context.Context, targets map[string]struct{}, limit int) (eventbus.Event, string, bool, error) {
+	if m.bus == nil {
+		return eventbus.Event{}, "", false, nil
+	}
+	if limit <= 0 {
+		limit = 25
+	}
+
+	var scopes []eventbus.ListOptions
+	scopes = append(scopes, eventbus.ListOptions{
+		ScopeType: "global",
+		ScopeID:   "*",
+		Limit:     limit,
+		Order:     "fifo",
+	})
+	for target := range targets {
+		target = strings.TrimSpace(target)
+		if target == "" {
+			continue
+		}
+		scopes = append(scopes, eventbus.ListOptions{
+			ScopeType: "agent",
+			ScopeID:   target,
+			Limit:     limit,
+			Order:     "fifo",
+		})
+	}
+
+	seen := map[string]struct{}{}
+	refs := make([]wakeEventRef, 0, len(defaultWakeStreams)*len(scopes))
+	for _, stream := range defaultWakeStreams {
+		for _, scope := range scopes {
+			summaries, err := m.bus.List(ctx, stream, scope)
+			if err != nil {
+				return eventbus.Event{}, "", false, err
+			}
+			for _, summary := range summaries {
+				key := stream + ":" + summary.ID
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				refs = append(refs, wakeEventRef{
+					Stream:    stream,
+					ID:        summary.ID,
+					CreatedAt: summary.CreatedAt,
+				})
+			}
+		}
+	}
+	sort.Slice(refs, func(i, j int) bool {
+		if refs[i].CreatedAt.Equal(refs[j].CreatedAt) {
+			if refs[i].Stream == refs[j].Stream {
+				return refs[i].ID < refs[j].ID
+			}
+			return refs[i].Stream < refs[j].Stream
+		}
+		return refs[i].CreatedAt.Before(refs[j].CreatedAt)
+	})
+
+	for _, ref := range refs {
+		events, err := m.bus.Read(ctx, ref.Stream, []string{ref.ID}, defaultAwaitReader)
+		if err != nil {
+			return eventbus.Event{}, "", false, err
+		}
+		if len(events) == 0 {
+			continue
+		}
+		evt := events[0]
+		if evt.Read {
+			continue
+		}
+		if wake, priority := wakeInfo(evt); wake && eventMatchesAwaitTargets(evt, targets) {
+			return evt, priority, true, nil
+		}
+	}
+	return eventbus.Event{}, "", false, nil
 }
 
 func getMetaString(meta map[string]any, key string) string {

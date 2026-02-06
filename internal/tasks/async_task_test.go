@@ -198,6 +198,49 @@ func TestAwaitWakeEvent(t *testing.T) {
 	}
 }
 
+func TestAwaitSeesPreexistingWakeEvent(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	ctx := context.Background()
+
+	task, err := mgr.Spawn(ctx, tasks.Spec{
+		Type:  "wake",
+		Owner: "agent-a",
+		Metadata: map[string]any{
+			"notify_target": "agent-a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	evt, err := bus.Push(ctx, eventbus.EventInput{
+		Stream:    "signals",
+		ScopeType: "agent",
+		ScopeID:   "agent-a",
+		Subject:   "wake",
+		Body:      "wake",
+		Metadata: map[string]any{
+			"priority": "wake",
+		},
+	})
+	if err != nil {
+		t.Fatalf("push wake: %v", err)
+	}
+
+	_, err = mgr.Await(ctx, task.ID, 2*time.Second)
+	wakeErr, ok := tasks.AsWakeError(err)
+	if !ok {
+		t.Fatalf("expected wake error, got %v", err)
+	}
+	if wakeErr.Event.ID != evt.ID {
+		t.Fatalf("expected preexisting wake event to be returned")
+	}
+}
+
 func TestAwaitInterruptEvent(t *testing.T) {
 	db, closeFn := testutil.OpenTestDB(t)
 	defer closeFn()
@@ -294,6 +337,58 @@ func TestAwaitAnyParallelWake(t *testing.T) {
 	}
 	if final.TaskID != taskA.ID {
 		t.Fatalf("expected completed task A, got %s", final.TaskID)
+	}
+}
+
+func TestAwaitAnySeesPreexistingWakeEvent(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	ctx := context.Background()
+
+	taskA, err := mgr.Spawn(ctx, tasks.Spec{
+		Type:  "parallel",
+		Owner: "agent-a",
+		Metadata: map[string]any{
+			"notify_target": "agent-a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("spawn A: %v", err)
+	}
+	taskB, err := mgr.Spawn(ctx, tasks.Spec{
+		Type:  "parallel",
+		Owner: "agent-a",
+		Metadata: map[string]any{
+			"notify_target": "agent-a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("spawn B: %v", err)
+	}
+
+	evt, err := bus.Push(ctx, eventbus.EventInput{
+		Stream:    "signals",
+		ScopeType: "agent",
+		ScopeID:   "agent-a",
+		Subject:   "wake",
+		Body:      "wake",
+		Metadata: map[string]any{
+			"priority": "wake",
+		},
+	})
+	if err != nil {
+		t.Fatalf("push wake: %v", err)
+	}
+
+	result, err := mgr.AwaitAny(ctx, []string{taskA.ID, taskB.ID}, 2*time.Second)
+	if _, ok := tasks.AsWakeError(err); !ok {
+		t.Fatalf("expected wake error, got %v", err)
+	}
+	if result.WakeEvent == nil || result.WakeEvent.ID != evt.ID {
+		t.Fatalf("expected preexisting wake event in result")
 	}
 }
 

@@ -3,6 +3,7 @@ package tasks
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -143,5 +144,57 @@ func TestManagerCancelKill(t *testing.T) {
 		if _, err := json.Marshal(killed.Result); err != nil {
 			t.Fatalf("result not json: %v", err)
 		}
+	}
+}
+
+func TestManagerRejectsInvalidTerminalTransition(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := NewManager(db, bus)
+	ctx := context.Background()
+
+	task, err := mgr.Spawn(ctx, Spec{Type: "exec"})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	if err := mgr.Complete(ctx, task.ID, map[string]any{"ok": true}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	err = mgr.Fail(ctx, task.ID, "late failure")
+	if !errors.Is(err, ErrInvalidStatusTransition) {
+		t.Fatalf("expected invalid transition error, got %v", err)
+	}
+
+	current, err := mgr.Get(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if current.Status != StatusCompleted {
+		t.Fatalf("expected completed status, got %s", current.Status)
+	}
+}
+
+func TestMarkRunningRejectsTerminalTask(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := NewManager(db, bus)
+	ctx := context.Background()
+
+	task, err := mgr.Spawn(ctx, Spec{Type: "exec"})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	if err := mgr.Cancel(ctx, task.ID, "done"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+
+	err = mgr.MarkRunning(ctx, task.ID)
+	if !errors.Is(err, ErrInvalidStatusTransition) {
+		t.Fatalf("expected invalid transition error, got %v", err)
 	}
 }
