@@ -34,6 +34,8 @@ type AgentState struct {
 	ID         string
 	Prompt     *agentctx.Manager
 	RootTaskID string
+	System     string
+	Model      string
 	mu         sync.Mutex
 }
 
@@ -273,6 +275,11 @@ func (r *Runtime) ensureAgentLLM(state *AgentState) (*llms.LLM, error) {
 		return r.LLMFactory()
 	}
 	if r.LLM != nil {
+		if state.Model != "" {
+			if llm, err := r.LLM.NewSessionWithModel(state.Model); err == nil {
+				return llm, nil
+			}
+		}
 		if llm, err := r.LLM.NewSession(); err == nil {
 			return llm, nil
 		}
@@ -289,6 +296,70 @@ func clonePromptManager(src *agentctx.Manager) *agentctx.Manager {
 		return nil
 	}
 	return &agentctx.Manager{Home: src.Home}
+}
+
+func (r *Runtime) SetAgentSystem(agentID, system string) {
+	if agentID == "" {
+		agentID = "operator"
+	}
+	state := r.ensureAgentState(agentID)
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	state.System = strings.TrimSpace(system)
+	state.mu.Unlock()
+}
+
+func (r *Runtime) SetAgentModel(agentID, model string) {
+	if agentID == "" {
+		agentID = "operator"
+	}
+	state := r.ensureAgentState(agentID)
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	state.Model = strings.TrimSpace(model)
+	state.mu.Unlock()
+}
+
+func (r *Runtime) EnsureRootTask(ctx context.Context, agentID string) (tasks.Task, error) {
+	if r.Tasks == nil {
+		return tasks.Task{}, fmt.Errorf("task manager unavailable")
+	}
+	if agentID == "" {
+		agentID = "operator"
+	}
+	state := r.ensureAgentState(agentID)
+	if state == nil {
+		return tasks.Task{}, fmt.Errorf("agent state unavailable")
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.RootTaskID != "" {
+		task, err := r.Tasks.Get(ctx, state.RootTaskID)
+		if err == nil && task.ID != "" {
+			return task, nil
+		}
+	}
+	metadata := map[string]any{
+		"agent_id":      agentID,
+		"input_target":  agentID,
+		"notify_target": agentID,
+	}
+	created, err := r.Tasks.Spawn(ctx, tasks.Spec{
+		Type:     "agent",
+		Owner:    agentID,
+		Mode:     "async",
+		Metadata: metadata,
+	})
+	if err != nil {
+		return tasks.Task{}, err
+	}
+	_ = r.Tasks.MarkRunning(ctx, created.ID)
+	state.RootTaskID = created.ID
+	return created, nil
 }
 
 func (r *Runtime) RunOnce(ctx context.Context, agentID, message string) (Session, error) {
@@ -317,6 +388,10 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 		promptText = text
 	} else {
 		return Session{}, fmt.Errorf("prompt unavailable")
+	}
+	if state.System != "" {
+		promptText = fmt.Sprintf("%s\n\n%s", promptText, state.System)
+		promptContent = content.FromText(promptText)
 	}
 
 	var rootTask tasks.Task
@@ -392,7 +467,7 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 			}
 		}
 		if source != "" && source != agentID {
-			_, _ = r.SendMessage(ctx, source, session.LastOutput, agentID)
+			_, _ = r.pushMessage(ctx, source, session.LastOutput, agentID)
 		}
 		return session, nil
 	}
@@ -510,7 +585,7 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 				} else {
 					reply = fmt.Sprintf("%s\n\n[error] %s", reply, session.LastError)
 				}
-				_, _ = r.SendMessage(ctx, source, reply, agentID)
+				_, _ = r.pushMessage(ctx, source, reply, agentID)
 			}
 			return session, err
 		}
@@ -537,11 +612,7 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 		})
 	}
 	if source != "" && source != agentID && strings.TrimSpace(output) != "" {
-		if agentID == "operator" && source != "human" {
-			_, _ = r.SendMessage(ctx, "human", output, agentID)
-		} else {
-			_, _ = r.SendMessage(ctx, source, output, agentID)
-		}
+		_, _ = r.pushMessage(ctx, source, output, agentID)
 	}
 	return session, nil
 }
@@ -640,6 +711,10 @@ func (r *Runtime) clearInflight(taskID string) {
 }
 
 func (r *Runtime) SendMessage(ctx context.Context, target, body, source string) (eventbus.Event, error) {
+	return r.pushMessage(ctx, target, body, source)
+}
+
+func (r *Runtime) pushMessage(ctx context.Context, target, body, source string) (eventbus.Event, error) {
 	if r.Bus == nil {
 		return eventbus.Event{}, fmt.Errorf("event bus unavailable")
 	}
@@ -773,6 +848,12 @@ func (r *Runtime) BuildSession(ctx context.Context, agentID string) (Session, er
 	if err != nil {
 		return Session{}, err
 	}
+	state.mu.Lock()
+	systemOverride := state.System
+	state.mu.Unlock()
+	if systemOverride != "" {
+		promptText = fmt.Sprintf("%s\n\n%s", promptText, systemOverride)
+	}
 	session := Session{AgentID: agentID, Prompt: promptText, UpdatedAt: time.Now().UTC()}
 	r.SetSession(session)
 	return session, nil
@@ -790,6 +871,12 @@ func (r *Runtime) BuildPrompt(ctx context.Context, agentID string) (string, erro
 	if err != nil {
 		return "", err
 	}
+	state.mu.Lock()
+	systemOverride := state.System
+	state.mu.Unlock()
+	if systemOverride != "" {
+		promptText = fmt.Sprintf("%s\n\n%s", promptText, systemOverride)
+	}
 	return promptText, nil
 }
 
@@ -801,28 +888,119 @@ func (r *Runtime) Run(ctx context.Context, agentID string) error {
 		agentID = "operator"
 	}
 	sub := r.Bus.Subscribe(ctx, []string{"messages"})
+	replayTicker := time.NewTicker(500 * time.Millisecond)
+	defer replayTicker.Stop()
+
 	for {
+		// Recover from missed in-memory fanout by replaying unread durable messages.
+		replayed, err := r.replayUnreadMessages(ctx, agentID, 64)
+		if err != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if replayed > 0 {
+			continue
+		}
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-replayTicker.C:
+			continue
 		case evt, ok := <-sub:
 			if !ok {
 				return ctx.Err()
 			}
-			if evt.Body == "" {
-				continue
-			}
-			if !eventTargetsAgent(evt, agentID) {
-				continue
-			}
-			source := ""
-			if evt.Metadata != nil {
-				if val, ok := evt.Metadata["source"].(string); ok {
-					source = val
-				}
-			}
-			_, _ = r.HandleMessage(ctx, agentID, source, evt.Body)
-			_ = r.Bus.Ack(ctx, "messages", []string{evt.ID}, agentID)
+			r.handleMessageEvent(ctx, agentID, evt)
 		}
 	}
+}
+
+func (r *Runtime) replayUnreadMessages(ctx context.Context, agentID string, limit int) (int, error) {
+	if r.Bus == nil {
+		return 0, nil
+	}
+	if limit <= 0 {
+		limit = 64
+	}
+	summaries, err := r.Bus.List(ctx, "messages", eventbus.ListOptions{
+		Reader: agentID,
+		Limit:  limit,
+		Order:  "fifo",
+	})
+	if err != nil {
+		return 0, err
+	}
+	if len(summaries) == 0 {
+		return 0, nil
+	}
+
+	ids := make([]string, 0, len(summaries))
+	for _, summary := range summaries {
+		if !summary.Read {
+			ids = append(ids, summary.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+
+	events, err := r.Bus.Read(ctx, "messages", ids, agentID)
+	if err != nil {
+		return 0, err
+	}
+	byID := map[string]eventbus.Event{}
+	for _, evt := range events {
+		byID[evt.ID] = evt
+	}
+
+	processed := 0
+	for _, summary := range summaries {
+		if summary.Read {
+			continue
+		}
+		evt, ok := byID[summary.ID]
+		if !ok {
+			continue
+		}
+		if r.handleMessageEvent(ctx, agentID, evt) {
+			processed++
+		}
+	}
+	return processed, nil
+}
+
+func (r *Runtime) handleMessageEvent(ctx context.Context, agentID string, evt eventbus.Event) bool {
+	if r.Bus == nil {
+		return false
+	}
+	if r.messageAlreadyAcked(ctx, agentID, evt.ID) {
+		return false
+	}
+	if !eventTargetsAgent(evt, agentID) {
+		return false
+	}
+	if strings.TrimSpace(evt.Body) == "" {
+		_ = r.Bus.Ack(ctx, "messages", []string{evt.ID}, agentID)
+		return true
+	}
+	source := ""
+	if evt.Metadata != nil {
+		if val, ok := evt.Metadata["source"].(string); ok {
+			source = val
+		}
+	}
+	_, _ = r.HandleMessage(ctx, agentID, source, evt.Body)
+	_ = r.Bus.Ack(ctx, "messages", []string{evt.ID}, agentID)
+	return true
+}
+
+func (r *Runtime) messageAlreadyAcked(ctx context.Context, agentID, eventID string) bool {
+	if r.Bus == nil || agentID == "" || eventID == "" {
+		return false
+	}
+	events, err := r.Bus.Read(ctx, "messages", []string{eventID}, agentID)
+	if err != nil || len(events) == 0 {
+		return false
+	}
+	return events[0].Read
 }

@@ -296,3 +296,126 @@ func TestAwaitAnyParallelWake(t *testing.T) {
 		t.Fatalf("expected completed task A, got %s", final.TaskID)
 	}
 }
+
+func TestAwaitIgnoresForeignScopedWake(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	ctx := context.Background()
+
+	task, err := mgr.Spawn(ctx, tasks.Spec{
+		Type:  "wake",
+		Owner: "agent-a",
+		Metadata: map[string]any{
+			"notify_target": "agent-a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	type awaitResult struct {
+		task tasks.Task
+		err  error
+	}
+	done := make(chan awaitResult, 1)
+	go func() {
+		result, err := mgr.Await(ctx, task.ID, 2*time.Second)
+		done <- awaitResult{task: result, err: err}
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	_, err = bus.Push(ctx, eventbus.EventInput{
+		Stream:    "signals",
+		ScopeType: "agent",
+		ScopeID:   "agent-b",
+		Subject:   "wake",
+		Body:      "wake",
+		Metadata: map[string]any{
+			"priority": "wake",
+		},
+	})
+	if err != nil {
+		t.Fatalf("push foreign wake: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	if err := mgr.Complete(ctx, task.ID, map[string]any{"ok": true}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	result := <-done
+	if result.err != nil {
+		t.Fatalf("expected completion, got error: %v", result.err)
+	}
+	if result.task.Status != tasks.StatusCompleted {
+		t.Fatalf("expected completed task, got %s", result.task.Status)
+	}
+}
+
+func TestAwaitMaintainsSingleSubscription(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	ctx := context.Background()
+
+	task, err := mgr.Spawn(ctx, tasks.Spec{
+		Type:  "wait",
+		Owner: "agent-a",
+		Metadata: map[string]any{
+			"notify_target": "agent-a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	awaitCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := mgr.Await(awaitCtx, task.ID, 5*time.Second)
+		done <- err
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for bus.SubscriberCount() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if bus.SubscriberCount() == 0 {
+		t.Fatalf("expected await subscriber")
+	}
+
+	for i := 0; i < 5; i++ {
+		_, err := bus.Push(ctx, eventbus.EventInput{
+			Stream:    "signals",
+			ScopeType: "agent",
+			ScopeID:   "agent-b",
+			Subject:   "wake",
+			Body:      "wake",
+			Metadata: map[string]any{
+				"priority": "wake",
+			},
+		})
+		if err != nil {
+			t.Fatalf("push foreign wake: %v", err)
+		}
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	if count := bus.SubscriberCount(); count != 1 {
+		t.Fatalf("expected one subscriber, got %d", count)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("await did not stop after cancel")
+	}
+}

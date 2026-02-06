@@ -82,3 +82,138 @@ func TestRuntimeRunLoop(t *testing.T) {
 		}
 	}
 }
+
+func TestRuntimeRunLoopReplaysUnreadMessages(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	client := &ai.Client{LLM: llms.New(&loopProvider{})}
+	rt := NewRuntime(bus, mgr, client)
+
+	evt, err := bus.Push(context.Background(), eventbus.EventInput{
+		Stream:    "messages",
+		ScopeType: "agent",
+		ScopeID:   "operator",
+		Body:      "queued-before-loop",
+		Metadata: map[string]any{
+			"source": "human",
+			"target": "operator",
+		},
+	})
+	if err != nil {
+		t.Fatalf("push message: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_ = rt.Run(ctx, "operator")
+	}()
+
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatalf("timeout waiting for replayed message to run")
+		default:
+			session, ok := rt.GetSession("operator")
+			if ok && session.LastInput == "queued-before-loop" && session.LastOutput == "loop" {
+				summaries, err := bus.List(context.Background(), "messages", eventbus.ListOptions{
+					Reader: "operator",
+					Limit:  10,
+					Order:  "fifo",
+				})
+				if err != nil {
+					t.Fatalf("list messages: %v", err)
+				}
+				for _, summary := range summaries {
+					if summary.ID == evt.ID && !summary.Read {
+						t.Fatalf("expected replayed message to be acked")
+					}
+				}
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+func TestRuntimeRunLoopDoesNotDuplicateBufferedMessages(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	client := &ai.Client{LLM: llms.New(&loopProvider{})}
+	rt := NewRuntime(bus, mgr, client)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_ = rt.Run(ctx, "operator")
+	}()
+
+	_, err := bus.Push(context.Background(), eventbus.EventInput{
+		Stream:    "messages",
+		ScopeType: "agent",
+		ScopeID:   "operator",
+		Body:      "first",
+		Metadata: map[string]any{
+			"source": "human",
+			"target": "operator",
+		},
+	})
+	if err != nil {
+		t.Fatalf("push first message: %v", err)
+	}
+	_, err = bus.Push(context.Background(), eventbus.EventInput{
+		Stream:    "messages",
+		ScopeType: "agent",
+		ScopeID:   "operator",
+		Body:      "second",
+		Metadata: map[string]any{
+			"source": "human",
+			"target": "operator",
+		},
+	})
+	if err != nil {
+		t.Fatalf("push second message: %v", err)
+	}
+
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatalf("timeout waiting for two llm tasks")
+		default:
+			items, err := mgr.List(context.Background(), tasks.ListFilter{
+				Type:  "llm",
+				Owner: "operator",
+				Limit: 10,
+			})
+			if err != nil {
+				t.Fatalf("list llm tasks: %v", err)
+			}
+			if len(items) >= 2 {
+				time.Sleep(150 * time.Millisecond)
+				items, err = mgr.List(context.Background(), tasks.ListFilter{
+					Type:  "llm",
+					Owner: "operator",
+					Limit: 10,
+				})
+				if err != nil {
+					t.Fatalf("list llm tasks: %v", err)
+				}
+				if len(items) != 2 {
+					t.Fatalf("expected exactly 2 llm tasks, got %d", len(items))
+				}
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}

@@ -1,5 +1,5 @@
 [tools]
-go = "1.25.6"
+go = "1.25.7"
 bun = "1.2.23"
 watchexec = "latest"
 golangci-lint = "latest"
@@ -19,13 +19,13 @@ run = [
 [tasks.test]
 description = "Run all tests"
 run = [
-  "go test ./...",
+  "env -u GOROOT go test ./...",
 ]
 
 [tasks.format]
 description = "Format + lint + vet"
 run = [
-  "gofmt -w $(find . -name '*.go' -not -path './vendor/*')",
-  "go vet ./...",
+  "env -u GOROOT gofmt -w $(find . -name '*.go' -not -path './vendor/*')",
+  "env -u GOROOT go vet ./...",
   "golangci-lint run",
 ]

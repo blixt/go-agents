@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,10 +43,66 @@ func TestManagerRecordUpdateWithWriteContention(t *testing.T) {
 	}()
 
 	err = mgr.RecordUpdate(ctx, task.ID, "progress", map[string]any{
-		"pct": 50,
+		"pct":   50,
 		"nonce": ulid.Make().String(),
 	})
 	if err != nil {
 		t.Fatalf("record update: %v", err)
+	}
+}
+
+func TestClaimQueuedIsAtomicUnderContention(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := NewManager(db, bus)
+	ctx := context.Background()
+
+	task, err := mgr.Spawn(ctx, Spec{Type: "exec"})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	results := make(chan []Task, 2)
+	errs := make(chan error, 2)
+
+	claim := func() {
+		defer wg.Done()
+		<-start
+		items, err := mgr.ClaimQueued(ctx, "exec", 1)
+		if err != nil {
+			errs <- err
+			return
+		}
+		results <- items
+	}
+
+	go claim()
+	go claim()
+	close(start)
+	wg.Wait()
+	close(results)
+	close(errs)
+
+	for err := range errs {
+		t.Fatalf("claim queued: %v", err)
+	}
+
+	claimedIDs := map[string]struct{}{}
+	for batch := range results {
+		for _, item := range batch {
+			claimedIDs[item.ID] = struct{}{}
+		}
+	}
+	if len(claimedIDs) != 1 {
+		t.Fatalf("expected one unique claim, got %d", len(claimedIDs))
+	}
+	if _, ok := claimedIDs[task.ID]; !ok {
+		t.Fatalf("expected claimed task id %s", task.ID)
 	}
 }

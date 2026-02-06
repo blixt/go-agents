@@ -33,3 +33,6 @@ Create `config.json` (or `data/config.json`) to adjust runtime settings:
 **Tests / Format**
 - `mise test`
 - `mise format`
+
+If `go test ./...` fails with a `version "go1.x.y" does not match go tool version` error, clear stale `GOROOT` first:
+- `unset GOROOT` (or run `GOROOT=$(go env GOROOT) go test ./...`)

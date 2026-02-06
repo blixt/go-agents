@@ -381,6 +381,15 @@ func (m *Manager) Await(ctx context.Context, taskID string, timeout time.Duratio
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	pollTicker := time.NewTicker(500 * time.Millisecond)
+	defer pollTicker.Stop()
+
+	var sub <-chan eventbus.Event
+	if m.bus != nil {
+		streams := append([]string{"task_output"}, defaultWakeStreams...)
+		sub = m.bus.Subscribe(ctx, streams)
+	}
+
 	for {
 		task, err := m.Get(ctx, taskID)
 		if err != nil {
@@ -392,7 +401,7 @@ func (m *Manager) Await(ctx context.Context, taskID string, timeout time.Duratio
 
 		if m.bus == nil {
 			select {
-			case <-time.After(500 * time.Millisecond):
+			case <-pollTicker.C:
 			case <-ctx.Done():
 				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 					_ = m.RecordUpdate(context.Background(), taskID, "await_timeout", map[string]any{"timeout_ms": timeout.Milliseconds()})
@@ -403,8 +412,8 @@ func (m *Manager) Await(ctx context.Context, taskID string, timeout time.Duratio
 			continue
 		}
 
-		streams := append([]string{"task_output"}, defaultWakeStreams...)
-		sub := m.bus.Subscribe(ctx, streams)
+		targets := awaitTargetsForTask(task)
+
 		select {
 		case <-ctx.Done():
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -412,6 +421,8 @@ func (m *Manager) Await(ctx context.Context, taskID string, timeout time.Duratio
 				return task, ErrAwaitTimeout
 			}
 			return task, ctx.Err()
+		case <-pollTicker.C:
+			continue
 		case evt, ok := <-sub:
 			if !ok {
 				return task, ctx.Err()
@@ -425,6 +436,9 @@ func (m *Manager) Await(ctx context.Context, taskID string, timeout time.Duratio
 				continue
 			}
 			if wake, priority := wakeInfo(evt); wake {
+				if !eventMatchesAwaitTargets(evt, targets) {
+					continue
+				}
 				if err := applyWakeGrace(ctx, evt); err != nil {
 					return task, err
 				}
@@ -454,8 +468,18 @@ func (m *Manager) AwaitAny(ctx context.Context, taskIDs []string, timeout time.D
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	pollTicker := time.NewTicker(500 * time.Millisecond)
+	defer pollTicker.Stop()
+
+	var sub <-chan eventbus.Event
+	if m.bus != nil {
+		streams := append([]string{"task_output"}, defaultWakeStreams...)
+		sub = m.bus.Subscribe(ctx, streams)
+	}
+
 	for {
 		pending := make([]string, 0, len(taskIDs))
+		targets := map[string]struct{}{}
 		for _, id := range taskIDs {
 			task, err := m.Get(ctx, id)
 			if err != nil {
@@ -469,11 +493,14 @@ func (m *Manager) AwaitAny(ctx context.Context, taskIDs []string, timeout time.D
 				}, nil
 			}
 			pending = append(pending, id)
+			for target := range awaitTargetsForTask(task) {
+				targets[target] = struct{}{}
+			}
 		}
 
 		if m.bus == nil {
 			select {
-			case <-time.After(500 * time.Millisecond):
+			case <-pollTicker.C:
 			case <-ctx.Done():
 				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 					recordAwaitTimeouts(taskIDs, timeout, m)
@@ -484,8 +511,6 @@ func (m *Manager) AwaitAny(ctx context.Context, taskIDs []string, timeout time.D
 			continue
 		}
 
-		streams := append([]string{"task_output"}, defaultWakeStreams...)
-		sub := m.bus.Subscribe(ctx, streams)
 		select {
 		case <-ctx.Done():
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -493,6 +518,8 @@ func (m *Manager) AwaitAny(ctx context.Context, taskIDs []string, timeout time.D
 				return AwaitAnyResult{PendingIDs: pending}, ErrAwaitTimeout
 			}
 			return AwaitAnyResult{PendingIDs: pending}, ctx.Err()
+		case <-pollTicker.C:
+			continue
 		case evt, ok := <-sub:
 			if !ok {
 				return AwaitAnyResult{PendingIDs: pending}, ctx.Err()
@@ -506,6 +533,9 @@ func (m *Manager) AwaitAny(ctx context.Context, taskIDs []string, timeout time.D
 				continue
 			}
 			if wake, priority := wakeInfo(evt); wake {
+				if !eventMatchesAwaitTargets(evt, targets) {
+					continue
+				}
 				if err := applyWakeGrace(ctx, evt); err != nil {
 					return AwaitAnyResult{PendingIDs: pending}, err
 				}
@@ -531,6 +561,54 @@ func (m *Manager) ListUpdates(ctx context.Context, taskID string, limit int) ([]
 		ORDER BY created_at ASC
 		LIMIT ?
 	`, taskID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list updates: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Update
+	for rows.Next() {
+		var upd Update
+		var payloadStr, createdAtStr string
+		if err := rows.Scan(&upd.ID, &upd.TaskID, &upd.Kind, &payloadStr, &createdAtStr); err != nil {
+			return nil, fmt.Errorf("scan update: %w", err)
+		}
+		upd.Payload = decodeJSONMap(payloadStr)
+		upd.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAtStr)
+		out = append(out, upd)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate updates: %w", err)
+	}
+	return out, nil
+}
+
+func (m *Manager) ListUpdatesSince(ctx context.Context, taskID, afterID, kind string, limit int) ([]Update, error) {
+	if taskID == "" {
+		return nil, fmt.Errorf("task_id is required")
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+
+	query := `
+		SELECT id, task_id, kind, payload, created_at
+		FROM task_updates
+		WHERE task_id = ?
+	`
+	args := []any{taskID}
+	if kind != "" {
+		query += " AND kind = ?"
+		args = append(args, kind)
+	}
+	if afterID != "" {
+		query += " AND id > ?"
+		args = append(args, afterID)
+	}
+	query += " ORDER BY id ASC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := m.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list updates: %w", err)
 	}
@@ -616,19 +694,36 @@ func (m *Manager) ClaimQueued(ctx context.Context, taskType string, limit int) (
 	}
 
 	updatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	claimed := make([]Task, 0, len(tasks))
 	for _, task := range tasks {
-		if _, err := tx.ExecContext(ctx, `UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?`, StatusRunning, updatedAt, task.ID); err != nil {
+		res, err := tx.ExecContext(ctx, `UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND status = ?`, StatusRunning, updatedAt, task.ID, StatusQueued)
+		if err != nil {
 			return nil, fmt.Errorf("mark running: %w", err)
 		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return nil, fmt.Errorf("mark running rows affected: %w", err)
+		}
+		if affected == 0 {
+			continue
+		}
+		task.Status = StatusRunning
+		if parsed, err := time.Parse(time.RFC3339Nano, updatedAt); err == nil {
+			task.UpdatedAt = parsed
+		}
+		claimed = append(claimed, task)
 	}
 
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit claim: %w", err)
 	}
-	for _, task := range tasks {
+	if len(claimed) == 0 {
+		return nil, nil
+	}
+	for _, task := range claimed {
 		_ = m.RecordUpdate(context.Background(), task.ID, "started", map[string]any{"status": StatusRunning})
 	}
-	return tasks, nil
+	return claimed, nil
 }
 
 func (m *Manager) updateStatus(ctx context.Context, taskID string, status Status, payload map[string]any, kind string) error {
@@ -780,6 +875,39 @@ func wakeInfo(evt eventbus.Event) (bool, string) {
 		return true, "wake"
 	}
 	return false, ""
+}
+
+func awaitTargetsForTask(task Task) map[string]struct{} {
+	out := map[string]struct{}{}
+	if target := getMetaString(task.Metadata, "notify_target"); target != "" {
+		out[target] = struct{}{}
+	}
+	if task.Owner != "" {
+		out[task.Owner] = struct{}{}
+	}
+	return out
+}
+
+func eventMatchesAwaitTargets(evt eventbus.Event, targets map[string]struct{}) bool {
+	if evt.ScopeType == "agent" {
+		if evt.ScopeID == "" {
+			return false
+		}
+		_, ok := targets[evt.ScopeID]
+		return ok
+	}
+	if evt.ScopeType == "global" || evt.ScopeType == "" {
+		if evt.ScopeID == "" || evt.ScopeID == "*" {
+			return true
+		}
+		_, ok := targets[evt.ScopeID]
+		return ok
+	}
+	if evt.ScopeID == "" || evt.ScopeID == "*" {
+		return true
+	}
+	_, ok := targets[evt.ScopeID]
+	return ok
 }
 
 func containsID(list []string, id string) bool {
