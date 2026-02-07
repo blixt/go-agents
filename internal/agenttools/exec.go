@@ -14,7 +14,6 @@ import (
 
 type ExecParams struct {
 	Code        string `json:"code" description:"TypeScript code to run in Bun"`
-	ID          string `json:"id,omitempty" description:"Optional session id for snapshot reuse"`
 	WaitSeconds *int   `json:"wait_seconds" description:"Required seconds to wait before returning; use 0 to return immediately"`
 }
 
@@ -50,7 +49,6 @@ func ExecTool(manager *tasks.Manager) llmtools.Tool {
 				Metadata: metadata,
 				Payload: map[string]any{
 					"code": code,
-					"id":   strings.TrimSpace(p.ID),
 				},
 			}
 			task, err := manager.Spawn(r.Context(), spec)

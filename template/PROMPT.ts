@@ -32,7 +32,7 @@ export function coreRulesBlock() {
 export function execToolBlock() {
   return [
     "Exec tool:",
-    "- Signature: { code: string, id?: string, wait_seconds: number }",
+    "- Signature: { code: string, wait_seconds: number }",
     "- Runs TypeScript in Bun via exec/bootstrap.ts.",
     "- wait_seconds is required.",
     "- Use wait_seconds=0 to return immediately and let the task continue in background.",
@@ -97,8 +97,7 @@ export function noopBlock() {
 
 export function stateBlock() {
   return [
-    "State + results:",
-    "- Use globalThis.state for persistent state across exec calls.",
+    "Results:",
     "- Set globalThis.result to return structured output from exec.",
   ].join("\n")
 }

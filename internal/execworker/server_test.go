@@ -40,7 +40,6 @@ func TestWorkerWebhookDispatch(t *testing.T) {
 
 	worker := &Worker{
 		APIURL:        "http://in-process",
-		SnapshotDir:   filepath.Join(t.TempDir(), "snapshots"),
 		BootstrapPath: filepath.Join(repoRoot(t), "exec", "bootstrap.ts"),
 		HTTP:          client,
 	}

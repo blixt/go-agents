@@ -117,7 +117,8 @@ const (
 	maxToolContentChars   = 1200
 
 	maxContextEventsPerTurn = 24
-	maxContextEventBody     = 500
+	maxContextEventBodyWake = 500
+	maxContextEventBodyBase = 200
 	maxContextEventData     = 900
 	minTimePassedDelta      = 60 * time.Second
 )
@@ -1693,8 +1694,8 @@ func (r *Runtime) appendContextUpdateHistory(
 	}
 	for _, evt := range events {
 		priority := eventPriorityForEvent(evt)
-		subject := clipText(strings.TrimSpace(evt.Subject), maxContextEventBody)
-		body := clipText(strings.TrimSpace(evt.Body), maxContextEventBody)
+		subject := clipText(strings.TrimSpace(evt.Subject), contextEventBodyLimit(priority))
+		body, _ := buildContextEventBody(evt, priority)
 		content := subject
 		if content == "" {
 			content = body
@@ -1997,10 +1998,13 @@ func buildInputWithHistory(turns []ConversationTurn, source, message string, met
 	}
 	priority := eventPriority(metadata)
 	message = strings.TrimSpace(message)
+	if hasMessageEvent(frame.Events, message) {
+		message = ""
+	}
 
 	var b strings.Builder
 	b.Grow(maxHistoryBytes + 3500)
-	b.WriteString("<user_turn source=\"")
+	b.WriteString("<system_updates source=\"")
 	b.WriteString(xmlEscape(source))
 	b.WriteString("\" priority=\"")
 	b.WriteString(xmlEscape(priority))
@@ -2016,11 +2020,9 @@ func buildInputWithHistory(turns []ConversationTurn, source, message string, met
 		b.WriteString("\n")
 	}
 
-	b.WriteString("  <system_updates user_authored=\"false\">\n")
-	b.WriteString(indentXML(renderContextUpdatesXML(turnCtx, frame), "    "))
+	b.WriteString(indentXML(renderContextUpdatesXML(turnCtx, frame), "  "))
 	b.WriteString("\n")
-	b.WriteString("  </system_updates>\n")
-	b.WriteString("</user_turn>")
+	b.WriteString("</system_updates>")
 	return b.String()
 }
 
@@ -2034,6 +2036,7 @@ func renderRecentContextXML(turns []ConversationTurn, limit int, currentMessage 
 		seenFacts["input:"+strings.ToLower(messageFact)] = struct{}{}
 	}
 	var b strings.Builder
+	emitted := 0
 	b.WriteString("<recent_context>\n")
 	used := 0
 	for _, turn := range turns {
@@ -2085,7 +2088,11 @@ func renderRecentContextXML(turns []ConversationTurn, limit int, currentMessage 
 			b.WriteString("</output>\n")
 		}
 		b.WriteString("  </turn>\n")
+		emitted++
 		used += approx
+	}
+	if emitted == 0 {
+		return ""
 	}
 	b.WriteString("</recent_context>")
 	return b.String()
@@ -2104,37 +2111,10 @@ func indentXML(raw, prefix string) string {
 
 func renderContextUpdatesXML(turnCtx TurnContext, frame ContextUpdateFrame) string {
 	var b strings.Builder
-	b.WriteString("<context_updates generated_at=\"")
-	b.WriteString(turnCtx.Now.UTC().Format(time.RFC3339))
-	b.WriteString("\"")
-	if strings.TrimSpace(frame.FromEventID) != "" {
-		b.WriteString(" from_event_id=\"")
-		b.WriteString(xmlEscape(frame.FromEventID))
-		b.WriteString("\"")
-	}
+	b.WriteString("<context_updates")
 	if strings.TrimSpace(frame.ToEventID) != "" {
 		b.WriteString(" to_event_id=\"")
 		b.WriteString(xmlEscape(frame.ToEventID))
-		b.WriteString("\"")
-	}
-	if frame.Scanned > 0 {
-		b.WriteString(" scanned=\"")
-		b.WriteString(fmt.Sprintf("%d", frame.Scanned))
-		b.WriteString("\"")
-	}
-	if frame.Emitted > 0 {
-		b.WriteString(" emitted=\"")
-		b.WriteString(fmt.Sprintf("%d", frame.Emitted))
-		b.WriteString("\"")
-	}
-	if frame.Superseded > 0 {
-		b.WriteString(" superseded=\"")
-		b.WriteString(fmt.Sprintf("%d", frame.Superseded))
-		b.WriteString("\"")
-	}
-	if !turnCtx.Previous.IsZero() {
-		b.WriteString(" elapsed_seconds=\"")
-		b.WriteString(fmt.Sprintf("%d", int64(turnCtx.Elapsed.Seconds())))
 		b.WriteString("\"")
 	}
 	b.WriteString(">\n")
@@ -2160,13 +2140,14 @@ func renderContextUpdatesXML(turnCtx TurnContext, frame ContextUpdateFrame) stri
 		priority := eventPriorityForEvent(evt)
 		taskID := getMetaString(evt.Metadata, "task_id")
 		taskKind := getMetaString(evt.Metadata, "task_kind")
-		subject := clipText(strings.TrimSpace(evt.Subject), maxContextEventBody)
-		body := clipText(strings.TrimSpace(evt.Body), maxContextEventBody)
+		subject := clipText(strings.TrimSpace(evt.Subject), contextEventBodyLimit(priority))
+		body, bodyTruncated := buildContextEventBody(evt, priority)
 		if taskID != "" && subject == fmt.Sprintf("Task %s update", taskID) {
 			subject = ""
 		}
-		if taskKind != "" && body == taskKind {
+		if taskKind != "" && strings.EqualFold(strings.TrimSpace(body), taskKind) {
 			body = ""
+			bodyTruncated = false
 		}
 		b.WriteString("  <event stream=\"")
 		b.WriteString(xmlEscape(evt.Stream))
@@ -2197,7 +2178,11 @@ func renderContextUpdatesXML(turnCtx TurnContext, frame ContextUpdateFrame) stri
 			b.WriteString("</subject>\n")
 		}
 		if body != "" {
-			b.WriteString("    <body>")
+			b.WriteString("    <body")
+			if bodyTruncated {
+				b.WriteString(" truncated=\"true\"")
+			}
+			b.WriteString(">")
 			b.WriteString(xmlEscape(body))
 			b.WriteString("</body>\n")
 		}
@@ -2206,15 +2191,72 @@ func renderContextUpdatesXML(turnCtx TurnContext, frame ContextUpdateFrame) stri
 			b.WriteString(xmlEscape(metadata))
 			b.WriteString("</metadata>\n")
 		}
-		if payload := previewJSON(evt.Payload, maxContextEventData); payload != "" {
-			b.WriteString("    <payload>")
-			b.WriteString(xmlEscape(payload))
-			b.WriteString("</payload>\n")
-		}
 		b.WriteString("  </event>\n")
 	}
 	b.WriteString("</context_updates>")
 	return b.String()
+}
+
+func hasMessageEvent(events []eventbus.Event, message string) bool {
+	msg := strings.TrimSpace(message)
+	if msg == "" {
+		return false
+	}
+	for _, evt := range events {
+		if strings.TrimSpace(evt.Stream) != "messages" {
+			continue
+		}
+		if strings.TrimSpace(evt.Body) == msg {
+			return true
+		}
+	}
+	return false
+}
+
+func contextEventBodyLimit(priority string) int {
+	switch strings.ToLower(strings.TrimSpace(priority)) {
+	case "interrupt", "wake":
+		return maxContextEventBodyWake
+	default:
+		return maxContextEventBodyBase
+	}
+}
+
+func buildContextEventBody(evt eventbus.Event, priority string) (string, bool) {
+	limit := contextEventBodyLimit(priority)
+	body := strings.TrimSpace(evt.Body)
+	payload := previewJSON(evt.Payload, maxContextEventData)
+	combined := body
+	if payload != "" {
+		switch {
+		case combined == "":
+			combined = payload
+		case shouldAppendPayloadToContextBody(evt, priority, combined):
+			combined = combined + "\n" + payload
+		}
+	}
+	return clipTextWithMeta(combined, limit)
+}
+
+func shouldAppendPayloadToContextBody(evt eventbus.Event, priority, body string) bool {
+	switch strings.ToLower(strings.TrimSpace(priority)) {
+	case "interrupt", "wake":
+		return true
+	}
+	if strings.TrimSpace(evt.Stream) == "errors" {
+		return true
+	}
+	taskKind := strings.ToLower(strings.TrimSpace(getMetaString(evt.Metadata, "task_kind")))
+	switch taskKind {
+	case "completed", "failed", "cancelled", "killed":
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(body)) {
+	case "summary", "completed", "failed", "cancelled", "killed":
+		return true
+	default:
+		return false
+	}
 }
 
 func compactEventMetadataForPrompt(metadata map[string]any, stream, priority, taskID, taskKind string) string {
@@ -2255,6 +2297,12 @@ func compactEventMetadataForPrompt(metadata map[string]any, stream, priority, ta
 func previewJSON(v any, limit int) string {
 	if v == nil {
 		return ""
+	}
+	switch typed := v.(type) {
+	case map[string]any:
+		if len(typed) == 0 {
+			return ""
+		}
 	}
 	data, err := json.Marshal(v)
 	if err != nil {
@@ -2370,10 +2418,15 @@ func (r *Runtime) loadRecentConversation(ctx context.Context, agentID string, li
 }
 
 func clipText(text string, limit int) string {
+	clipped, _ := clipTextWithMeta(text, limit)
+	return clipped
+}
+
+func clipTextWithMeta(text string, limit int) (string, bool) {
 	if limit <= 0 || len(text) <= limit {
-		return text
+		return text, false
 	}
-	return strings.TrimSpace(text[:limit]) + " …"
+	return strings.TrimSpace(text[:limit]) + " …", true
 }
 
 func ignoredWakeEventIDsForTurn(messageMeta map[string]any, contextEvents []eventbus.Event) []string {

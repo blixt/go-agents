@@ -70,7 +70,6 @@ func ExecToolFactory() ToolFactory {
 
 type MockExecParams struct {
 	Code        string `json:"code"`
-	ID          string `json:"id,omitempty"`
 	WaitSeconds int    `json:"wait_seconds,omitempty"`
 }
 
@@ -148,6 +147,7 @@ func NewSnapshotFixture(t *testing.T, opts SnapshotFixtureOptions) *SnapshotFixt
 	}
 	runtimeClient := &ai.Client{LLM: llms.New(opts.Provider, tools...)}
 	rt := engine.NewRuntime(bus, mgr, runtimeClient, engine.WithClock(clock.Now))
+	rt.Context.Home = repoTemplateHome(t)
 
 	server := &Server{Tasks: mgr, Bus: bus, Runtime: rt, NowFn: clock.Now}
 	client := testutil.NewInProcessClient(server.Handler())
@@ -160,6 +160,20 @@ func NewSnapshotFixture(t *testing.T, opts SnapshotFixtureOptions) *SnapshotFixt
 		Client:  client,
 		Clock:   clock,
 	}
+}
+
+func repoTemplateHome(t *testing.T) string {
+	t.Helper()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	root := filepath.Clean(filepath.Join(cwd, "..", ".."))
+	home := filepath.Join(root, "template")
+	if _, err := os.Stat(filepath.Join(home, "PROMPT.ts")); err != nil {
+		t.Fatalf("template prompt not found at %s: %v", home, err)
+	}
+	return home
 }
 
 func (f *SnapshotFixture) FetchState(t *testing.T) stateResponse {
@@ -175,34 +189,6 @@ func (f *SnapshotFixture) FetchState(t *testing.T) stateResponse {
 		t.Fatalf("decode state response: %v", err)
 	}
 	return state
-}
-
-func waitForSpawnedTask(ctx context.Context, bus *eventbus.Bus, taskType string, handler func(taskID string) error) error {
-	if bus == nil {
-		return fmt.Errorf("bus is required")
-	}
-	sub := bus.Subscribe(ctx, []string{"task_input"})
-	for {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("timed out waiting for %s task: %w", taskType, ctx.Err())
-		case evt, ok := <-sub:
-			if !ok {
-				return fmt.Errorf("task_input subscription closed")
-			}
-			if evt.Stream != "task_input" {
-				continue
-			}
-			if mapString(evt.Metadata, "action") != "spawn" || mapString(evt.Metadata, "task_type") != taskType {
-				continue
-			}
-			taskID := strings.TrimSpace(mapString(evt.Metadata, "task_id"))
-			if taskID == "" {
-				continue
-			}
-			return handler(taskID)
-		}
-	}
 }
 
 type scriptedProvider struct {
@@ -388,7 +374,7 @@ func renderSessionSnapshotMarkdown(title string, state stateResponse) ([]byte, e
 
 			if entry.Content != "" {
 				fence := "text"
-				if strings.Contains(entry.Content, "<user_turn") {
+				if strings.Contains(entry.Content, "<system_updates") {
 					fence = "xml"
 				}
 				renderedContent := entry.Content
@@ -434,21 +420,6 @@ func sortedMapKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-func mapString(m map[string]any, key string) string {
-	if m == nil {
-		return ""
-	}
-	val, ok := m[key]
-	if !ok || val == nil {
-		return ""
-	}
-	str, ok := val.(string)
-	if !ok {
-		return ""
-	}
-	return str
 }
 
 func historyEntrySortKey(entry engine.AgentHistoryEntry) string {

@@ -26,9 +26,6 @@ func main() {
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		log.Fatalf("create data dir: %v", err)
 	}
-	if err := os.MkdirAll(cfg.SnapshotDir, 0o755); err != nil {
-		log.Fatalf("create snapshot dir: %v", err)
-	}
 	if err := os.MkdirAll(cfg.LLMDebugDir, 0o755); err != nil {
 		log.Fatalf("create llm debug dir: %v", err)
 	}

@@ -26,7 +26,6 @@ type Task struct {
 
 type Worker struct {
 	APIURL        string
-	SnapshotDir   string
 	BootstrapPath string
 	HTTP          *http.Client
 }
@@ -71,7 +70,6 @@ func (w *Worker) RunTask(ctx context.Context, task Task) error {
 	if code == "" {
 		return w.sendFail(ctx, task.ID, "exec task missing code")
 	}
-	id, _ := payload["id"].(string)
 
 	tmpDir, err := os.MkdirTemp("", "go-agents-execd-")
 	if err != nil {
@@ -98,17 +96,6 @@ func (w *Worker) RunTask(ctx context.Context, task Task) error {
 		return err
 	}
 
-	snapshotDir := w.SnapshotDir
-	if snapshotDir == "" {
-		snapshotDir = filepath.Join("data", "exec-snapshots")
-	}
-	if err := os.MkdirAll(snapshotDir, 0o755); err != nil {
-		return err
-	}
-	snapshotPath := ""
-	if id != "" {
-		snapshotPath = filepath.Join(snapshotDir, id+".json")
-	}
 	resultPath := filepath.Join(tmpDir, "result.json")
 	bootstrap := w.BootstrapPath
 	if bootstrap == "" {
@@ -120,16 +107,13 @@ func (w *Worker) RunTask(ctx context.Context, task Task) error {
 		}
 	}
 
-	_ = w.sendUpdate(ctx, task.ID, "start", map[string]any{"session_id": id})
+	_ = w.sendUpdate(ctx, task.ID, "start", map[string]any{})
 
 	bunPath, err := exec.LookPath("bun")
 	if err != nil {
 		bunPath = "bun"
 	}
 	args := []string{bunPath, bootstrap, "--code-file", codePath, "--result-path", resultPath}
-	if snapshotPath != "" {
-		args = append(args, "--snapshot-in", snapshotPath, "--snapshot-out", snapshotPath)
-	}
 
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Stdout = nil
@@ -143,14 +127,39 @@ func (w *Worker) RunTask(ctx context.Context, task Task) error {
 	_ = w.sendUpdate(ctx, task.ID, "exit", map[string]any{"exit_code": 0})
 
 	resultData, _ := os.ReadFile(resultPath)
-	var result map[string]any
-	if len(resultData) > 0 {
-		_ = json.Unmarshal(resultData, &result)
-	}
-	if result == nil {
-		result = map[string]any{}
-	}
+	result := decodeExecResult(resultData)
 	return w.sendComplete(ctx, task.ID, result)
+}
+
+func decodeExecResult(data []byte) map[string]any {
+	if len(data) == 0 {
+		return map[string]any{}
+	}
+
+	var raw any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return map[string]any{}
+	}
+
+	switch typed := raw.(type) {
+	case map[string]any:
+		if len(typed) == 1 {
+			if inner, ok := typed["result"]; ok {
+				if innerMap, ok := inner.(map[string]any); ok && innerMap != nil {
+					return innerMap
+				}
+				return map[string]any{"result": inner}
+			}
+		}
+		if typed == nil {
+			return map[string]any{}
+		}
+		return typed
+	case nil:
+		return map[string]any{}
+	default:
+		return map[string]any{"result": typed}
+	}
 }
 
 func (w *Worker) sendUpdate(ctx context.Context, taskID, kind string, payload map[string]any) error {

@@ -10,7 +10,7 @@ This document reviews the current architecture with emphasis on the **agentic ru
 - `web/server.tsx` hosts the React UI in Bun and proxies `/api/*` to `agentd`.
 - A SQLite-backed task/event substrate provides durable state.
 - Agent loops are event-driven (`messages` stream), invoke LLM tools, and emit task updates.
-- `execd` is the primary worker for `exec` tasks, running Bun/TypeScript in a sandbox-like temp workspace with optional snapshot state.
+- `execd` is the primary worker for `exec` tasks, running Bun/TypeScript in a sandbox-like temp workspace.
 
 The architecture is strong for rapid iteration and observability, but has a few high-impact reliability/scaling risks in queueing and subscription semantics (detailed in section 8).
 
@@ -57,7 +57,7 @@ flowchart LR
 - `internal/api`: minimal runtime/task/event endpoints + SSE stream.
 - `web/*`: Bun + React + TypeScript UI over `/api/state` and SSE.
 - `exec/execd.ts`: external worker process for `exec` task execution.
-- `exec/bootstrap.ts`: isolated per-task entrypoint for code execution + state snapshot I/O.
+- `exec/bootstrap.ts`: isolated per-task entrypoint for code execution + result capture.
 
 ## 4) Agentic Runtime Flow
 
@@ -78,7 +78,7 @@ flowchart LR
 1. LLM calls `exec` tool.
 2. `ExecTool` creates an `exec` task (`tasks.Spawn`) with code payload.
 3. `execd` claims queued `exec` tasks from `/api/tasks/queue?type=exec`.
-4. `execd` runs `exec/bootstrap.ts` in a temp directory, optionally loading/saving snapshot by `id`.
+4. `execd` runs `exec/bootstrap.ts` in a temp directory and captures `globalThis.result`.
 5. `execd` posts updates (`stdout`, `stderr`, `exit`) and completion/failure.
 6. Agent can `await_task` or continue asynchronously.
 
@@ -143,7 +143,6 @@ spec := tasks.Spec{
   Metadata: metadata,
   Payload: map[string]any{
     "code": code,
-    "id":   strings.TrimSpace(p.ID),
   },
 }
 task, err := manager.Spawn(r.Context(), spec)
@@ -167,18 +166,12 @@ for {
 }
 ```
 
-### Sample D: `exec` bootstrap persists cross-call state
+### Sample D: `exec` bootstrap writes result payload
 `exec/bootstrap.ts`
 
 ```ts
-const state: ExecState = {}
-if (snapshotIn) {
-  const parsed = JSON.parse(await Bun.file(snapshotIn).text())
-  Object.assign(state, parsed)
-}
-(globalThis as any).state = state
 await import(codeFile)
-await Bun.write(snapshotOut, JSON.stringify((globalThis as any).state, null, 2))
+await Bun.write(resultPath, JSON.stringify({ result: (globalThis as any).result }, null, 2))
 ```
 
 ## 7) Strengths

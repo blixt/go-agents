@@ -317,10 +317,7 @@ func TestRuntimeInjectsAndAcksContextUpdates(t *testing.T) {
 	}
 
 	last := cp.LastInput()
-	if !strings.Contains(last, "<user_turn") {
-		t.Fatalf("expected user_turn xml wrapper in input, got: %q", last)
-	}
-	if !strings.Contains(last, "<system_updates user_authored=\"false\">") {
+	if !strings.Contains(last, "<system_updates") {
 		t.Fatalf("expected system_updates wrapper in input, got: %q", last)
 	}
 	if !strings.Contains(last, "<context_updates") {
@@ -358,7 +355,7 @@ func TestRuntimeInjectsAndAcksContextUpdates(t *testing.T) {
 			foundContextEvent = true
 		}
 		if entry.Type == "llm_input" {
-			if strings.Contains(entry.Content, "<user_turn") && strings.Contains(entry.Content, "<context_updates") {
+			if strings.Contains(entry.Content, "<system_updates") && strings.Contains(entry.Content, "<context_updates") {
 				foundLLMInput = true
 			}
 		}
@@ -413,6 +410,54 @@ func TestIgnoredWakeEventIDsForTurn(t *testing.T) {
 		if _, ok := expected[id]; !ok {
 			t.Fatalf("unexpected id %q in ignore set %v", id, ids)
 		}
+	}
+}
+
+func TestRenderContextUpdatesXMLUsesBodyAndTruncatesNormalPriority(t *testing.T) {
+	longBody := strings.Repeat("x", 260)
+	evt := eventbus.Event{
+		ID:        "evt-1",
+		Stream:    "signals",
+		Body:      longBody,
+		CreatedAt: time.Now().UTC(),
+		Metadata:  map[string]any{"priority": "normal"},
+	}
+
+	xml := renderContextUpdatesXML(TurnContext{Now: time.Now().UTC()}, ContextUpdateFrame{
+		Events:    []eventbus.Event{evt},
+		ToEventID: "evt-1",
+	})
+	if !strings.Contains(xml, "<body truncated=\"true\">") {
+		t.Fatalf("expected truncated body marker, got: %q", xml)
+	}
+	if strings.Contains(xml, "<payload>") {
+		t.Fatalf("did not expect payload tag in context updates xml, got: %q", xml)
+	}
+}
+
+func TestRenderContextUpdatesXMLAppendsTerminalPayloadToBody(t *testing.T) {
+	evt := eventbus.Event{
+		ID:        "evt-1",
+		Stream:    "task_output",
+		Body:      "completed",
+		CreatedAt: time.Now().UTC(),
+		Metadata: map[string]any{
+			"task_id":   "task-1",
+			"task_kind": "completed",
+		},
+		Payload: map[string]any{
+			"result": "ok",
+		},
+	}
+
+	xml := renderContextUpdatesXML(TurnContext{Now: time.Now().UTC()}, ContextUpdateFrame{
+		Events: []eventbus.Event{evt},
+	})
+	if !strings.Contains(xml, "<body>completed") || !strings.Contains(xml, "&quot;result&quot;:&quot;ok&quot;") {
+		t.Fatalf("expected combined body with terminal payload, got: %q", xml)
+	}
+	if strings.Contains(xml, "<payload>") {
+		t.Fatalf("did not expect payload tag in context updates xml, got: %q", xml)
 	}
 }
 

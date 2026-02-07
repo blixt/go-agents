@@ -20,7 +20,6 @@ type TaskUpdate = {
 
 type ConfigFile = {
   http_addr?: string
-  snapshot_dir?: string
   webhook_addr?: string
 }
 
@@ -74,13 +73,11 @@ async function loadConfig(): Promise<ConfigFile> {
 
 const config = await loadConfig()
 const apiURLArg = getArg("--api-url")
-const snapshotArg = getArg("--snapshot-dir")
 const pollArg = getArg("--poll-ms")
 const webhookArg = getArg("--webhook-addr")
 const parallelArg = getArg("--parallel")
 
 const API_URL = normalizeHTTPAddr(apiURLArg || config.http_addr || ":8080")
-const SNAPSHOT_DIR = snapshotArg || config.snapshot_dir || "data/exec-snapshots"
 const POLL_MS = parseInt(pollArg || "1000", 10)
 const PARALLEL = Math.max(1, parseInt(parallelArg || Bun.env.EXEC_PARALLEL || "2", 10))
 const webhookAddr = webhookArg || config.webhook_addr
@@ -205,7 +202,6 @@ async function forwardStream(taskId: string, kind: string, stream: ReadableStrea
 async function runTask(task: Task) {
   const payload = task.payload || {}
   const code = typeof payload.code === "string" ? payload.code : ""
-  const sessionId = typeof payload.id === "string" ? payload.id : ""
 
   if (!code.trim()) {
     await sendFail(task.id, "exec task missing code")
@@ -234,13 +230,9 @@ async function runTask(task: Task) {
   const codeFile = join(execDir, "task.ts")
   await Bun.write(codeFile, code)
 
-  let snapshotPath = ""
-  if (sessionId) {
-    snapshotPath = join(SNAPSHOT_DIR, `${sessionId}.json`)
-  }
   const resultPath = join(execDir, "result.json")
 
-  await sendUpdate(task.id, "start", { session_id: sessionId })
+  await sendUpdate(task.id, "start", {})
 
   const cmd = [
     bunBin,
@@ -250,10 +242,6 @@ async function runTask(task: Task) {
     "--result-path",
     resultPath,
   ]
-  if (snapshotPath) {
-    cmd.push("--snapshot-in", snapshotPath)
-    cmd.push("--snapshot-out", snapshotPath)
-  }
 
   const proc = Bun.spawn({
     cmd,
@@ -355,7 +343,22 @@ async function runTask(task: Task) {
   try {
     const data = await Bun.file(resultPath).text()
     if (data.trim() !== "") {
-      result = JSON.parse(data)
+      const parsed = JSON.parse(data)
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        if (
+          Object.keys(parsed).length === 1 &&
+          Object.prototype.hasOwnProperty.call(parsed, "result") &&
+          parsed.result &&
+          typeof parsed.result === "object" &&
+          !Array.isArray(parsed.result)
+        ) {
+          result = parsed.result as Record<string, unknown>
+        } else {
+          result = parsed as Record<string, unknown>
+        }
+      } else {
+        result = { result: parsed }
+      }
     }
   } catch (err) {
     result = { error: `failed to read result: ${err}` }

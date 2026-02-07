@@ -24,7 +24,6 @@ Create `config.json` (or `data/config.json`) to adjust runtime settings:
   "http_addr": ":8080",
   "data_dir": "data",
   "db_path": "data/go-agents.db",
-  "snapshot_dir": "data/exec-snapshots",
   "llm_debug_dir": "data/llm-debug",
   "llm_provider": "anthropic",
   "llm_model": "claude-sonnet-4-5",

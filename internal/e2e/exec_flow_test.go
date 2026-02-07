@@ -37,10 +37,10 @@ func TestExecFlowEndToEnd(t *testing.T) {
 	server := &api.Server{Tasks: mgr, Bus: bus}
 	client := testutil.NewInProcessClient(server.Handler())
 
-	code := "globalThis.state.count = (globalThis.state.count || 0) + 1; globalThis.result = { count: globalThis.state.count };"
+	code := "globalThis.result = { count: 1 };"
 	created, err := mgr.Spawn(context.Background(), tasks.Spec{
 		Type:    "exec",
-		Payload: map[string]any{"code": code, "id": "session-1"},
+		Payload: map[string]any{"code": code},
 	})
 	if err != nil {
 		t.Fatalf("spawn task: %v", err)
@@ -59,14 +59,13 @@ func TestExecFlowEndToEnd(t *testing.T) {
 	tmp := t.TempDir()
 	codePath := filepath.Join(tmp, "task.ts")
 	resultPath := filepath.Join(tmp, "result.json")
-	snapshotPath := filepath.Join(tmp, "snapshot.json")
 	if err := os.WriteFile(codePath, []byte(code), 0o600); err != nil {
 		t.Fatalf("write code: %v", err)
 	}
 
 	cwd, _ := os.Getwd()
 	repoRoot := filepath.Clean(filepath.Join(cwd, "..", ".."))
-	cmd := exec.Command("bun", "exec/bootstrap.ts", "--code-file", codePath, "--snapshot-in", snapshotPath, "--snapshot-out", snapshotPath, "--result-path", resultPath)
+	cmd := exec.Command("bun", "exec/bootstrap.ts", "--code-file", codePath, "--result-path", resultPath)
 	cmd.Dir = repoRoot
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("bootstrap failed: %v\n%s", err, string(output))

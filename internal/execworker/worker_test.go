@@ -2,8 +2,10 @@ package execworker
 
 import (
 	"context"
+	"encoding/json"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -34,7 +36,6 @@ func TestWorkerPollOnce(t *testing.T) {
 
 	worker := &Worker{
 		APIURL:        "http://in-process",
-		SnapshotDir:   filepath.Join(t.TempDir(), "snapshots"),
 		BootstrapPath: filepath.Join(repoRoot(t), "exec", "bootstrap.ts"),
 		HTTP:          client,
 	}
@@ -53,4 +54,36 @@ func TestWorkerPollOnce(t *testing.T) {
 	if updated.Status != tasks.StatusCompleted {
 		t.Fatalf("expected completed, got %s", updated.Status)
 	}
+}
+
+func TestDecodeExecResult(t *testing.T) {
+	t.Run("unwrap map result", func(t *testing.T) {
+		data := []byte(`{"result":{"ok":true,"count":1}}`)
+		got := decodeExecResult(data)
+		want := map[string]any{"ok": true, "count": float64(1)}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("unexpected decoded result: got=%v want=%v", got, want)
+		}
+	})
+
+	t.Run("wrap primitive result", func(t *testing.T) {
+		data := []byte(`{"result":"done"}`)
+		got := decodeExecResult(data)
+		want := map[string]any{"result": "done"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("unexpected decoded result: got=%v want=%v", got, want)
+		}
+	})
+
+	t.Run("pass through map payload", func(t *testing.T) {
+		source := map[string]any{"ok": true}
+		data, err := json.Marshal(source)
+		if err != nil {
+			t.Fatalf("marshal source: %v", err)
+		}
+		got := decodeExecResult(data)
+		if !reflect.DeepEqual(got, source) {
+			t.Fatalf("unexpected decoded result: got=%v want=%v", got, source)
+		}
+	})
 }

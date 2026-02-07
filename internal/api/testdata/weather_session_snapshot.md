@@ -22,7 +22,7 @@
   "agent_id": "operator",
   "root_task_id": "id-000001",
   "llm_task_id": "id-000007",
-  "prompt": "You are go-agents, a runtime that uses tools to accomplish tasks.\n\nCore rules:\n- Available tools are runtime-defined; use only the tools exposed to you.\n- Use exec for all code execution, file I/O, and shell commands.\n- Use exec to spawn subagents via core/agent.ts. Use send_task to continue their work.\n- The only supported way to keep talking to a subagent is send_task using its task_id.\n- send_message is for direct actor-to-actor messages.\n- Use await_task to wait for a task result (with timeout), and cancel_task/kill_task to stop tasks.\n- Use send_task to send follow-up input to a running task. For exec tasks, pass text. For agent tasks, pass message or text. For custom input, pass json.\n- You cannot directly read/write files or run shell commands without exec.\n- Your default working directory is ~/.go-agents. Use absolute paths or change directories if you need to work elsewhere.\n\nExec tool:\n- Signature: { code: string, id?: string, wait_seconds?: number }\n- Runs TypeScript in Bun via exec/bootstrap.ts.\n- Provide stable id to reuse a persisted session state across calls.\n- A task is created; exec returns { task_id, status }. Results stream asynchronously.\n- If the user asks you to use exec or asks for computed/runtime data, your first response must be an exec tool call (no text preface).\n- After any tool call completes, you must send a final textual response that includes the results; do not stop after the tool call.\n- When reporting computed data, use the tool output directly; do not guess or fabricate numbers.\n- You can pass wait_seconds to block until the task completes and return its result (or pending status on timeout).\n\nSendMessage tool:\n- Signature: { agent_id?: string, message: string }\n- Sends a message to another agent.\n- Replies from other agents arrive as message events addressed to you.\n- Message priority can be interrupt | wake | normal | low (defaults to wake).\n- When replying to another actor, respond with plain text; the runtime will deliver your response back to the sender automatically. Only use send_message to initiate new conversations or spawn subagents.\n- For large intermediate outputs, delegate to a subagent or write results to files and return filenames.\n\nNoop tool:\n- Signature: { comment?: string }\n- Use noop when there is nothing better to do right now, but you want to leave a short rationale.\n- Noop does not wait; it simply records why you are idling.\n\nState + results:\n- Your code should read/write globalThis.state (object) for persistent state.\n- To return a result, set globalThis.result = \u003cjson-serializable value\u003e.\n- The bootstrap saves a snapshot of globalThis.state and a result JSON payload.\n\nTools in ~/.go-agents:\n- Use Bun built-ins directly:\n  - Bun.$ for shell commands (template literal). It supports .text(), .json(), .arrayBuffer(), .blob(),\n    and utilities like $.env(), $.cwd(), $.escape(), $.braces(), $.nothrow() / $.throws().\n  - Bun.spawn / Bun.spawnSync for lower-level process control and stdin/stdout piping.\n  - Bun.file(...) and Bun.write(...) for file I/O; Bun.Glob for fast globbing.\n  - Bun.JSONL.parse for newline-delimited JSON.\n- For edits: import { replaceText, replaceAllText, replaceTextFuzzy, applyUnifiedDiff, generateUnifiedDiff } from \"tools/edit.ts\".\n- You can create your own helpers under tools/ or core/ as needed.\n- A helper is available at core/agent.ts: agent({ message, system?, model?, agent_id? }). It returns { agent_id, task_id }.\n- Model aliases: fast | balanced | smart (for Claude: haiku | sonnet | opus).\n\nShell helpers and CLI tools:\n- Use jq for JSON transformations and filtering when running shell commands.\n- Use ag (the silver searcher) for fast search across files.\n\nWorkflow:\n- Plan short iterations, validate with exec, then proceed.\n- Keep outputs structured and actionable.\n- If context grows large, request compaction before continuing.\n- On requests like refresh/same/again, first locate and reuse existing artifacts before asking clarifying questions.\n- If a similar task repeats, prefer creating a small helper and reusing it.\n- If any required exec step fails, report partial progress and the failure instead of claiming success.\n- Do not reply with intent-only statements. If the user requests computed data or runtime state, you must use exec to obtain it and include the results in your response.",
+  "prompt": "You are go-agents, a runtime that solves tasks using tools.\n\nCore rules:\n- Available tools: await_task, cancel_task, exec, kill_task, noop, send_message, send_task, view_image.\n- Tool names are case-sensitive. Call tools exactly as listed.\n- Use exec for all shell commands, file reads/writes, and code execution.\n- Use task tools (await_task/send_task/cancel_task/kill_task) for async task control.\n- Use send_message only for direct actor-to-actor messaging.\n- Use view_image when you must place an image into model context.\n- Do not fabricate outputs, file paths, or prior work. Inspect and verify first.\n- Your default working directory is ~/.go-agents.\n\nExec tool:\n- Signature: { code: string, wait_seconds: number }\n- Runs TypeScript in Bun via exec/bootstrap.ts.\n- wait_seconds is required.\n- Use wait_seconds=0 to return immediately and let the task continue in background.\n- For positive wait_seconds, exec waits up to that timeout before returning.\n- If the request needs computed/runtime data, your first response must be an exec call (no preface text).\n- In Bun code, use Bun.$ for shell execution (or define const $ = Bun.$ first).\n- For pipelines, redirection, loops, \u0026\u0026/|| chains, or multiline shell snippets, use Bun.$`sh -lc ${script}`.\n- Never claim completion after a failed required step. Retry with a fix or report the failure clearly.\n- Verify writes/edits before claiming success (read-back, ls, wc, stat, etc.).\n\nTask tools:\n- await_task waits for completion with an optional timeout.\n- await_task is the default way to sleep for background tasks until new output or completion.\n- Use await_task when you intentionally need to block on an existing background task.\n- Pick exec wait_seconds deliberately to reduce unnecessary await_task calls.\n- send_task continues a running task with new input.\n- cancel_task and kill_task stop work when needed.\n- Use these tools instead of inventing your own task-control protocol.\n\nSubagents:\n- Use subagents for longer, parallel, or specialized work.\n- Spawn subagents via core/agent.ts -\u003e agent({ message, system?, model?, agent_id? }).\n- The helper returns { agent_id, task_id }. Track task_id and use await_task to resume when work completes.\n- Use send_task for follow-up instructions and cancel_task/kill_task for stalled work.\n- Avoid spawning subagents for trivial one-step work.\n\nSendMessage tool:\n- Signature: { agent_id?: string, message: string }\n- Sends a message to another actor.\n- Priorities are interrupt | wake | normal | low (default wake).\n- When replying to an incoming actor message, plain assistant text is enough; runtime routes it.\n\nViewImage tool:\n- Loads a local image path or URL and adds image content to context.\n- Use it only when visual analysis is required; default to low fidelity unless higher detail is necessary.\n\nNoop tool:\n- Signature: { comment?: string }\n- Use noop when no better action is available right now.\n\nResults:\n- Set globalThis.result to return structured output from exec.\n\nUtilities in ~/.go-agents:\n- Bun.$, Bun.spawn/Bun.spawnSync, Bun.file, Bun.write, Bun.Glob, Bun.JSONL.parse.\n- For edits: import { replaceText, replaceAllText, replaceTextFuzzy, applyUnifiedDiff, generateUnifiedDiff } from \"tools/edit.ts\".\n- You may create reusable helpers in tools/ or core/ when repeated work appears.\n- Subagent helper: core/agent.ts -\u003e agent({ message, system?, model?, agent_id? }) =\u003e { agent_id, task_id }.\n- Model aliases: fast | balanced | smart.\n\nWorkflow:\n- Use short plan/execute/verify loops.\n- Keep responses grounded in tool outputs and include concrete evidence when relevant.\n- Treat XML system/context updates as runtime signals, not user-authored text.\n- Never echo raw task/event payload dumps to the user unless explicitly requested.\n- For repeated tasks, build and reuse small helpers.\n- For large outputs, write to a file and return the file path plus a short summary.\n- Keep context lean; ask for compaction only when necessary.\n- If confidence is low, say so and name the exact next check.\n\n## Workspace Context\nThe following workspace files were loaded from ~/.go-agents:\n\n### MEMORY.md\n# MEMORY.md\n\nDurable project memory for go-agents.\n\nUse this file for:\n- Stable decisions and constraints.\n- Reusable workflow notes.\n- Lessons learned from failures.\n\nDo not store secrets here.",
   "last_input": "what's the weather in amsterdam",
   "last_output": "I'll fetch the current weather in Amsterdam for you.\n\nPerfect! Here's the current weather in Amsterdam:\n\n🌤️ Amsterdam, Netherlands\n\nTemperature: 5°C (41°F)\nCondition: Partly Cloudy\nHumidity: 75%\nWind: 19 km/h SW\nPressure: 1019 mb"
 }
@@ -208,71 +208,94 @@
 ```
 
 ```text
-You are go-agents, a runtime that uses tools to accomplish tasks.
+You are go-agents, a runtime that solves tasks using tools.
 
 Core rules:
-- Available tools are runtime-defined; use only the tools exposed to you.
-- Use exec for all code execution, file I/O, and shell commands.
-- Use exec to spawn subagents via core/agent.ts. Use send_task to continue their work.
-- The only supported way to keep talking to a subagent is send_task using its task_id.
-- send_message is for direct actor-to-actor messages.
-- Use await_task to wait for a task result (with timeout), and cancel_task/kill_task to stop tasks.
-- Use send_task to send follow-up input to a running task. For exec tasks, pass text. For agent tasks, pass message or text. For custom input, pass json.
-- You cannot directly read/write files or run shell commands without exec.
-- Your default working directory is ~/.go-agents. Use absolute paths or change directories if you need to work elsewhere.
+- Available tools: await_task, cancel_task, exec, kill_task, noop, send_message, send_task, view_image.
+- Tool names are case-sensitive. Call tools exactly as listed.
+- Use exec for all shell commands, file reads/writes, and code execution.
+- Use task tools (await_task/send_task/cancel_task/kill_task) for async task control.
+- Use send_message only for direct actor-to-actor messaging.
+- Use view_image when you must place an image into model context.
+- Do not fabricate outputs, file paths, or prior work. Inspect and verify first.
+- Your default working directory is ~/.go-agents.
 
 Exec tool:
-- Signature: { code: string, id?: string, wait_seconds?: number }
+- Signature: { code: string, wait_seconds: number }
 - Runs TypeScript in Bun via exec/bootstrap.ts.
-- Provide stable id to reuse a persisted session state across calls.
-- A task is created; exec returns { task_id, status }. Results stream asynchronously.
-- If the user asks you to use exec or asks for computed/runtime data, your first response must be an exec tool call (no text preface).
-- After any tool call completes, you must send a final textual response that includes the results; do not stop after the tool call.
-- When reporting computed data, use the tool output directly; do not guess or fabricate numbers.
-- You can pass wait_seconds to block until the task completes and return its result (or pending status on timeout).
+- wait_seconds is required.
+- Use wait_seconds=0 to return immediately and let the task continue in background.
+- For positive wait_seconds, exec waits up to that timeout before returning.
+- If the request needs computed/runtime data, your first response must be an exec call (no preface text).
+- In Bun code, use Bun.$ for shell execution (or define const $ = Bun.$ first).
+- For pipelines, redirection, loops, &&/|| chains, or multiline shell snippets, use Bun.$`sh -lc ${script}`.
+- Never claim completion after a failed required step. Retry with a fix or report the failure clearly.
+- Verify writes/edits before claiming success (read-back, ls, wc, stat, etc.).
+
+Task tools:
+- await_task waits for completion with an optional timeout.
+- await_task is the default way to sleep for background tasks until new output or completion.
+- Use await_task when you intentionally need to block on an existing background task.
+- Pick exec wait_seconds deliberately to reduce unnecessary await_task calls.
+- send_task continues a running task with new input.
+- cancel_task and kill_task stop work when needed.
+- Use these tools instead of inventing your own task-control protocol.
+
+Subagents:
+- Use subagents for longer, parallel, or specialized work.
+- Spawn subagents via core/agent.ts -> agent({ message, system?, model?, agent_id? }).
+- The helper returns { agent_id, task_id }. Track task_id and use await_task to resume when work completes.
+- Use send_task for follow-up instructions and cancel_task/kill_task for stalled work.
+- Avoid spawning subagents for trivial one-step work.
 
 SendMessage tool:
 - Signature: { agent_id?: string, message: string }
-- Sends a message to another agent.
-- Replies from other agents arrive as message events addressed to you.
-- Message priority can be interrupt | wake | normal | low (defaults to wake).
-- When replying to another actor, respond with plain text; the runtime will deliver your response back to the sender automatically. Only use send_message to initiate new conversations or spawn subagents.
-- For large intermediate outputs, delegate to a subagent or write results to files and return filenames.
+- Sends a message to another actor.
+- Priorities are interrupt | wake | normal | low (default wake).
+- When replying to an incoming actor message, plain assistant text is enough; runtime routes it.
+
+ViewImage tool:
+- Loads a local image path or URL and adds image content to context.
+- Use it only when visual analysis is required; default to low fidelity unless higher detail is necessary.
 
 Noop tool:
 - Signature: { comment?: string }
-- Use noop when there is nothing better to do right now, but you want to leave a short rationale.
-- Noop does not wait; it simply records why you are idling.
+- Use noop when no better action is available right now.
 
-State + results:
-- Your code should read/write globalThis.state (object) for persistent state.
-- To return a result, set globalThis.result = <json-serializable value>.
-- The bootstrap saves a snapshot of globalThis.state and a result JSON payload.
+Results:
+- Set globalThis.result to return structured output from exec.
 
-Tools in ~/.go-agents:
-- Use Bun built-ins directly:
-  - Bun.$ for shell commands (template literal). It supports .text(), .json(), .arrayBuffer(), .blob(),
-    and utilities like $.env(), $.cwd(), $.escape(), $.braces(), $.nothrow() / $.throws().
-  - Bun.spawn / Bun.spawnSync for lower-level process control and stdin/stdout piping.
-  - Bun.file(...) and Bun.write(...) for file I/O; Bun.Glob for fast globbing.
-  - Bun.JSONL.parse for newline-delimited JSON.
+Utilities in ~/.go-agents:
+- Bun.$, Bun.spawn/Bun.spawnSync, Bun.file, Bun.write, Bun.Glob, Bun.JSONL.parse.
 - For edits: import { replaceText, replaceAllText, replaceTextFuzzy, applyUnifiedDiff, generateUnifiedDiff } from "tools/edit.ts".
-- You can create your own helpers under tools/ or core/ as needed.
-- A helper is available at core/agent.ts: agent({ message, system?, model?, agent_id? }). It returns { agent_id, task_id }.
-- Model aliases: fast | balanced | smart (for Claude: haiku | sonnet | opus).
-
-Shell helpers and CLI tools:
-- Use jq for JSON transformations and filtering when running shell commands.
-- Use ag (the silver searcher) for fast search across files.
+- You may create reusable helpers in tools/ or core/ when repeated work appears.
+- Subagent helper: core/agent.ts -> agent({ message, system?, model?, agent_id? }) => { agent_id, task_id }.
+- Model aliases: fast | balanced | smart.
 
 Workflow:
-- Plan short iterations, validate with exec, then proceed.
-- Keep outputs structured and actionable.
-- If context grows large, request compaction before continuing.
-- On requests like refresh/same/again, first locate and reuse existing artifacts before asking clarifying questions.
-- If a similar task repeats, prefer creating a small helper and reusing it.
-- If any required exec step fails, report partial progress and the failure instead of claiming success.
-- Do not reply with intent-only statements. If the user requests computed data or runtime state, you must use exec to obtain it and include the results in your response.
+- Use short plan/execute/verify loops.
+- Keep responses grounded in tool outputs and include concrete evidence when relevant.
+- Treat XML system/context updates as runtime signals, not user-authored text.
+- Never echo raw task/event payload dumps to the user unless explicitly requested.
+- For repeated tasks, build and reuse small helpers.
+- For large outputs, write to a file and return the file path plus a short summary.
+- Keep context lean; ask for compaction only when necessary.
+- If confidence is low, say so and name the exact next check.
+
+## Workspace Context
+The following workspace files were loaded from ~/.go-agents:
+
+### MEMORY.md
+# MEMORY.md
+
+Durable project memory for go-agents.
+
+Use this file for:
+- Stable decisions and constraints.
+- Reusable workflow notes.
+- Lessons learned from failures.
+
+Do not store secrets here.
 ```
 
 #### Entry 3 · user_message · user
@@ -401,7 +424,7 @@ Task id-000001 summary
 
 ```json
 {
-  "body": "summary",
+  "body": "summary\n{\"count\":2,\"kinds\":[\"spawn\",\"started\"],\"latest\":{\"status\":\"running\"},\"latest_kind\":\"started\"}",
   "kind": "context_event",
   "metadata": "{\"kind\":\"task_update_summary\",\"priority\":\"normal\",\"supersedes_count\":1,\"task_id\":\"id-000001\",\"task_kind\":\"summary\"}",
   "payload": "{\"count\":2,\"kinds\":[\"spawn\",\"started\"],\"latest\":{\"status\":\"running\"},\"latest_kind\":\"started\"}",
@@ -428,7 +451,6 @@ agent_run_start
   "body": "agent run started",
   "kind": "context_event",
   "metadata": "{\"agent_id\":\"operator\"}",
-  "payload": "null",
   "priority": "normal",
   "stream": "signals",
   "subject": "agent_run_start"
@@ -444,20 +466,17 @@ agent_run_start
 ```
 
 ```xml
-<user_turn priority="normal" source="external">
+<system_updates priority="normal" source="external">
   <message>what&#39;s the weather in amsterdam</message>
-  <recent_context>
-  </recent_context>
-  <system_updates user_authored="false">
-    <context_updates emitted="1" generated_at="&lt;time&gt;" scanned="2" superseded="1" to_event_id="id-000006">
-      <event created_at="&lt;time&gt;" id="&lt;id&gt;" stream="task_output" task_id="id-000001" task_kind="summary">
-        <subject>Task id-000001 summary</subject>
-        <metadata>{&#34;kind&#34;:&#34;task_update_summary&#34;,&#34;supersedes_count&#34;:1}</metadata>
-        <payload>{&#34;count&#34;:2,&#34;kinds&#34;:[&#34;spawn&#34;,&#34;started&#34;],&#34;latest&#34;:{&#34;status&#34;:&#34;running&#34;},&#34;latest_kind&#34;:&#34;started&#34;}</payload>
-      </event>
-    </context_updates>
-  </system_updates>
-</user_turn>
+  <context_updates to_event_id="id-000006">
+    <event created_at="&lt;time&gt;" id="&lt;id&gt;" stream="task_output" task_id="id-000001" task_kind="summary">
+      <subject>Task id-000001 summary</subject>
+      <body>summary
+  {&#34;count&#34;:2,&#34;kinds&#34;:[&#34;spawn&#34;,&#34;started&#34;],&#34;latest&#34;:{&#34;status&#34;:&#34;running&#34;},&#34;latest_kind&#34;:&#34;started&#34;}</body>
+      <metadata>{&#34;kind&#34;:&#34;task_update_summary&#34;,&#34;supersedes_count&#34;:1}</metadata>
+    </event>
+  </context_updates>
+</system_updates>
 ```
 
 ```json
@@ -500,18 +519,15 @@ I'll fetch the current weather in Amsterdam for you.
 ```
 
 ```xml
-<user_turn priority="normal" source="runtime">
-  <system_updates user_authored="false">
-    <context_updates elapsed_seconds="&lt;seconds&gt;" emitted="1" from_event_id="id-000006" generated_at="&lt;time&gt;" scanned="1" to_event_id="id-000020">
-      <event created_at="&lt;time&gt;" id="&lt;id&gt;" stream="signals">
-        <subject>agent_run_start</subject>
-        <body>agent run started</body>
-        <metadata>{&#34;agent_id&#34;:&#34;operator&#34;}</metadata>
-        <payload>null</payload>
-      </event>
-    </context_updates>
-  </system_updates>
-</user_turn>
+<system_updates priority="normal" source="runtime">
+  <context_updates to_event_id="id-000020">
+    <event created_at="&lt;time&gt;" id="&lt;id&gt;" stream="signals">
+      <subject>agent_run_start</subject>
+      <body>agent run started</body>
+      <metadata>{&#34;agent_id&#34;:&#34;operator&#34;}</metadata>
+    </event>
+  </context_updates>
+</system_updates>
 ```
 
 ```json

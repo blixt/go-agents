@@ -30,7 +30,7 @@ func TestExecToolSpawnsTask(t *testing.T) {
 	ctx := context.WithValue(context.Background(), llms.ToolCallContextKey, tc)
 	runner := llmtools.NewRunner(ctx, nil, func(status string) {})
 
-	params := ExecParams{Code: "globalThis.result = 1", ID: "session-1", WaitSeconds: waitSecondsPtr(0)}
+	params := ExecParams{Code: "globalThis.result = 1", WaitSeconds: waitSecondsPtr(0)}
 	raw, _ := json.Marshal(params)
 	result := tool.Run(runner, raw)
 	if result.Error() != nil {
@@ -63,8 +63,8 @@ func TestExecToolSpawnsTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if task.Payload["id"] != "session-1" {
-		t.Fatalf("expected session id in payload")
+	if _, ok := task.Payload["id"]; ok {
+		t.Fatalf("did not expect id in payload")
 	}
 }
 
