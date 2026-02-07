@@ -4,20 +4,45 @@ import { useRuntimeState } from "./hooks/useRuntimeState";
 import type { Agent, DisplayEntry, History } from "./types";
 import { formatDateTime, formatTime, usePrefersDark } from "./utils";
 
+const SELECTED_AGENT_STORAGE_KEY = "go-agents.selected-agent";
+
 export function App(): React.ReactElement {
   const { state, status, refresh } = useRuntimeState();
   const darkMode = usePrefersDark();
-  const [selectedAgent, setSelectedAgent] = useState("");
+  const [selectedAgent, setSelectedAgent] = useState(() => {
+    if (typeof window === "undefined") {
+      return "";
+    }
+    return (window.localStorage.getItem(SELECTED_AGENT_STORAGE_KEY) || "").trim();
+  });
   const [message, setMessage] = useState("");
   const [sendStatus, setSendStatus] = useState("");
   const [compactStatus, setCompactStatus] = useState("");
   const timelineRef = useRef<HTMLDivElement | null>(null);
 
   const agents = useMemo(() => {
-    if (Array.isArray(state.agents) && state.agents.length > 0) return state.agents as Agent[];
+    const fromServer = Array.isArray(state.agents) ? (state.agents as Agent[]) : [];
+    if (fromServer.length > 0) {
+      if (!selectedAgent || fromServer.some((agent) => agent.id === selectedAgent)) {
+        return fromServer;
+      }
+      return [
+        {
+          id: selectedAgent,
+          status: "idle",
+          active_tasks: 0,
+          updated_at: "",
+          generation: state.histories?.[selectedAgent]?.generation || 1,
+        },
+        ...fromServer,
+      ];
+    }
     const ids = new Set<string>();
     Object.keys(state.histories || {}).forEach((id) => ids.add(id));
     Object.keys(state.sessions || {}).forEach((id) => ids.add(id));
+    if (selectedAgent) {
+      ids.add(selectedAgent);
+    }
     return Array.from(ids)
       .filter((id) => typeof id === "string" && id.trim() !== "")
       .map((id) => ({
@@ -27,13 +52,27 @@ export function App(): React.ReactElement {
         updated_at: "",
         generation: state.histories?.[id]?.generation || 1,
       }));
-  }, [state.agents, state.histories, state.sessions]);
+  }, [selectedAgent, state.agents, state.histories, state.sessions]);
 
   useEffect(() => {
-    if (!agents.some((agent) => agent.id === selectedAgent)) {
+    if (selectedAgent) {
+      return;
+    }
+    if (agents.length > 0) {
       setSelectedAgent(agents[0]?.id || "");
     }
   }, [agents, selectedAgent]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (selectedAgent) {
+      window.localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, selectedAgent);
+      return;
+    }
+    window.localStorage.removeItem(SELECTED_AGENT_STORAGE_KEY);
+  }, [selectedAgent]);
 
   const selectedHistory = (state.histories?.[selectedAgent] || { generation: 1, entries: [] }) as History;
   const selectedSession = state.sessions?.[selectedAgent] || null;
@@ -141,7 +180,7 @@ export function App(): React.ReactElement {
                 <StatusBadge status={agent.status || "idle"} />
               </button>
             ))}
-            {agents.length <= 1 ? <div className="muted">No agents yet. Send a message to create one.</div> : null}
+            {agents.length === 0 ? <div className="muted">No agents yet. Send a message to create one.</div> : null}
           </div>
         </aside>
         <section className="panel detail">

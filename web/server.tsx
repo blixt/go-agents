@@ -46,6 +46,8 @@ async function proxyAPI(req: Request): Promise<Response> {
 const server = Bun.serve({
   hostname: listen.hostname,
   port: listen.port,
+  // Keep long-lived SSE connections open; agentd heartbeat is every 15s.
+  idleTimeout: 120,
   development: false,
   routes: {
     "/": index,

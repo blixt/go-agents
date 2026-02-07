@@ -231,11 +231,16 @@ func (s *Server) handleStreamSubscribe(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	sub := s.Bus.Subscribe(ctx, streamList)
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-heartbeat.C:
+			_, _ = w.Write([]byte(":keepalive\n\n"))
+			flusher.Flush()
 		case evt, ok := <-sub:
 			if !ok {
 				return
