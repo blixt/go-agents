@@ -10,8 +10,9 @@ import (
 )
 
 type SendMessageParams struct {
-	AgentID string `json:"agent_id" description:"Target agent id"`
-	Message string `json:"message" description:"Message to send"`
+	AgentID  string `json:"agent_id" description:"Target agent id"`
+	Message  string `json:"message" description:"Message to send"`
+	Priority string `json:"priority,omitempty" description:"Message priority: interrupt|wake|normal|low"`
 }
 
 func SendMessageTool(bus *eventbus.Bus, ensureAgent func(string)) tools.Tool {
@@ -38,11 +39,8 @@ func SendMessageTool(bus *eventbus.Bus, ensureAgent func(string)) tools.Tool {
 				source = "system"
 			}
 
-			if agentID == "human" {
-				return tools.Errorf("send_message is for agent-to-agent messaging only")
-			}
-
-			if ensureAgent != nil && agentID != "human" {
+			priority := normalizePriority(p.Priority)
+			if ensureAgent != nil {
 				ensureAgent(agentID)
 			}
 
@@ -53,9 +51,10 @@ func SendMessageTool(bus *eventbus.Bus, ensureAgent func(string)) tools.Tool {
 				Subject:   fmt.Sprintf("Message from %s", source),
 				Body:      message,
 				Metadata: map[string]any{
-					"kind":   "message",
-					"source": source,
-					"target": agentID,
+					"kind":     "message",
+					"source":   source,
+					"target":   agentID,
+					"priority": priority,
 				},
 			})
 			if err != nil {
@@ -67,7 +66,17 @@ func SendMessageTool(bus *eventbus.Bus, ensureAgent func(string)) tools.Tool {
 				"agent_id":  agentID,
 				"event_id":  evt.ID,
 				"recipient": agentID,
+				"priority":  priority,
 			})
 		},
 	)
+}
+
+func normalizePriority(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "interrupt", "wake", "normal", "low":
+		return strings.ToLower(strings.TrimSpace(raw))
+	default:
+		return "wake"
+	}
 }

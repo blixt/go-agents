@@ -15,17 +15,21 @@ type SpecFile = {
 };
 
 const DEFAULT_BASE = "http://localhost:8080";
-const DEFAULT_SPEC = "experiments/specs/long_horizon.json";
+const DEFAULT_SPEC = "experiments/specs/consolidated_repo_intelligence.json";
 const DEFAULT_TIMEOUT_SECONDS = Number(
   process.env.GO_AGENTS_EXPERIMENT_TIMEOUT || "300",
 );
+const REQUEST_TIMEOUT_MS = Number(
+  process.env.GO_AGENTS_REQUEST_TIMEOUT_MS || "20000",
+);
+const REQUEST_RETRIES = Number(process.env.GO_AGENTS_REQUEST_RETRIES || "3");
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const apiFetch = async (base: string, path: string, init?: RequestInit) => {
   const url = path.startsWith("http") ? path : `${base}${path}`;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
     const resp = await fetch(url, { ...init, signal: controller.signal });
     const text = await resp.text();
@@ -55,6 +59,25 @@ const postJSON = (base: string, path: string, body: any) =>
     body: JSON.stringify(body),
   });
 
+const postJSONWithRetry = async (
+  base: string,
+  path: string,
+  body: any,
+  retries: number = REQUEST_RETRIES,
+) => {
+  let last: { status: number; json: any } = { status: 0, json: null };
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    last = await postJSON(base, path, body);
+    const retriable =
+      last.status === 0 || last.status >= 500 || last.status === 429;
+    if (!retriable) return last;
+    if (attempt < retries) {
+      await sleep(250 * (attempt + 1));
+    }
+  }
+  return last;
+};
+
 const fetchState = (base: string, params?: string) =>
   apiFetch(
     base,
@@ -78,6 +101,29 @@ const findNewestTask = (tasks: any[], startedAt: Date) => {
     .filter((entry) => entry.created && entry.created.getTime() >= startedMs - 1000)
     .sort((a, b) => (b.created?.getTime() ?? 0) - (a.created?.getTime() ?? 0));
   return candidates.length > 0 ? candidates[0].task : null;
+};
+
+const requestIDFor = (expId: string, index: number) =>
+  `${expId}-${Date.now()}-${index}`;
+
+const taskRequestID = (task: any) => {
+  if (!task || typeof task !== "object") return "";
+  const meta = task.metadata || {};
+  const val = meta.request_id;
+  return typeof val === "string" ? val : "";
+};
+
+const taskEventID = (task: any) => {
+  if (!task || typeof task !== "object") return "";
+  const meta = task.metadata || {};
+  const val = meta.event_id;
+  return typeof val === "string" ? val : "";
+};
+
+const unknownFieldError = (resp: { status: number; json: any }) => {
+  if (!resp || resp.status !== 400) return false;
+  const msg = resp?.json?.error;
+  return typeof msg === "string" && msg.includes("unknown field");
 };
 
 const normalizeTaskTime = (value?: string) => {
@@ -109,11 +155,17 @@ const computeExecMetrics = (execTasks: any[]) => {
     reuse_ratio: 0,
   };
 
-  const reuseRegex = new RegExp('from\\s+["\\\'](code|tools|core)/');
+  const reuseRegex = new RegExp(
+    'from\\s+["\\\'](code|tools|core)/|\\bbun\\s+(code|tools|core|scripts)/',
+    "i",
+  );
   const writeRegex = new RegExp(
     "Bun\\.write\\(|writeText\\(|appendText\\(|writeFile\\(|fs\\.writeFile|\\bcat\\s+[^\\n>]+\\s*>|\\btee\\b|\\bprintf\\b.*>",
   );
-  const toolCreateRegex = new RegExp("(code|tools|core|exec|scripts)/[A-Za-z0-9._/-]+");
+  const toolCreateRegex = new RegExp(
+    "Bun\\.write\\(\\s*[`\"'](?:code|tools|core|scripts)/|write(File|Text|appendText)?\\(\\s*[`\"'](?:code|tools|core|scripts)/|\\bcat\\b[^\\n>]*>\\s*(?:code|tools|core|scripts)/|\\btee\\s+(?:code|tools|core|scripts)/",
+    "i",
+  );
 
   for (const task of execTasks) {
     const code = task?.payload?.code || "";
@@ -336,11 +388,31 @@ const main = async () => {
     await ensureDir(expDir);
 
     const startedAt = new Date();
-    const request = {
+    const requestID = requestIDFor(expId, index + 1);
+    let request: Record<string, any> = {
       message: exp.prompt,
-      source: "human",
+      source: "external",
+      priority: "wake",
+      request_id: requestID,
     };
-    const runResp = await postJSON(base, "/api/agents/operator/run", request);
+    let runResp = await postJSONWithRetry(
+      base,
+      "/api/agents/operator/run",
+      request,
+    );
+    let correlationRequestID = requestID;
+    let correlationEventID =
+      typeof runResp?.json?.event_id === "string" ? runResp.json.event_id : "";
+    if (unknownFieldError(runResp)) {
+      request = {
+        message: exp.prompt,
+        source: "external",
+      };
+      runResp = await postJSONWithRetry(base, "/api/agents/operator/run", request);
+      correlationRequestID = "";
+      correlationEventID =
+        typeof runResp?.json?.event_id === "string" ? runResp.json.event_id : "";
+    }
 
     await writeJSON(join(expDir, "request.json"), {
       experiment: exp,
@@ -355,9 +427,17 @@ const main = async () => {
       const stateResp = await fetchState(base);
       latestState = stateResp.json;
       const tasks = Array.isArray(latestState?.tasks) ? latestState.tasks : [];
-      const llmCandidates = tasks.filter(
-        (task: any) => task.type === "llm" && task.owner === "operator",
-      );
+      const llmCandidates = tasks.filter((task: any) => {
+        if (task?.type !== "llm" || task?.owner !== "operator") return false;
+        if (!correlationRequestID && !correlationEventID) return true;
+        if (correlationRequestID && taskRequestID(task) === correlationRequestID) {
+          return true;
+        }
+        if (correlationEventID && taskEventID(task) === correlationEventID) {
+          return true;
+        }
+        return false;
+      });
       llmTask = findNewestTask(llmCandidates, startedAt);
       if (llmTask) break;
       await sleep(500);
@@ -366,6 +446,9 @@ const main = async () => {
     if (!llmTask) {
       await writeJSON(join(expDir, "result.json"), {
         error: "llm task not found",
+        request_id: correlationRequestID,
+        event_id: correlationEventID,
+        run_response: runResp,
       });
       continue;
     }
@@ -437,6 +520,12 @@ const main = async () => {
 
     await writeJSON(join(expDir, "result.json"), {
       llm_task: llmTaskFinal,
+      correlation: {
+        request_id: correlationRequestID,
+        event_id: correlationEventID,
+        llm_task_request_id: taskRequestID(llmTaskFinal),
+        llm_task_event_id: taskEventID(llmTaskFinal),
+      },
       updates: updatesForLLM,
       session,
       exec_tasks: execDetails,

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/flitsinc/go-agents/internal/karna"
+	"github.com/flitsinc/go-agents/internal/goagents"
 )
 
 type Task struct {
@@ -79,7 +79,7 @@ func (w *Worker) RunTask(ctx context.Context, task Task) error {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	home, err := karna.EnsureHome()
+	home, err := goagents.EnsureHome()
 	if err != nil {
 		return err
 	}
@@ -135,7 +135,7 @@ func (w *Worker) RunTask(ctx context.Context, task Task) error {
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.Dir = home
-	cmd.Env = append(os.Environ(), fmt.Sprintf("KARNA_HOME=%s", home))
+	cmd.Env = append(os.Environ(), fmt.Sprintf("GO_AGENTS_HOME=%s", home))
 	if err := cmd.Run(); err != nil {
 		_ = w.sendUpdate(ctx, task.ID, "exit", map[string]any{"exit_code": 1})
 		return w.sendFail(ctx, task.ID, err.Error())

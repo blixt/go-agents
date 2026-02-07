@@ -119,9 +119,7 @@ func IsInterrupt(err error) bool {
 	return false
 }
 
-var defaultWakeStreams = []string{"signals", "errors", "external", "messages"}
-
-const defaultAwaitReader = "operator"
+var wakeStreams = []string{"task_output", "signals", "errors", "external", "messages"}
 
 func NewManager(db *sql.DB, bus *eventbus.Bus) *Manager {
 	return &Manager{db: db, bus: bus}
@@ -321,6 +319,7 @@ func (m *Manager) RecordUpdate(ctx context.Context, taskID, kind string, payload
 
 	if m.bus != nil {
 		scopeType, scopeID := scopeForTarget(m.taskTarget(ctx, taskID, "notify_target"))
+		priority := taskUpdatePriority(kind, payload)
 		_, _ = m.bus.Push(ctx, eventbus.EventInput{
 			Stream:    "task_output",
 			ScopeType: scopeType,
@@ -331,6 +330,7 @@ func (m *Manager) RecordUpdate(ctx context.Context, taskID, kind string, payload
 				"kind":      "task_update",
 				"task_id":   taskID,
 				"task_kind": kind,
+				"priority":  priority,
 			},
 			Payload: payload,
 		})
@@ -416,7 +416,7 @@ func (m *Manager) Await(ctx context.Context, taskID string, timeout time.Duratio
 
 	var sub <-chan eventbus.Event
 	if m.bus != nil {
-		streams := append([]string{"task_output"}, defaultWakeStreams...)
+		streams := append([]string{}, wakeStreams...)
 		sub = m.bus.Subscribe(ctx, streams)
 	}
 
@@ -425,7 +425,7 @@ func (m *Manager) Await(ctx context.Context, taskID string, timeout time.Duratio
 		if err != nil {
 			return Task{}, err
 		}
-		if task.Status == StatusCompleted || task.Status == StatusFailed || task.Status == StatusCancelled {
+		if isTerminalStatus(task.Status) {
 			return task, nil
 		}
 
@@ -443,14 +443,18 @@ func (m *Manager) Await(ctx context.Context, taskID string, timeout time.Duratio
 		}
 
 		targets := awaitTargetsForTask(task)
-		if evt, priority, ok, err := m.nextUnreadWakeEvent(ctx, targets, 25); err != nil {
+		reader := awaitReaderForTargets(targets)
+		if evt, priority, ok, err := m.nextUnreadWakeEvent(ctx, targets, reader, 25); err != nil {
 			return task, err
 		} else if ok {
 			if err := applyWakeGrace(ctx, evt); err != nil {
 				return task, err
 			}
-			_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, defaultAwaitReader)
+			_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, reader)
 			current, _ := m.Get(ctx, taskID)
+			if isTerminalStatus(current.Status) {
+				return current, nil
+			}
 			return current, &WakeError{Event: evt, Priority: priority}
 		}
 
@@ -467,14 +471,6 @@ func (m *Manager) Await(ctx context.Context, taskID string, timeout time.Duratio
 			if !ok {
 				return task, ctx.Err()
 			}
-			if evt.Stream == "task_output" {
-				if evt.Metadata != nil {
-					if id, ok := evt.Metadata["task_id"].(string); ok && id == taskID {
-						continue
-					}
-				}
-				continue
-			}
 			if wake, priority := wakeInfo(evt); wake {
 				if !eventMatchesAwaitTargets(evt, targets) {
 					continue
@@ -482,8 +478,11 @@ func (m *Manager) Await(ctx context.Context, taskID string, timeout time.Duratio
 				if err := applyWakeGrace(ctx, evt); err != nil {
 					return task, err
 				}
-				_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, defaultAwaitReader)
+				_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, reader)
 				current, _ := m.Get(ctx, taskID)
+				if isTerminalStatus(current.Status) {
+					return current, nil
+				}
 				return current, &WakeError{Event: evt, Priority: priority}
 			}
 		}
@@ -513,7 +512,7 @@ func (m *Manager) AwaitAny(ctx context.Context, taskIDs []string, timeout time.D
 
 	var sub <-chan eventbus.Event
 	if m.bus != nil {
-		streams := append([]string{"task_output"}, defaultWakeStreams...)
+		streams := append([]string{}, wakeStreams...)
 		sub = m.bus.Subscribe(ctx, streams)
 	}
 
@@ -525,7 +524,7 @@ func (m *Manager) AwaitAny(ctx context.Context, taskIDs []string, timeout time.D
 			if err != nil {
 				return AwaitAnyResult{}, err
 			}
-			if task.Status == StatusCompleted || task.Status == StatusFailed || task.Status == StatusCancelled {
+			if isTerminalStatus(task.Status) {
 				return AwaitAnyResult{
 					TaskID:     id,
 					Task:       task,
@@ -537,13 +536,23 @@ func (m *Manager) AwaitAny(ctx context.Context, taskIDs []string, timeout time.D
 				targets[target] = struct{}{}
 			}
 		}
-		if evt, priority, ok, err := m.nextUnreadWakeEvent(ctx, targets, 25); err != nil {
+		reader := awaitReaderForTargets(targets)
+		if evt, priority, ok, err := m.nextUnreadWakeEvent(ctx, targets, reader, 25); err != nil {
 			return AwaitAnyResult{}, err
 		} else if ok {
 			if err := applyWakeGrace(ctx, evt); err != nil {
 				return AwaitAnyResult{PendingIDs: pending}, err
 			}
-			_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, defaultAwaitReader)
+			_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, reader)
+			if completed, done, pendingIDs, err := m.firstCompletedTask(ctx, taskIDs); err != nil {
+				return AwaitAnyResult{PendingIDs: pending}, err
+			} else if done {
+				return AwaitAnyResult{
+					TaskID:     completed.ID,
+					Task:       completed,
+					PendingIDs: pendingIDs,
+				}, nil
+			}
 			return AwaitAnyResult{
 				PendingIDs:   pending,
 				WakeEvent:    &evt,
@@ -577,14 +586,6 @@ func (m *Manager) AwaitAny(ctx context.Context, taskIDs []string, timeout time.D
 			if !ok {
 				return AwaitAnyResult{PendingIDs: pending}, ctx.Err()
 			}
-			if evt.Stream == "task_output" {
-				if evt.Metadata != nil {
-					if id, ok := evt.Metadata["task_id"].(string); ok && containsID(taskIDs, id) {
-						continue
-					}
-				}
-				continue
-			}
 			if wake, priority := wakeInfo(evt); wake {
 				if !eventMatchesAwaitTargets(evt, targets) {
 					continue
@@ -592,7 +593,16 @@ func (m *Manager) AwaitAny(ctx context.Context, taskIDs []string, timeout time.D
 				if err := applyWakeGrace(ctx, evt); err != nil {
 					return AwaitAnyResult{PendingIDs: pending}, err
 				}
-				_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, defaultAwaitReader)
+				_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, reader)
+				if completed, done, pendingIDs, err := m.firstCompletedTask(ctx, taskIDs); err != nil {
+					return AwaitAnyResult{PendingIDs: pending}, err
+				} else if done {
+					return AwaitAnyResult{
+						TaskID:     completed.ID,
+						Task:       completed,
+						PendingIDs: pendingIDs,
+					}, nil
+				}
 				return AwaitAnyResult{
 					PendingIDs:   pending,
 					WakeEvent:    &evt,
@@ -934,7 +944,7 @@ type wakeEventRef struct {
 	CreatedAt time.Time
 }
 
-func (m *Manager) nextUnreadWakeEvent(ctx context.Context, targets map[string]struct{}, limit int) (eventbus.Event, string, bool, error) {
+func (m *Manager) nextUnreadWakeEvent(ctx context.Context, targets map[string]struct{}, reader string, limit int) (eventbus.Event, string, bool, error) {
 	if m.bus == nil {
 		return eventbus.Event{}, "", false, nil
 	}
@@ -963,8 +973,8 @@ func (m *Manager) nextUnreadWakeEvent(ctx context.Context, targets map[string]st
 	}
 
 	seen := map[string]struct{}{}
-	refs := make([]wakeEventRef, 0, len(defaultWakeStreams)*len(scopes))
-	for _, stream := range defaultWakeStreams {
+	refs := make([]wakeEventRef, 0, len(wakeStreams)*len(scopes))
+	for _, stream := range wakeStreams {
 		for _, scope := range scopes {
 			summaries, err := m.bus.List(ctx, stream, scope)
 			if err != nil {
@@ -995,7 +1005,7 @@ func (m *Manager) nextUnreadWakeEvent(ctx context.Context, targets map[string]st
 	})
 
 	for _, ref := range refs {
-		events, err := m.bus.Read(ctx, ref.Stream, []string{ref.ID}, defaultAwaitReader)
+		events, err := m.bus.Read(ctx, ref.Stream, []string{ref.ID}, reader)
 		if err != nil {
 			return eventbus.Event{}, "", false, err
 		}
@@ -1063,12 +1073,33 @@ func wakeInfo(evt eventbus.Event) (bool, string) {
 		switch strings.ToLower(val) {
 		case "wake", "interrupt":
 			return true, strings.ToLower(val)
+		case "normal", "low":
+			return false, strings.ToLower(val)
 		}
 	}
 	if val, ok := evt.Metadata["wake"].(bool); ok && val {
 		return true, "wake"
 	}
 	return false, ""
+}
+
+func awaitReaderForTargets(targets map[string]struct{}) string {
+	if len(targets) == 0 {
+		return "runtime"
+	}
+	names := make([]string, 0, len(targets))
+	for target := range targets {
+		target = strings.TrimSpace(target)
+		if target == "" {
+			continue
+		}
+		names = append(names, target)
+	}
+	if len(names) == 0 {
+		return "runtime"
+	}
+	sort.Strings(names)
+	return names[0]
 }
 
 func awaitTargetsForTask(task Task) map[string]struct{} {
@@ -1104,15 +1135,6 @@ func eventMatchesAwaitTargets(evt eventbus.Event, targets map[string]struct{}) b
 	return ok
 }
 
-func containsID(list []string, id string) bool {
-	for _, item := range list {
-		if item == id {
-			return true
-		}
-	}
-	return false
-}
-
 func removeID(list []string, id string) []string {
 	out := make([]string, 0, len(list))
 	for _, item := range list {
@@ -1122,6 +1144,45 @@ func removeID(list []string, id string) []string {
 		out = append(out, item)
 	}
 	return out
+}
+
+func isTerminalStatus(status Status) bool {
+	switch status {
+	case StatusCompleted, StatusFailed, StatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+func taskUpdatePriority(kind string, payload map[string]any) string {
+	if payload != nil {
+		if raw, ok := payload["priority"].(string); ok {
+			switch strings.ToLower(strings.TrimSpace(raw)) {
+			case "interrupt", "wake", "normal", "low":
+				return strings.ToLower(strings.TrimSpace(raw))
+			}
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "completed", "failed", "cancelled", "killed":
+		return "wake"
+	default:
+		return "normal"
+	}
+}
+
+func (m *Manager) firstCompletedTask(ctx context.Context, taskIDs []string) (Task, bool, []string, error) {
+	for _, id := range taskIDs {
+		task, err := m.Get(ctx, id)
+		if err != nil {
+			return Task{}, false, nil, err
+		}
+		if isTerminalStatus(task.Status) {
+			return task, true, removeID(taskIDs, id), nil
+		}
+	}
+	return Task{}, false, append([]string{}, taskIDs...), nil
 }
 
 func recordAwaitTimeouts(taskIDs []string, timeout time.Duration, m *Manager) {

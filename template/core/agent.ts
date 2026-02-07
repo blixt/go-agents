@@ -6,6 +6,8 @@ type AgentOptions = {
   system?: string
   model?: AgentModel
   source?: string
+  priority?: "interrupt" | "wake" | "normal" | "low"
+  request_id?: string
 }
 
 type AgentResult = {
@@ -16,7 +18,7 @@ type AgentResult = {
 }
 
 function resolveAPIURL() {
-  const envURL = Bun.env.KARNA_API_URL
+  const envURL = Bun.env.GO_AGENTS_API_URL
   if (envURL && envURL.trim() !== "") return envURL.trim()
   return "http://localhost:8080"
 }
@@ -35,6 +37,8 @@ export async function agent(options: AgentOptions): Promise<AgentResult> {
     system: options.system,
     model: options.model,
     source: options.source || "agent",
+    priority: options.priority || "wake",
+    request_id: options.request_id,
   }
   const res = await fetch(`${resolveAPIURL()}/api/agents/${agentID}/run`, {
     method: "POST",

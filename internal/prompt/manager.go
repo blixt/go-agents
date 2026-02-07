@@ -10,12 +10,13 @@ import (
 	"strings"
 
 	"github.com/flitsinc/go-agents/internal/eventbus"
-	"github.com/flitsinc/go-agents/internal/karna"
+	"github.com/flitsinc/go-agents/internal/goagents"
 	"github.com/flitsinc/go-llms/content"
 )
 
 type Manager struct {
-	Home string
+	Home      string
+	ToolNames []string
 }
 
 func (m *Manager) BuildSystemPrompt(ctx context.Context, _ *eventbus.Bus) (content.Content, string, error) {
@@ -29,7 +30,7 @@ func (m *Manager) BuildSystemPrompt(ctx context.Context, _ *eventbus.Bus) (conte
 func BuildPrompt(ctx context.Context, home string) (string, error) {
 	if home == "" {
 		var err error
-		home, err = karna.EnsureHome()
+		home, err = goagents.EnsureHome()
 		if err != nil {
 			return "", err
 		}
@@ -37,7 +38,7 @@ func BuildPrompt(ctx context.Context, home string) (string, error) {
 	promptPath := filepath.Join(home, "PROMPT.ts")
 	cmd := exec.CommandContext(ctx, "bun", promptPath)
 	cmd.Dir = home
-	cmd.Env = append(os.Environ(), fmt.Sprintf("KARNA_HOME=%s", home))
+	cmd.Env = append(os.Environ(), fmt.Sprintf("GO_AGENTS_HOME=%s", home))
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

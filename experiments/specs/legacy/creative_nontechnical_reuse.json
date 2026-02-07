@@ -1,0 +1,30 @@
+{
+  "id": "creative_nontechnical_reuse",
+  "description": "Non-technical prompts that imply repeated analysis and cross-project consistency without prescribing tool creation.",
+  "experiments": [
+    {
+      "id": "cnr01_go_agents_morning_checkin",
+      "title": "Morning check-in for go-agents",
+      "prompt": "I keep forgetting what to pay attention to before I touch this project. Could you make me a simple morning check-in for the project at /app/go-agents? I want a short version here, and a longer version saved somewhere easy to find. Please include: risky hotspots, outstanding TODO/FIXME style notes, and anything in configuration that might block a local run.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "cnr02_go_agents_checkin_refresh",
+      "title": "Refresh the same check-in",
+      "prompt": "Can you refresh that same check-in now and update the same long note instead of starting a brand new one? Keep this reply short and focus on what changed.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "cnr03_go_llms_matching_checkin",
+      "title": "Matching check-in for go-llms",
+      "prompt": "Please make that same kind of check-in for /app/go-llms in the same style, with a short version here and a longer saved version I can reuse later.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "cnr04_two_project_comparison",
+      "title": "Compare both projects",
+      "prompt": "Now compare the two project check-ins you made and tell me which project looks riskier to change this week, and why. Keep the answer concise but concrete.",
+      "timeoutSeconds": 300
+    }
+  ]
+}

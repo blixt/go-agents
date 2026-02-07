@@ -204,7 +204,7 @@ func (s *Server) handleStreamSubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 	streamsParam := r.URL.Query().Get("streams")
 	if streamsParam == "" {
-		streamsParam = "task_output,errors"
+		streamsParam = "history,task_output,errors"
 	}
 	streamList := splitComma(streamsParam)
 

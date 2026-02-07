@@ -1,0 +1,36 @@
+{
+  "id": "consolidated_runtime_resilience",
+  "description": "Consolidated runtime correctness scenario: live health introspection, stale-task handling, and grounded local file discovery.",
+  "experiments": [
+    {
+      "id": "crr01_runtime_health",
+      "title": "Runtime health snapshot",
+      "prompt": "Please generate a concise live runtime health snapshot for this go-agents service: task counts by status/type, top 3 oldest running tasks, and whether exec work is queued.",
+      "timeoutSeconds": 240
+    },
+    {
+      "id": "crr02_stale_task_cancel",
+      "title": "Start stale task and cancel",
+      "prompt": "Please start one intentionally long-running task, detect when it becomes stale, and cancel it. Return the task id and final status.",
+      "timeoutSeconds": 360
+    },
+    {
+      "id": "crr03_post_cancel_health",
+      "title": "Post-cancel health check",
+      "prompt": "Please re-check runtime health and confirm whether any stale running tasks remain. Keep this concise.",
+      "timeoutSeconds": 240
+    },
+    {
+      "id": "crr04_project_root_discovery",
+      "title": "Project-root largest Go files",
+      "prompt": "Please inspect /app/go-agents and list the five largest Go source files by line count, with exact paths and counts.",
+      "timeoutSeconds": 240
+    },
+    {
+      "id": "crr05_file_first_output",
+      "title": "Large output to file",
+      "prompt": "Please create a complete inventory of all Go files in /app/go-agents with line counts, save the full list to /app/go-agents/.assistant/go-file-lines.txt, and show only a short top-10 summary here.",
+      "timeoutSeconds": 300
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "id": "creative_routine_language",
+  "description": "Non-technical recurring 'morning routine' prompts to test spontaneous setup + reuse behavior.",
+  "experiments": [
+    {
+      "id": "crl01_setup_go_agents_routine",
+      "title": "Set up recurring routine for go-agents",
+      "prompt": "I'd love a morning routine for /app/go-agents so I can quickly see where I might break things. Please create today's full report at /app/go-agents/.assistant/morning-routine.md and /app/go-agents/.assistant/morning-routine.json, and keep your chat reply short.",
+      "timeoutSeconds": 240
+    },
+    {
+      "id": "crl02_run_go_agents_routine_again",
+      "title": "Run same routine again",
+      "prompt": "Please run that same morning routine again for /app/go-agents, update the same two files, and only tell me what changed.",
+      "timeoutSeconds": 240
+    },
+    {
+      "id": "crl03_setup_go_llms_routine",
+      "title": "Set up same routine for go-llms",
+      "prompt": "Now do the same morning routine for /app/go-llms and save it to /app/go-llms/.assistant/morning-routine.md and /app/go-llms/.assistant/morning-routine.json. Keep the reply short.",
+      "timeoutSeconds": 240
+    },
+    {
+      "id": "crl04_run_both_routines_again",
+      "title": "Run both routines and compare",
+      "prompt": "Please run both morning routines again using those same four files, then give me a short recommendation on which project feels riskier to edit today.",
+      "timeoutSeconds": 240
+    }
+  ]
+}

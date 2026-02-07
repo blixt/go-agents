@@ -189,7 +189,7 @@ func TestAwaitWakeEvent(t *testing.T) {
 		t.Fatalf("expected wake event")
 	}
 
-	summaries, err := bus.List(ctx, "signals", eventbus.ListOptions{Limit: 1, Reader: "operator"})
+	summaries, err := bus.List(ctx, "signals", eventbus.ListOptions{Limit: 1, Reader: "runtime"})
 	if err != nil {
 		t.Fatalf("list signals: %v", err)
 	}
@@ -389,6 +389,119 @@ func TestAwaitAnySeesPreexistingWakeEvent(t *testing.T) {
 	}
 	if result.WakeEvent == nil || result.WakeEvent.ID != evt.ID {
 		t.Fatalf("expected preexisting wake event in result")
+	}
+}
+
+func TestAwaitWakesOnOtherTaskCompletion(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	ctx := context.Background()
+
+	waited, err := mgr.Spawn(ctx, tasks.Spec{
+		Type:  "waited",
+		Owner: "agent-a",
+		Metadata: map[string]any{
+			"notify_target": "agent-a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("spawn waited: %v", err)
+	}
+	other, err := mgr.Spawn(ctx, tasks.Spec{
+		Type:  "other",
+		Owner: "agent-a",
+		Metadata: map[string]any{
+			"notify_target": "agent-a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("spawn other: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := mgr.Await(ctx, waited.ID, 2*time.Second)
+		done <- err
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	if err := mgr.Complete(ctx, other.ID, map[string]any{"ok": true}); err != nil {
+		t.Fatalf("complete other: %v", err)
+	}
+
+	err = <-done
+	wakeErr, ok := tasks.AsWakeError(err)
+	if !ok {
+		t.Fatalf("expected wake error from other task completion, got %v", err)
+	}
+	if wakeErr.Priority != "wake" {
+		t.Fatalf("expected wake priority, got %q", wakeErr.Priority)
+	}
+	taskID, _ := wakeErr.Event.Metadata["task_id"].(string)
+	if taskID != other.ID {
+		t.Fatalf("expected wake from task %s, got %s", other.ID, taskID)
+	}
+}
+
+func TestTaskCompletionEventsUseWakePriority(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	ctx := context.Background()
+
+	task, err := mgr.Spawn(ctx, tasks.Spec{
+		Type:  "complete",
+		Owner: "agent-a",
+		Metadata: map[string]any{
+			"notify_target": "agent-a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	if err := mgr.Complete(ctx, task.ID, map[string]any{"ok": true}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	list, err := bus.List(ctx, "task_output", eventbus.ListOptions{Limit: 20})
+	if err == nil && len(list) == 0 {
+		list, err = bus.List(ctx, "task_output", eventbus.ListOptions{Reader: "agent-a", Limit: 20})
+	}
+	if err != nil {
+		t.Fatalf("list task_output: %v", err)
+	}
+	if len(list) == 0 {
+		t.Fatalf("expected task_output events")
+	}
+	ids := make([]string, 0, len(list))
+	for _, summary := range list {
+		ids = append(ids, summary.ID)
+	}
+	events, err := bus.Read(ctx, "task_output", ids, "")
+	if err != nil {
+		t.Fatalf("read task_output: %v", err)
+	}
+
+	found := false
+	for _, evt := range events {
+		taskID, _ := evt.Metadata["task_id"].(string)
+		kind, _ := evt.Metadata["task_kind"].(string)
+		if taskID == task.ID && kind == "completed" {
+			priority, _ := evt.Metadata["priority"].(string)
+			if priority != "wake" {
+				t.Fatalf("expected wake priority on completion, got %q", priority)
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected completed task_output event for %s", task.ID)
 	}
 }
 

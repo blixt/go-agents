@@ -1,0 +1,42 @@
+{
+  "id": "consolidated_creative_reuse",
+  "description": "Consolidated creative reuse scenario: recurring cross-project briefing, refreshes, comparison, and failure recovery in natural language.",
+  "experiments": [
+    {
+      "id": "ccr01_create_go_agents_brief",
+      "title": "Create go-agents daily brief",
+      "prompt": "Please set up my daily change-risk brief for /app/go-agents. Keep a short snapshot here, and save the full version to /app/go-agents/.assistant/daily-brief.md and /app/go-agents/.assistant/daily-brief.json.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "ccr02_refresh_go_agents_brief",
+      "title": "Refresh go-agents brief",
+      "prompt": "Please refresh that same go-agents brief in those same two files and only tell me what changed since the last version.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "ccr03_create_go_llms_brief",
+      "title": "Create go-llms daily brief",
+      "prompt": "Now set up the same style brief for /app/go-llms and save it to /app/go-llms/.assistant/daily-brief.md and /app/go-llms/.assistant/daily-brief.json.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "ccr04_refresh_and_compare_both",
+      "title": "Refresh both and compare",
+      "prompt": "Please refresh both projects' brief files and give me a short recommendation on which project looks riskier to touch today, with concrete reasons.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "ccr05_missing_artifact_honesty",
+      "title": "Missing artifact honesty check",
+      "prompt": "Could you update /app/go-agents/.assistant/does-not-exist-brief.md and summarize the changes? If something is missing, be explicit instead of guessing.",
+      "timeoutSeconds": 240
+    },
+    {
+      "id": "ccr06_recover_with_known_paths",
+      "title": "Recover using known files",
+      "prompt": "Please continue from the known brief files for both projects and give me a tiny delta-only update.",
+      "timeoutSeconds": 240
+    }
+  ]
+}

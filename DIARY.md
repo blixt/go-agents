@@ -429,35 +429,35 @@ Next experiments (minimal prompt, focus on reliability without extra tools)
 
 Platform changes (prompt system + sandbox)
 - Moved the system prompt to Bun (`template/PROMPT.ts`) with a minimal prompt builder (`template/core/prompt-builder.ts`).
-- Added embedded template seeding into `~/.karna` (Go copies template on first boot).
-- Exec now runs with `~/.karna` as CWD and exposes `tools/` + `core/` via module alias.
+- Added embedded template seeding into `~/.go-agents` (Go copies template on first boot).
+- Exec now runs with `~/.go-agents` as CWD and exposes `tools/` + `core/` via module alias.
 - Docker now builds a self-contained image (Go binary embedded + Bun), with no host mounts; `.env` is passed via compose env_file.
-- Fixed execd to create `~/.karna` from template on startup and to spawn Bun via `process.execPath`.
+- Fixed execd to create `~/.go-agents` from template on startup and to spawn Bun via `process.execPath`.
 
 Experiment log (new prompt system)
-- NT01–NT05 (nontechnical_suite.json) on the new `~/.karna` prompt:
+- NT01–NT05 (nontechnical_suite.json) on the new `~/.go-agents` prompt:
   Run: 2026-02-05T13-38-55-543Z.
   Results:
-  - nt01_project_intro: wrote `~/.karna/GETTING_STARTED.md`. Uses exec and writes inside `.karna`.
+  - nt01_project_intro: wrote `~/.go-agents/GETTING_STARTED.md`. Uses exec and writes inside `.go-agents`.
   - nt02_project_intro_refresh: asked for clarification; did not locate `GETTING_STARTED.md`.
-  - nt03_shutdown_risks: produced a long response with many exec calls; saved `~/.karna/data_loss_risk_report.json` but references some incorrect repo paths.
-  - nt04_interface_inventory: saved `~/.karna/interaction_methods.json` without citing actual API routes.
-  - nt05_running_requirements: saved `~/.karna/setup_checklist.json`, but claimed “no API keys needed” which is incorrect for real LLM use.
+  - nt03_shutdown_risks: produced a long response with many exec calls; saved `~/.go-agents/data_loss_risk_report.json` but references some incorrect repo paths.
+  - nt04_interface_inventory: saved `~/.go-agents/interaction_methods.json` without citing actual API routes.
+  - nt05_running_requirements: saved `~/.go-agents/setup_checklist.json`, but claimed “no API keys needed” which is incorrect for real LLM use.
   Takeaways:
-  - The new prompt keeps work inside `~/.karna` and writes files reliably.
+  - The new prompt keeps work inside `~/.go-agents` and writes files reliably.
   - The agent still struggles with “refresh” prompts unless the file path is explicit.
   - Without stronger grounding, it fabricates or misstates endpoints and requirements.
 
-- SI01–SI05 (self_improve.json) on the new `~/.karna` prompt:
+- SI01–SI05 (self_improve.json) on the new `~/.go-agents` prompt:
   Run: 2026-02-05T13-45-14-171Z.
   Results:
   - si01_endpoint_report: created `tools/list-endpoints.ts` but returned an inaccurate endpoint list (nonexistent endpoints and paths).
   - si02_endpoint_refresh: asked for clarification instead of reusing outputs.
-  - si03_large_files_to_file: created file outputs and helper scripts inside `~/.karna/tools`.
-  - si04_todo_to_file: wrote `~/.karna/todo-fixme-list.txt` with zero TODO/FIXME (reasonable).
+  - si03_large_files_to_file: created file outputs and helper scripts inside `~/.go-agents/tools`.
+  - si04_todo_to_file: wrote `~/.go-agents/todo-fixme-list.txt` with zero TODO/FIXME (reasonable).
   - si05_self_improve_helper: created `tools/helpers.ts` and `tools/HELPERS.md` with a broad helper library.
   Takeaways:
-  - The agent now self-creates tools in `~/.karna/tools` without prompting, which is promising.
+  - The agent now self-creates tools in `~/.go-agents/tools` without prompting, which is promising.
   - Some tools are over-broad and not tied to actual needs (helpers include HTTP, CSV, etc. without use).
   - Endpoint extraction is still unreliable; agent tends to “infer” endpoints rather than parse routes precisely.
 
@@ -472,17 +472,199 @@ Experiment log
   Hypothesis: Agent will create an LLM task, use exec, and return correct Go file counts.
   Test: ran `bun scripts/run_experiments.ts experiments/specs/file_output.json`.
   Result: LLM task not found. Root cause: PROMPT.ts had backticks inside the prompt string (e.g., `$.env()`), which caused the Bun prompt builder to fail; HandleMessage exited before spawning tasks.
-  Fix: removed backticks from PROMPT.ts, then copied the updated file into the running container at /root/.karna/PROMPT.ts.
-  Takeaway: prompt build failures silently prevent task creation; we should surface prompt build errors or add a preflight check. Also note that template updates do not reach existing ~/.karna without a rebuild or manual sync.
+  Fix: removed backticks from PROMPT.ts, then copied the updated file into the running container at /root/.go-agents/PROMPT.ts.
+  Takeaway: prompt build failures silently prevent task creation; we should surface prompt build errors or add a preflight check. Also note that template updates do not reach existing ~/.go-agents without a rebuild or manual sync.
 
 - Experiment: file_output re-run with prompt build fixed.
   Hypothesis: With a valid prompt, the agent will use exec to compute Go file sizes.
-  Result: LLM task completed and used exec, but reported “no Go files” because it ran find in ~/.karna (default working directory), not the repo. Output was incorrect.
+  Result: LLM task completed and used exec, but reported “no Go files” because it ran find in ~/.go-agents (default working directory), not the repo. Output was incorrect.
   Takeaway: Success path now executes tools, but the default cwd is wrong for repo inspection. We need either prompt guidance to cd into /app/go-agents when asked about “this project,” or a small helper that resolves project root.
   What worked: LLM spawned exec tasks and streamed tool deltas; wait_seconds usage appeared in tool calls.
-  What didn’t: The agent did not infer the repo location; it defaulted to ~/.karna.
+  What didn’t: The agent did not infer the repo location; it defaulted to ~/.go-agents.
 
 Next replication targets (post-API simplification)
 - Re-run a “health report” style request, ensuring the prompt builds and the agent can reach the correct data sources.
 - Re-run a task-cancellation wake scenario and verify task_health + wake behavior still functions with the new API surface.
 - Add a minimal “project root” hint (or helper) and re-run file_output to confirm correct file discovery.
+
+## 2026-02-06
+Experiment log
+- Post-correctness follow-up suite (new spec: `experiments/specs/correctness_followup.json`).
+  Run: `2026-02-06T15-10-25-119Z`.
+  Results:
+  - `cf01_runtime_health_report`: completed, `exec_calls=18`, `exec_failed=2`. Agent eventually used `/api/state` and produced a reasonable report.
+  - `cf02_wake_cancel_stale_exec`: completed, `exec_calls=3`, `exec_failed=1`. Agent launched a long exec task and cancelled it; final status was `cancelled`.
+  - `cf03_project_root_file_discovery`: invalid run (`request_status=0`, aborted). No new user message was accepted; runner captured a stale wake-handling turn instead.
+  Takeaways:
+  - Health report replication target is met (agent can now reach the right data source after endpoint discovery).
+  - Wake/cancel behavior is partially validated (cancellation works), but this run did not confirm wake-signal grounding.
+  - A timed-out `/api/agents/operator/run` request can invalidate an experiment and cause cross-turn contamination.
+
+- Follow-up retry suite (new spec: `experiments/specs/correctness_followup_2.json`).
+  Run: `2026-02-06T15-15-23-104Z`.
+  Results:
+  - `cf2_01_wake_detection_and_cancel`: completed, `exec_calls=2`. Agent started `sleep 90`, waited, and cancelled the task successfully; it still failed to verify wake/task_health via API due wrong localhost assumptions.
+  - `cf2_02_project_root_file_discovery`: invalid run (`request_status=0`, aborted). Again captured wake/stale-task cleanup behavior instead of the requested file-discovery task.
+  Takeaways:
+  - Correctness changes did not remove wake-related interference with incoming prompts under this workload.
+  - Request-level aborts (10s client timeout in runner) are a recurring reliability limiter for multi-experiment batches.
+
+- Isolated file-discovery rerun (single experiment in `/tmp/cf_file_discovery_only.json`).
+  Run: `2026-02-06T15-17-24-945Z`.
+  Result: completed, `exec_calls=5`, `exec_failed=1`. Agent returned correct top-5 Go files under `/app/go-agents`:
+  - `/app/go-agents/internal/tasks/manager.go` (1220)
+  - `/app/go-agents/internal/engine/agent.go` (1009)
+  - `/app/go-agents/internal/tasks/async_task_test.go` (517)
+  - `/app/go-agents/internal/eventbus/bus.go` (398)
+  - `/app/go-agents/internal/engine/agent_loop_test.go` (325)
+  Takeaway: With an explicit project-root hint and an uncontaminated run, file discovery works correctly.
+
+- Correctness-test validation for recent fixes.
+  Command: `mise exec -- go test ./internal/tasks ./internal/engine -run 'TestAwaitSeesPreexistingWakeEvent|TestAwaitAnySeesPreexistingWakeEvent|TestRuntimeRunLoopKeepsFailedMessageUnread|TestManagerRejectsInvalidTerminalTransition|TestMarkRunningRejectsTerminalTask'`
+  Result: all targeted tests passed.
+
+Next replication targets
+- Investigate why `/api/agents/operator/run` intermittently times out during active wake/stale traffic (likely queueing/lock contention).
+- Add runner retry/backoff for `run` request timeout to avoid invalid batch data points.
+- Separate or prioritize human input handling over wake-driven housekeeping so stale-task messages do not preempt user-requested tasks.
+
+- Creative non-technical reuse suite (new spec: `experiments/specs/creative_nontechnical_reuse.json`).
+  Run: `2026-02-06T15-24-16-042Z`.
+  Results:
+  - `cnr01_go_agents_morning_checkin`: completed, `exec_calls=3`, `exec_failed=1`, `file_writes=2`.
+  - `cnr02_go_agents_checkin_refresh`: completed, `exec_calls=0`; asked for clarification and did not refresh prior artifact.
+  - `cnr03_go_llms_matching_checkin`: completed, `exec_calls=4`, `exec_failed=1`, `file_writes=1`.
+  - `cnr04_two_project_comparison`: completed, `exec_calls=1`; said it had no prior check-ins in context.
+  Takeaway: Natural-language “same as before” prompts still fail artifact continuity; follow-ups drift to “no context.”
+
+- Creative non-technical reuse with explicit paths (spec: `experiments/specs/creative_nontechnical_reuse_paths.json`).
+  Run: `2026-02-06T15-28-17-670Z`.
+  Results:
+  - `cnrp01_go_agents_watchlist_create`: completed, `exec_calls=1`, `file_writes=1`.
+  - `cnrp02_go_agents_watchlist_refresh`: completed, `exec_calls=1`, `file_writes=1`.
+  - `cnrp03_go_llms_watchlist_create`: completed, `exec_calls=1`, `file_writes=1`.
+  - `cnrp04_dual_watchlist_refresh_compare`: completed, `exec_calls=3`; failed behaviorally and searched local context instead of reusing explicit watchlist files.
+  Takeaway: Explicit file paths improve single-project refresh, but cross-project follow-up still regresses to context search.
+
+- Creative speed refresh suite (spec: `experiments/specs/creative_speed_refresh.json`).
+  Run: `2026-02-06T15-30-46-906Z`.
+  Results:
+  - `csr01_bulletin_create`: completed, `exec_calls=1`, `file_writes=1`.
+  - `csr02_bulletin_refresh_fast`: completed, `exec_calls=2`, `exec_failed=1`, `file_writes=2`.
+  - `csr03_bulletin_refresh_again`: completed, `exec_calls=1`; failed behaviorally with “no context.”
+  Takeaway: Even with repeated “refresh” framing, the agent often reverts to context loss after one turn.
+
+- Creative non-technical reuse loop (new spec: `experiments/specs/creative_nontechnical_reuse_loop.json`).
+  Run: `2026-02-06T15-33-33-745Z`.
+  Results:
+  - `cnrl01_go_agents_brief_create`: completed, `exec_calls=5`, `exec_failed=1`, `file_writes=2`.
+  - `cnrl02_go_agents_brief_refresh_1`: completed, `exec_calls=1`; asked for file clarification despite prior pathful setup.
+  - `cnrl03_go_agents_brief_refresh_2`: completed, `exec_calls=0`; repeated clarification request.
+  - `cnrl04_go_llms_brief_create`: completed, `exec_calls=5`, `exec_failed=2`, `file_writes=3`.
+  - `cnrl05_go_llms_brief_refresh`: completed, `exec_calls=2`, `exec_failed=1`; asked for clarification.
+  - `cnrl06_compare_briefs`: completed, `exec_calls=2`; could not find prior brief artifacts.
+  Takeaway: Multi-turn loop still does not preserve reusable workflow context across follow-ups.
+
+- Creative “morning routine” natural-language suite (new spec: `experiments/specs/creative_routine_language.json`).
+  Run: `2026-02-06T15-40-11-553Z`.
+  Results:
+  - `crl01_setup_go_agents_routine`: completed, `exec_calls=5`, `exec_failed=2`, `file_writes=3`.
+  - `crl02_run_go_agents_routine_again`: completed, `exec_calls=0`; asked for clarification, no refresh.
+  - `crl03_setup_go_llms_routine`: completed, `exec_calls=1`, `file_writes=1`.
+  - `crl04_run_both_routines_again`: completed, `exec_calls=1`; still claimed no routine context.
+  Takeaway: “Routine” framing alone is insufficient to trigger stable reuse behavior.
+
+- Reuse evidence check across creative suites (`15:24`, `15:28`, `15:30`, `15:33`, `15:40`).
+  Method: scanned `exec` payload code for helper creation (`tools/`, `code/`, `core/`, `scripts/` writes), helper imports (`from "tools/..."` etc.), and helper invocation (`bun tools/...`).
+  Result: no concrete helper creation/import/invocation hits in any experiment; `exec_reused_tool=0` throughout.
+  Note: `exec_tool_creation` metric showed non-zero values in a few cases, but this is mostly regex noise from report text containing paths like `exec/bootstrap.ts` or `tools/edit.ts`, not actual helper file creation.
+  Takeaway: Post-correctness behavior still favors one-off probing over invented reusable tooling unless directly nudged.
+
+- Simplification pass: remove hardcoded `human` concepts and shift to actor + priority semantics.
+  Date: 2026-02-06.
+  Changes:
+  - API `/api/agents/{id}/run` now defaults `source` to `external` (not `human`) and accepts `priority` + `request_id`.
+  - Runtime now supports `SendMessageWithMeta` and merges message metadata generically (including priority).
+  - Removed `human`-specific guards from message tool/runtime paths.
+  - Prompt no longer references human-only messaging; now describes actor-to-actor messaging and priority levels.
+  Takeaway: actor routing is now generic; no runtime branch depends on a `human` identity.
+
+- Priority model update (added `low`).
+  Date: 2026-02-06.
+  Changes:
+  - Priority vocabulary: `interrupt | wake | normal | low`.
+  - Agent loop replay now orders unread messages by priority then FIFO (interrupt first, low last).
+  - task_health signal + stale wake messages are tagged `priority=low` so housekeeping traffic is demoted.
+  - Await wake logic still wakes only on `wake|interrupt`; `normal|low` no longer interrupts awaits.
+  Takeaway: noisy background events are demoted without adding special-case channels.
+
+- Turn continuity with fresh LLM sessions.
+  Date: 2026-02-06.
+  Changes:
+  - Added lightweight per-agent in-memory conversation history (ring buffer) in runtime.
+  - Each LLM turn gets a bounded “Recent context” prefix built from prior turns.
+  - `low` priority events are excluded from conversation history to reduce context pollution.
+  Takeaway: preserves continuity even with fresh LLM sessions while keeping context bounded.
+
+- Experiment harness reliability improvements.
+  Date: 2026-02-06.
+  Changes:
+  - Added request timeout env control + POST retry/backoff.
+  - Runner now sends `source=external`, `priority=wake`, and `request_id` for correlation when supported.
+  - Added compatibility fallback for older servers that reject unknown fields.
+  - Tightened tool creation metric to reduce false positives from path mentions in report text.
+  Validation:
+  - `mise run format` passed (gofmt/vet/golangci-lint).
+  - `mise run test` passed (all packages).
+  - Runner smoke test `experiments/specs/file_output.json` succeeded after compatibility fallback.
+  Takeaway: runner is more robust and correlation-ready without breaking older API builds.
+
+- Simplification phase 2: remove remaining implicit `operator` defaults and use durable context reconstruction.
+  Date: 2026-02-06.
+  Changes:
+  - Runtime no longer auto-starts a hardcoded `operator` loop at startup.
+  - Runtime methods now require explicit `agent_id` for run/prompt/session/root-task paths (no silent defaulting).
+  - `/api/state` no longer seeds sessions with a hardcoded `operator`; session keys are derived from observed tasks/agent metadata.
+  - task_health routing no longer fans out aggregate snapshots to `operator`; empty targets are scoped globally (`*`) and stale-task wake remains targeted.
+  - llm_update_error signals are now global-scoped instead of hardcoded to `operator`.
+  Takeaway: runtime behavior is now actor-explicit and avoids hidden role assumptions.
+
+- Durable continuity context (replace in-memory turn history).
+  Date: 2026-02-06.
+  Changes:
+  - Removed in-memory per-agent conversation history mutation.
+  - Added runtime reconstruction of recent context from durable LLM tasks + task input updates (`source`, `priority`, input message, task result output).
+  - `low` priority events are excluded from reconstructed context to reduce noise.
+  - Bounded context formatting is still enforced before each LLM turn.
+  Takeaway: continuity survives process/session churn without a separate state mechanism.
+
+- Validation for phase 2.
+  Date: 2026-02-06.
+  Commands:
+  - `mise run format`
+  - `mise run test`
+  Result: both passed.
+
+- Priority + continuity regression tests added.
+  Date: 2026-02-06.
+  New tests:
+  - `TestRuntimeRunLoopPrioritizesWakeOverLow` verifies inbox scheduling prefers `wake` over `low` for pending unread messages.
+  - `TestRuntimeHistoryReconstructionExcludesLowPriority` verifies low-priority historical turns are excluded from reconstructed LLM context.
+  Validation: `mise run test` passes with both tests included.
+
+- Experiment spec consolidation (fewer, richer scenarios).
+  Date: 2026-02-06.
+  Goal: Reduce overlap across many small suites and keep a smaller set of complex, varied scenarios.
+  Changes:
+  - Added canonical consolidated specs:
+    - `experiments/specs/consolidated_creative_reuse.json` (6-step cross-project recurring brief/reuse/failure-recovery workflow).
+    - `experiments/specs/consolidated_runtime_resilience.json` (5-step live runtime correctness + stale cancel + local file discovery/file-first output).
+    - `experiments/specs/consolidated_repo_intelligence.json` (7-step external-repo onboarding/refresh/interface/requirements/structured-map/scoped-risk workflow).
+  - Moved overlapping older suites to `experiments/specs/legacy/` to keep the primary set smaller while preserving reproducibility.
+  - Updated runner default spec to `consolidated_repo_intelligence.json`.
+  - Updated `experiments/README.md` with canonical-vs-legacy guidance.
+
+- Consolidated suite smoke test.
+  Run: `2026-02-06T19-54-00-534Z` using `consolidated_runtime_resilience.json`.
+  Results: all 5 experiments completed; each used exec and produced grounded outputs, including stale-task cancellation and file-first inventory output.
+  Takeaway: New consolidated specs run successfully with current harness/runtime behavior.

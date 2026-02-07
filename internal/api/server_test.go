@@ -71,7 +71,7 @@ func TestServerStateAndQueue(t *testing.T) {
 	}
 
 	// Agent run enqueues work via the event bus.
-	resp = doJSON(t, client, "POST", "/api/agents/operator/run", map[string]any{"message": "hello", "source": "human"})
+	resp = doJSON(t, client, "POST", "/api/agents/operator/run", map[string]any{"message": "hello", "source": "external"})
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("agent run status: %d body=%s", resp.StatusCode, readBody(t, resp))
 	}
@@ -85,6 +85,60 @@ func TestServerStateAndQueue(t *testing.T) {
 	decodeJSONResponse(t, resp, &snapshot)
 	if snapshot["tasks"] == nil {
 		t.Fatalf("expected tasks in snapshot")
+	}
+	if snapshot["agents"] == nil {
+		t.Fatalf("expected agents in snapshot")
+	}
+	if snapshot["histories"] == nil {
+		t.Fatalf("expected histories in snapshot")
+	}
+}
+
+func TestServerAgentCompact(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	runtimeClient := &ai.Client{LLM: llms.New(&apiFakeProvider{})}
+	rt := engine.NewRuntime(bus, mgr, runtimeClient)
+
+	server := &Server{Tasks: mgr, Bus: bus, Runtime: rt}
+	h := server.Handler()
+	client := testutil.NewInProcessClient(h)
+
+	resp := doJSON(t, client, "POST", "/api/agents/operator/compact", map[string]any{
+		"reason": "test compact",
+	})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("compact status: %d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+
+	list, err := bus.List(context.Background(), "history", eventbus.ListOptions{
+		ScopeType: "agent",
+		ScopeID:   "operator",
+		Limit:     20,
+		Order:     "lifo",
+	})
+	if err != nil {
+		t.Fatalf("list history: %v", err)
+	}
+	if len(list) == 0 {
+		t.Fatalf("expected compact history event")
+	}
+	events, err := bus.Read(context.Background(), "history", []string{list[0].ID}, "")
+	if err != nil || len(events) == 0 {
+		t.Fatalf("read history event: %v", err)
+	}
+	entry, ok := engine.HistoryEntryFromEvent(events[0])
+	if !ok {
+		t.Fatalf("expected parseable history entry")
+	}
+	if entry.Type != "context_compaction" {
+		t.Fatalf("expected context_compaction entry, got %q", entry.Type)
+	}
+	if entry.Generation < 2 {
+		t.Fatalf("expected generation >= 2 after compact, got %d", entry.Generation)
 	}
 }
 

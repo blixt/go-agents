@@ -1,15 +1,15 @@
-package karna
+package goagents
 
 import (
 	"io/fs"
 	"os"
 	"path/filepath"
 
-	karna_template "github.com/flitsinc/go-agents/template"
+	goagents_template "github.com/flitsinc/go-agents/template"
 )
 
 func copyTemplate(dest string) error {
-	sub, err := fs.Sub(karna_template.FS, ".")
+	sub, err := fs.Sub(goagents_template.FS, ".")
 	if err != nil {
 		return err
 	}

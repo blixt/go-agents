@@ -1,4 +1,4 @@
-package karna_template
+package goagents_template
 
 import "embed"
 

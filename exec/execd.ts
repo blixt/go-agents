@@ -26,7 +26,7 @@ type ConfigFile = {
 
 const bootstrapPath = resolve(import.meta.dir, "bootstrap.ts")
 const bunBin = process.execPath || "bun"
-const KARNA_HOME = Bun.env.KARNA_HOME || join(homedir(), ".karna")
+const GO_AGENTS_HOME = Bun.env.GO_AGENTS_HOME || join(homedir(), ".go-agents")
 const TEMPLATE_ROOT = resolve(import.meta.dir, "..", "template")
 const once = process.argv.includes("--once")
 
@@ -85,7 +85,7 @@ const POLL_MS = parseInt(pollArg || "1000", 10)
 const PARALLEL = Math.max(1, parseInt(parallelArg || Bun.env.EXEC_PARALLEL || "2", 10))
 const webhookAddr = webhookArg || config.webhook_addr
 
-process.env.KARNA_API_URL = API_URL
+process.env.GO_AGENTS_API_URL = API_URL
 
 function startWebhookServer() {
   if (!webhookAddr) return
@@ -129,17 +129,17 @@ async function copyDir(src: string, dest: string) {
   }
 }
 
-async function ensureKarnaHome() {
+async function ensureGoAgentsHome() {
   try {
-    const info = await stat(KARNA_HOME)
+    const info = await stat(GO_AGENTS_HOME)
     if (!info.isDirectory()) {
-      throw new Error(`${KARNA_HOME} exists and is not a directory`)
+      throw new Error(`${GO_AGENTS_HOME} exists and is not a directory`)
     }
     return
   } catch (err: any) {
     if (err?.code !== "ENOENT") throw err
   }
-  await copyDir(TEMPLATE_ROOT, KARNA_HOME)
+  await copyDir(TEMPLATE_ROOT, GO_AGENTS_HOME)
 }
 
 async function claimTasks(limit: number): Promise<Task[]> {
@@ -216,8 +216,8 @@ async function runTask(task: Task) {
   await mkdir(execDir, { recursive: true })
   const nodeModulesDir = join(execDir, "node_modules")
   await mkdir(nodeModulesDir, { recursive: true })
-  const toolsSource = join(KARNA_HOME, "tools")
-  const coreSource = join(KARNA_HOME, "core")
+  const toolsSource = join(GO_AGENTS_HOME, "tools")
+  const coreSource = join(GO_AGENTS_HOME, "core")
   const toolsTarget = join(nodeModulesDir, "tools")
   const coreTarget = join(nodeModulesDir, "core")
   try {
@@ -257,13 +257,13 @@ async function runTask(task: Task) {
 
   const proc = Bun.spawn({
     cmd,
-    cwd: KARNA_HOME,
+    cwd: GO_AGENTS_HOME,
     stdout: "pipe",
     stderr: "pipe",
     stdin: "pipe",
     env: {
       ...process.env,
-      KARNA_HOME,
+      GO_AGENTS_HOME,
     },
   })
 
@@ -365,7 +365,7 @@ async function runTask(task: Task) {
 }
 
 async function main() {
-  await ensureKarnaHome()
+  await ensureGoAgentsHome()
   startWebhookServer()
   const running = new Set<Promise<void>>()
   while (true) {

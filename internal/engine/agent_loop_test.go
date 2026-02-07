@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,7 +94,7 @@ func TestRuntimeRunLoop(t *testing.T) {
 		ScopeID:   "operator",
 		Body:      "hello",
 		Metadata: map[string]any{
-			"source": "human",
+			"source": "external",
 			"target": "operator",
 		},
 	})
@@ -126,7 +128,7 @@ func TestRuntimeRunLoopReplaysUnreadMessages(t *testing.T) {
 		ScopeID:   "operator",
 		Body:      "queued-before-loop",
 		Metadata: map[string]any{
-			"source": "human",
+			"source": "external",
 			"target": "operator",
 		},
 	})
@@ -191,7 +193,7 @@ func TestRuntimeRunLoopDoesNotDuplicateBufferedMessages(t *testing.T) {
 		ScopeID:   "operator",
 		Body:      "first",
 		Metadata: map[string]any{
-			"source": "human",
+			"source": "external",
 			"target": "operator",
 		},
 	})
@@ -204,7 +206,7 @@ func TestRuntimeRunLoopDoesNotDuplicateBufferedMessages(t *testing.T) {
 		ScopeID:   "operator",
 		Body:      "second",
 		Metadata: map[string]any{
-			"source": "human",
+			"source": "external",
 			"target": "operator",
 		},
 	})
@@ -268,7 +270,7 @@ func TestRuntimeRunLoopKeepsFailedMessageUnread(t *testing.T) {
 		ScopeID:   "operator",
 		Body:      "fail please",
 		Metadata: map[string]any{
-			"source": "human",
+			"source": "external",
 			"target": "operator",
 		},
 	})
@@ -319,6 +321,176 @@ func TestRuntimeRunLoopKeepsFailedMessageUnread(t *testing.T) {
 				}
 			}
 			t.Fatalf("failed message event not found")
+		}
+	}
+}
+
+func TestRuntimeRunLoopPrioritizesWakeOverLow(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	client := &ai.Client{LLM: llms.New(&loopProvider{})}
+	rt := NewRuntime(bus, mgr, client)
+
+	_, err := bus.Push(context.Background(), eventbus.EventInput{
+		Stream:    "messages",
+		ScopeType: "agent",
+		ScopeID:   "operator",
+		Body:      "low-priority-message",
+		Metadata: map[string]any{
+			"source":   "external",
+			"target":   "operator",
+			"priority": "low",
+		},
+	})
+	if err != nil {
+		t.Fatalf("push low message: %v", err)
+	}
+	_, err = bus.Push(context.Background(), eventbus.EventInput{
+		Stream:    "messages",
+		ScopeType: "agent",
+		ScopeID:   "operator",
+		Body:      "wake-priority-message",
+		Metadata: map[string]any{
+			"source":   "external",
+			"target":   "operator",
+			"priority": "wake",
+		},
+	})
+	if err != nil {
+		t.Fatalf("push wake message: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = rt.Run(ctx, "operator")
+	}()
+
+	var llmItems []tasks.Task
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatalf("timeout waiting for llm tasks")
+		default:
+			items, listErr := mgr.List(context.Background(), tasks.ListFilter{
+				Type:  "llm",
+				Owner: "operator",
+				Limit: 10,
+			})
+			if listErr != nil {
+				t.Fatalf("list llm tasks: %v", listErr)
+			}
+			if len(items) >= 2 {
+				llmItems = items
+				goto ready
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+ready:
+	sort.Slice(llmItems, func(i, j int) bool {
+		if llmItems[i].CreatedAt.Equal(llmItems[j].CreatedAt) {
+			return llmItems[i].ID < llmItems[j].ID
+		}
+		return llmItems[i].CreatedAt.Before(llmItems[j].CreatedAt)
+	})
+
+	collected := make([]string, 0, 2)
+	for _, item := range llmItems {
+		updates, listErr := mgr.ListUpdates(context.Background(), item.ID, 10)
+		if listErr != nil {
+			t.Fatalf("list task updates: %v", listErr)
+		}
+		for _, upd := range updates {
+			if upd.Kind != "input" {
+				continue
+			}
+			msg, _ := upd.Payload["message"].(string)
+			msg = strings.TrimSpace(msg)
+			if msg == "" {
+				continue
+			}
+			collected = append(collected, msg)
+			break
+		}
+		if len(collected) >= 2 {
+			break
+		}
+	}
+	if len(collected) < 2 {
+		t.Fatalf("expected at least two non-empty llm inputs, got %v", collected)
+	}
+	firstInput := collected[0]
+	secondInput := collected[1]
+	if firstInput != "wake-priority-message" {
+		t.Fatalf("expected wake message first, got %q", firstInput)
+	}
+	if secondInput != "low-priority-message" {
+		t.Fatalf("expected low message second, got %q", secondInput)
+	}
+}
+
+func TestRuntimeRunLoopWakesOnTaskOutputEvents(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	client := &ai.Client{LLM: llms.New(&loopProvider{})}
+	rt := NewRuntime(bus, mgr, client)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = rt.Run(ctx, "operator")
+	}()
+
+	task, err := mgr.Spawn(context.Background(), tasks.Spec{
+		Type:  "exec",
+		Owner: "llm",
+		Metadata: map[string]any{
+			"notify_target": "operator",
+		},
+	})
+	if err != nil {
+		t.Fatalf("spawn task: %v", err)
+	}
+	if err := mgr.MarkRunning(context.Background(), task.ID); err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+	if err := mgr.Complete(context.Background(), task.ID, map[string]any{"ok": true}); err != nil {
+		t.Fatalf("complete task: %v", err)
+	}
+
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatalf("timeout waiting for wake-driven run")
+		default:
+			session, ok := rt.GetSession("operator")
+			if ok && session.LastOutput == "loop" {
+				list, err := bus.List(context.Background(), "task_output", eventbus.ListOptions{
+					Reader: "operator",
+					Limit:  20,
+					Order:  "fifo",
+				})
+				if err != nil {
+					t.Fatalf("list task_output: %v", err)
+				}
+				for _, summary := range list {
+					if summary.Read {
+						return
+					}
+				}
+				t.Fatalf("expected at least one task_output event to be acked")
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 }

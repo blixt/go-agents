@@ -1,0 +1,30 @@
+{
+  "id": "creative_nontechnical_reuse_paths",
+  "description": "Non-technical repeated tasks with explicit artifact locations to test spontaneous helper invention and practical reuse.",
+  "experiments": [
+    {
+      "id": "cnrp01_go_agents_watchlist_create",
+      "title": "Create go-agents watchlist",
+      "prompt": "I'm trying to avoid breakage when I make edits. Could you make me a morning watchlist for /app/go-agents? Please rank the 15 files most likely to cause trouble if edited this week, with plain-language reasons. Save the full watchlist to /app/go-agents/.assistant/morning-watchlist.md and the structured data to /app/go-agents/.assistant/morning-watchlist.json. Keep your reply short.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "cnrp02_go_agents_watchlist_refresh",
+      "title": "Refresh go-agents watchlist",
+      "prompt": "Please refresh those same files for /app/go-agents at /app/go-agents/.assistant/morning-watchlist.md and /app/go-agents/.assistant/morning-watchlist.json. I only want a short summary of what changed since the previous version.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "cnrp03_go_llms_watchlist_create",
+      "title": "Create go-llms watchlist",
+      "prompt": "Could you make that same style morning watchlist for /app/go-llms and save it to /app/go-llms/.assistant/morning-watchlist.md and /app/go-llms/.assistant/morning-watchlist.json? Keep your reply short.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "cnrp04_dual_watchlist_refresh_compare",
+      "title": "Refresh both and compare",
+      "prompt": "Please refresh both projects' watchlist files and give me a short side-by-side recommendation about which project is riskier to touch today and why.",
+      "timeoutSeconds": 300
+    }
+  ]
+}

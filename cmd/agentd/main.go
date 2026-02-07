@@ -16,7 +16,7 @@ import (
 	"github.com/flitsinc/go-agents/internal/config"
 	"github.com/flitsinc/go-agents/internal/engine"
 	"github.com/flitsinc/go-agents/internal/eventbus"
-	"github.com/flitsinc/go-agents/internal/karna"
+	"github.com/flitsinc/go-agents/internal/goagents"
 	"github.com/flitsinc/go-agents/internal/state"
 	"github.com/flitsinc/go-agents/internal/tasks"
 	"github.com/flitsinc/go-agents/internal/web"
@@ -30,8 +30,8 @@ func main() {
 	if err := os.MkdirAll(cfg.SnapshotDir, 0o755); err != nil {
 		log.Fatalf("create snapshot dir: %v", err)
 	}
-	if _, err := karna.EnsureHome(); err != nil {
-		log.Fatalf("ensure karna home: %v", err)
+	if _, err := goagents.EnsureHome(); err != nil {
+		log.Fatalf("ensure go-agents home: %v", err)
 	}
 
 	db, err := state.Open(cfg.DBPath)
@@ -49,6 +49,19 @@ func main() {
 	sendTaskTool := agenttools.SendTaskTool(manager, bus)
 	cancelTaskTool := agenttools.CancelTaskTool(manager)
 	killTaskTool := agenttools.KillTaskTool(manager)
+	noopTool := agenttools.NoopTool()
+	viewImageTool := agenttools.ViewImageTool()
+
+	rt.SetPromptTools([]string{
+		"await_task",
+		"cancel_task",
+		"exec",
+		"kill_task",
+		"noop",
+		"send_message",
+		"send_task",
+		"view_image",
+	})
 
 	var llmClient *ai.Client
 	if cfg.LLMModel != "" && cfg.LLMAPIKey != "" {
@@ -56,7 +69,7 @@ func main() {
 			Provider: cfg.LLMProvider,
 			Model:    cfg.LLMModel,
 			APIKey:   cfg.LLMAPIKey,
-		}, execTool, sendMessageTool, awaitTaskTool, sendTaskTool, cancelTaskTool, killTaskTool)
+		}, execTool, sendMessageTool, awaitTaskTool, sendTaskTool, cancelTaskTool, killTaskTool, noopTool, viewImageTool)
 		if err != nil {
 			log.Printf("LLM disabled: %v", err)
 		}

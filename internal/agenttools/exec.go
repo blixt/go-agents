@@ -36,14 +36,16 @@ func ExecTool(manager *tasks.Manager) llmtools.Tool {
 				metadata["tool_call_id"] = tc.ID
 				metadata["tool_name"] = tc.Name
 			}
-			if agentID := agentcontext.AgentIDFromContext(r.Context()); agentID != "" {
-				metadata["notify_target"] = agentID
+			owner := strings.TrimSpace(agentcontext.AgentIDFromContext(r.Context()))
+			if owner == "" {
+				owner = "agent"
 			}
+			metadata["notify_target"] = owner
 
 			parentID := tasks.ParentTaskIDFromContext(r.Context())
 			spec := tasks.Spec{
 				Type:     "exec",
-				Owner:    "llm",
+				Owner:    owner,
 				ParentID: parentID,
 				Metadata: metadata,
 				Payload: map[string]any{

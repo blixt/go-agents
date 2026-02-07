@@ -1,0 +1,18 @@
+{
+  "id": "correctness_followup_2",
+  "description": "Retry focused follow-up with clean runs: wake detection verification and project-root file discovery.",
+  "experiments": [
+    {
+      "id": "cf2_01_wake_detection_and_cancel",
+      "title": "Wake detection then cancel",
+      "prompt": "Please do this in order: (1) start one long-running exec task (for example sleep 90), (2) wait at least 40 seconds, (3) query runtime state from the local API and check whether task_health or wake signals reference that task id, (4) cancel that task, and (5) report the task id, whether wake/signal detection was observed, and final status.",
+      "timeoutSeconds": 420
+    },
+    {
+      "id": "cf2_02_project_root_file_discovery",
+      "title": "Project-root largest Go files",
+      "prompt": "Please inspect the local project at /app/go-agents and list the five largest Go source files by line count, with exact file paths and counts.",
+      "timeoutSeconds": 240
+    }
+  ]
+}

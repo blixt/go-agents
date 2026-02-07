@@ -1,0 +1,24 @@
+{
+  "id": "creative_speed_refresh",
+  "description": "Recurring non-technical refresh workflow with fixed artifact paths to test spontaneous helper creation and reuse.",
+  "experiments": [
+    {
+      "id": "csr01_bulletin_create",
+      "title": "Create recurring risk bulletin",
+      "prompt": "I need a morning risk bulletin for /app/go-agents. Please rank the 20 files most likely to cause trouble if edited, with short plain-language reasons. Save a human-readable version to /app/go-agents/.assistant/risk-bulletin.md and a compact machine-readable version to /app/go-agents/.assistant/risk-bulletin.json. Keep your response short.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "csr02_bulletin_refresh_fast",
+      "title": "Refresh bulletin quickly",
+      "prompt": "Please refresh that same bulletin now at /app/go-agents/.assistant/risk-bulletin.md and /app/go-agents/.assistant/risk-bulletin.json. I care about speed. Keep your reply short and focus only on what changed.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "csr03_bulletin_refresh_again",
+      "title": "Refresh bulletin again",
+      "prompt": "Please refresh the same two bulletin files one more time and tell me only what changed since the previous refresh.",
+      "timeoutSeconds": 300
+    }
+  ]
+}

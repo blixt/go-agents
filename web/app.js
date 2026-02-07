@@ -2,61 +2,23 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createRoot } from "react-dom/client";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
+import Prism from "prismjs";
+import "prismjs/components/prism-javascript";
+import "prismjs/components/prism-typescript";
 
 const API_BASE = "";
-const AGENT_ID = "operator";
-const CLIENT_ID = "human";
-const STREAMS = ["task_output", "errors", "signals", "external", "messages"];
+const DEFAULT_AGENT = "operator";
+const STREAMS = ["history", "messages", "task_output", "signals", "errors", "external"];
 const STREAM_LIMIT = 200;
+const TOOL_EVENT_TYPES = new Set(["tool_call", "tool_status", "tool_result"]);
 
-const ASCII_FONT = {
-  A: [" ███ ", "█   █", "█████", "█   █", "█   █"],
-  B: ["████ ", "█   █", "████ ", "█   █", "████ "],
-  C: [" ████", "█    ", "█    ", "█    ", " ████"],
-  D: ["████ ", "█   █", "█   █", "█   █", "████ "],
-  E: ["█████", "█    ", "████ ", "█    ", "█████"],
-  F: ["█████", "█    ", "████ ", "█    ", "█    "],
-  G: [" ████", "█    ", "█  ██", "█   █", " ████"],
-  H: ["█   █", "█   █", "█████", "█   █", "█   █"],
-  I: ["█████", "  █  ", "  █  ", "  █  ", "█████"],
-  J: ["  ███", "   █ ", "   █ ", "█  █ ", " ██  "],
-  K: ["█   █", "█  █ ", "███  ", "█  █ ", "█   █"],
-  L: ["█    ", "█    ", "█    ", "█    ", "█████"],
-  M: ["█   █", "██ ██", "█ █ █", "█   █", "█   █"],
-  N: ["█   █", "██  █", "█ █ █", "█  ██", "█   █"],
-  O: [" ███ ", "█   █", "█   █", "█   █", " ███ "],
-  P: ["████ ", "█   █", "████ ", "█    ", "█    "],
-  Q: [" ███ ", "█   █", "█   █", "█  ██", " ████"],
-  R: ["████ ", "█   █", "████ ", "█  █ ", "█   █"],
-  S: [" ████", "█    ", " ███ ", "    █", "████ "],
-  T: ["█████", "  █  ", "  █  ", "  █  ", "  █  "],
-  U: ["█   █", "█   █", "█   █", "█   █", " ███ "],
-  V: ["█   █", "█   █", "█   █", " █ █ ", "  █  "],
-  W: ["█   █", "█   █", "█ █ █", "██ ██", "█   █"],
-  X: ["█   █", " █ █ ", "  █  ", " █ █ ", "█   █"],
-  Y: ["█   █", " █ █ ", "  █  ", "  █  ", "  █  "],
-  Z: ["█████", "   █ ", "  █  ", " █   ", "█████"],
-  "-": ["     ", "     ", "█████", "     ", "     "],
-};
-
-function renderAsciiText(text) {
-  const rows = ["", "", "", "", ""];
-  const chars = text.toUpperCase().split("");
-  chars.forEach((ch, idx) => {
-    const glyph = ASCII_FONT[ch] || ASCII_FONT["-"];
-    for (let i = 0; i < rows.length; i += 1) {
-      rows[i] += glyph[i] + (idx === chars.length - 1 ? "" : " ");
-    }
-  });
-  return rows;
-}
-
-function frameAscii(lines) {
-  const width = Math.max(...lines.map((line) => line.length));
-  const top = `╔${"═".repeat(width + 2)}╗`;
-  const bottom = `╚${"═".repeat(width + 2)}╝`;
-  const framed = lines.map((line) => `║ ${line.padEnd(width, " ")} ║`);
-  return [top, ...framed, bottom].join("\n");
+function formatDateTime(ts) {
+  if (!ts) return "-";
+  try {
+    return new Date(ts).toLocaleString();
+  } catch (_) {
+    return "-";
+  }
 }
 
 function formatTime(ts) {
@@ -68,235 +30,141 @@ function formatTime(ts) {
   }
 }
 
-function formatDateTime(ts) {
-  if (!ts) return "-";
+function normalizeStatus(status) {
+  return String(status || "idle")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9_-]+/g, "-");
+}
+
+function parseJSONSafe(raw) {
   try {
-    return new Date(ts).toLocaleString();
-  } catch (_) {
-    return "-";
+    return { ok: true, value: JSON.parse(raw), error: "" };
+  } catch (err) {
+    return { ok: false, value: null, error: err?.message || String(err) };
   }
 }
 
 async function fetchJSON(path) {
   const res = await fetch(`${API_BASE}${path}`);
   if (!res.ok) {
-    throw new Error(`Request failed: ${res.status}`);
+    throw new Error(`request failed: ${res.status}`);
   }
   return res.json();
 }
 
-function limitList(items, limit) {
-  if (!items) return [];
-  if (items.length <= limit) return items;
-  return items.slice(items.length - limit);
+function cloneHistory(history) {
+  if (!history) {
+    return { agent_id: "", generation: 1, entries: [] };
+  }
+  return {
+    agent_id: history.agent_id || "",
+    generation: typeof history.generation === "number" ? history.generation : 1,
+    entries: Array.isArray(history.entries) ? [...history.entries] : [],
+  };
 }
 
-function buildTaskIndex(tasks) {
-  const byId = {};
-  tasks.forEach((task) => {
-    byId[task.id] = task;
+function parseHistoryEvent(evt) {
+  if (!evt || evt.stream !== "history" || !evt.payload) return null;
+  const payload = evt.payload || {};
+  const entry = {
+    id: evt.id || payload.id || "",
+    agent_id: payload.agent_id || evt.scope_id || "",
+    generation: Number(payload.generation || evt.metadata?.generation || 1) || 1,
+    type: payload.type || evt.metadata?.type || "note",
+    role: payload.role || evt.metadata?.role || "system",
+    content: payload.content || evt.body || "",
+    task_id: payload.task_id || "",
+    tool_call_id: payload.tool_call_id || "",
+    tool_name: payload.tool_name || "",
+    tool_status: payload.tool_status || "",
+    created_at: payload.created_at || evt.created_at,
+    data: {},
+  };
+  Object.entries(payload).forEach(([key, value]) => {
+    if (
+      [
+        "agent_id",
+        "generation",
+        "type",
+        "role",
+        "content",
+        "task_id",
+        "tool_call_id",
+        "tool_name",
+        "tool_status",
+        "created_at",
+      ].includes(key)
+    ) {
+      return;
+    }
+    entry.data[key] = value;
   });
-  return byId;
+  return entry.agent_id ? entry : null;
 }
 
-function collectAgentIDs(sessions, tasks) {
-  const ids = new Set(Object.keys(sessions || {}));
-  (tasks || []).forEach((task) => {
-    if (task.owner) ids.add(task.owner);
-    const meta = task.metadata || {};
-    if (meta.agent_id) ids.add(meta.agent_id);
-    if (meta.notify_target) ids.add(meta.notify_target);
-  });
-  if (ids.size === 0) ids.add(AGENT_ID);
-  return Array.from(ids);
-}
+function upsertHistory(state, entry) {
+  if (!entry || !entry.agent_id) return state;
+  const histories = { ...(state.histories || {}) };
+  const current = cloneHistory(histories[entry.agent_id]);
+  current.agent_id = entry.agent_id;
 
-function tasksForAgent(tasks, agentID) {
-  return (tasks || []).filter((task) => {
-    if (task.owner === agentID) return true;
-    const meta = task.metadata || {};
-    if (meta.agent_id === agentID) return true;
-    if (meta.notify_target === agentID) return true;
-    return false;
-  });
-}
-
-function lastUpdate(updates) {
-  if (!updates || updates.length === 0) return null;
-  return updates[updates.length - 1];
-}
-
-function describeLLMState(task, updates) {
-  if (!task) return { label: "idle", status: "idle", detail: "no active LLM task" };
-  if (task.status === "queued") {
-    return { label: "queued", status: "queued", detail: "awaiting slot" };
-  }
-  if (task.status === "failed") {
-    return { label: "failed", status: "failed", detail: "check error" };
-  }
-  if (task.status === "cancelled") {
-    return { label: "cancelled", status: "cancelled", detail: "stopped" };
-  }
-  if (task.status === "completed") {
-    return { label: "completed", status: "completed", detail: "last run finished" };
-  }
-
-  const latest = lastUpdate(updates);
-  if (!latest) {
-    return { label: "running", status: "running", detail: "awaiting updates" };
-  }
-  const kind = latest.kind;
-  const payload = latest.payload || {};
-  if (kind === "llm_thinking") {
-    return { label: "thinking", status: "thinking", detail: "reasoning" };
-  }
-  if (kind === "llm_text") {
-    return { label: "responding", status: "responding", detail: "streaming output" };
-  }
-  if (kind === "llm_tool_start" || kind === "llm_tool_delta" || kind === "llm_tool_status") {
-    const toolName = payload.tool_name || payload.tool_label || "tool";
-    const toolStatus = payload.status ? ` · ${payload.status}` : "";
-    return { label: "waiting tool", status: "tool", detail: `${toolName}${toolStatus}` };
-  }
-  if (kind === "llm_tool_done") {
-    const toolName = payload.tool_name || payload.tool_label || "tool";
-    return { label: "processing", status: "running", detail: `finished ${toolName}` };
-  }
-  if (kind === "await_timeout") {
-    return { label: "sleeping", status: "sleeping", detail: "awaiting events" };
-  }
-  if (kind === "input") {
-    return { label: "running", status: "running", detail: "received input" };
-  }
-  return { label: "running", status: "running", detail: kind };
-}
-
-function deriveAgents(sessions, tasks, updatesByTask) {
-  const agentIDs = collectAgentIDs(sessions, tasks);
-  return agentIDs
-    .map((agentID) => {
-      const session = sessions?.[agentID] || null;
-      const ownedTasks = tasksForAgent(tasks, agentID);
-      const activeTasks = ownedTasks.filter((task) => task.status === "running" || task.status === "queued");
-      const llmTask = session?.llm_task_id
-        ? tasks.find((task) => task.id === session.llm_task_id)
-        : ownedTasks
-            .filter((task) => task.type === "llm")
-            .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))[0];
-      const llmUpdates = llmTask ? updatesByTask?.[llmTask.id] || [] : [];
-      let state = describeLLMState(llmTask, llmUpdates);
-      if (!llmTask && session?.llm_task_id) {
-        state = { label: "running", status: "running", detail: "llm task pending" };
+  if (entry.generation > current.generation) {
+    current.generation = entry.generation;
+    current.entries = [entry];
+  } else if (entry.generation === current.generation) {
+    if (!current.entries.some((item) => item.id === entry.id)) {
+      current.entries.push(entry);
+      current.entries.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+      if (current.entries.length > 1600) {
+        current.entries = current.entries.slice(current.entries.length - 1600);
       }
-      if (!llmTask && activeTasks.length > 0) {
-        state = { label: "running", status: "running", detail: `${activeTasks.length} active tasks` };
-      }
-      if (!llmTask && activeTasks.length === 0) {
-        state = { label: "idle", status: "idle", detail: "no active tasks" };
-      }
-      return {
-        id: agentID,
-        session,
-        state,
-        activeCount: activeTasks.length,
-        totalCount: ownedTasks.length,
-        llmTask,
-      };
-    })
-    .sort((a, b) => {
-      const aTime = a.session?.updated_at || a.llmTask?.updated_at || "";
-      const bTime = b.session?.updated_at || b.llmTask?.updated_at || "";
-      return new Date(bTime) - new Date(aTime);
-    });
+    }
+  }
+  histories[entry.agent_id] = current;
+
+  const agentSet = new Set((state.agents || []).map((agent) => agent.id));
+  if (!agentSet.has(entry.agent_id)) {
+    return {
+      ...state,
+      histories,
+      agents: [
+        { id: entry.agent_id, status: "running", active_tasks: 0, updated_at: entry.created_at, generation: entry.generation },
+        ...(state.agents || []),
+      ],
+    };
+  }
+  return { ...state, histories };
 }
 
 function normalizeState(data) {
-  const tasks = data?.tasks || [];
-  const updates = data?.updates || {};
-  const streams = data?.streams || {};
-  const sessions = data?.sessions || {};
   return {
-    generatedAt: data?.generated_at || null,
-    tasksById: buildTaskIndex(tasks),
-    updatesByTask: updates,
-    streams: streams,
-    sessions: sessions,
+    generated_at: data?.generated_at || null,
+    agents: Array.isArray(data?.agents) ? data.agents : [],
+    sessions: data?.sessions || {},
+    histories: data?.histories || {},
+    tasks: Array.isArray(data?.tasks) ? data.tasks : [],
   };
 }
 
-function applyTaskUpdate(state, evt) {
-  const taskId = evt?.metadata?.task_id;
-  if (!taskId) return state;
-  const kind = evt?.metadata?.task_kind || evt.body || "update";
-  const update = {
-    id: evt.id,
-    task_id: taskId,
-    kind,
-    payload: evt.payload || {},
-    created_at: evt.created_at,
-  };
-
-  const updatesByTask = { ...state.updatesByTask };
-  const list = updatesByTask[taskId] ? [...updatesByTask[taskId], update] : [update];
-  updatesByTask[taskId] = list;
-
-  const tasksById = { ...state.tasksById };
-  const existing = tasksById[taskId];
-  if (!existing) {
-    return { ...state, updatesByTask, needsRefresh: true };
-  }
-
-  let next = { ...existing, updated_at: evt.created_at || existing.updated_at };
-  if (["started", "completed", "failed", "cancelled", "killed"].includes(kind)) {
-    const statusMap = {
-      started: "running",
-      completed: "completed",
-      failed: "failed",
-      cancelled: "cancelled",
-      killed: "cancelled",
-    };
-    const settled = ["completed", "failed", "cancelled"].includes(existing.status);
-    const isCancel = kind === "cancelled" || kind === "killed";
-    if (!(settled && isCancel)) {
-      next.status = statusMap[kind] || next.status;
-    }
-    if (kind === "completed") {
-      next.result = update.payload || next.result;
-    }
-    if (kind === "failed") {
-      next.error = update.payload?.error || next.error;
-    }
-  }
-  tasksById[taskId] = next;
-
-  return { ...state, updatesByTask, tasksById };
-}
-
-function applyStreamEvent(state, evt) {
-  const streams = { ...state.streams };
-  const list = streams[evt.stream] ? [...streams[evt.stream], evt] : [evt];
-  streams[evt.stream] = limitList(list, STREAM_LIMIT);
-  return { ...state, streams };
-}
-
-function useSyncState() {
+function useRuntimeState() {
   const [state, setState] = useState(() => ({
-    generatedAt: null,
-    tasksById: {},
-    updatesByTask: {},
-    streams: {},
+    generated_at: null,
+    agents: [],
     sessions: {},
+    histories: {},
+    tasks: [],
   }));
-  const [status, setStatus] = useState({ connected: false, lastError: "" });
+  const [status, setStatus] = useState({ connected: false, error: "" });
   const refreshTimer = useRef(null);
 
-  const refreshState = useCallback(async () => {
+  const refresh = useCallback(async () => {
     try {
-      const data = await fetchJSON(`/api/state?tasks=200&updates=200&streams=${STREAM_LIMIT}`);
-      setState((prev) => ({ ...prev, ...normalizeState(data), needsRefresh: false }));
-      setStatus((prev) => ({ ...prev, lastError: "" }));
+      const data = await fetchJSON(`/api/state?tasks=250&updates=0&streams=${STREAM_LIMIT}&history=1200`);
+      setState((prev) => ({ ...prev, ...normalizeState(data) }));
+      setStatus((prev) => ({ ...prev, error: "" }));
     } catch (err) {
-      setStatus((prev) => ({ ...prev, lastError: err.message || String(err) }));
+      setStatus((prev) => ({ ...prev, error: err.message || String(err) }));
     }
   }, []);
 
@@ -304,208 +172,39 @@ function useSyncState() {
     if (refreshTimer.current) return;
     refreshTimer.current = setTimeout(() => {
       refreshTimer.current = null;
-      refreshState();
-    }, 600);
-  }, [refreshState]);
+      refresh();
+    }, 400);
+  }, [refresh]);
 
   useEffect(() => {
-    refreshState();
-    const source = new EventSource(`/api/streams/subscribe?streams=${STREAMS.join(",")}`);
-
-    source.onopen = () => setStatus((prev) => ({ ...prev, connected: true }));
-    source.onerror = () => setStatus((prev) => ({ ...prev, connected: false }));
-
-    source.onmessage = (event) => {
+    refresh();
+    const src = new EventSource(`/api/streams/subscribe?streams=${STREAMS.join(",")}`);
+    src.onopen = () => setStatus((prev) => ({ ...prev, connected: true }));
+    src.onerror = () => setStatus((prev) => ({ ...prev, connected: false }));
+    src.onmessage = (event) => {
       try {
         const evt = JSON.parse(event.data);
-        setState((prev) => {
-          let next = prev;
-          if (evt.stream === "task_output") {
-            next = applyTaskUpdate(next, evt);
-            if (next.needsRefresh) {
-              scheduleRefresh();
-            }
-          }
-          next = applyStreamEvent(next, evt);
-          return next;
-        });
+        if (!evt || typeof evt !== "object") return;
+        if (evt.stream === "history") {
+          const parsed = parseHistoryEvent(evt);
+          if (!parsed) return;
+          setState((prev) => upsertHistory(prev, parsed));
+          return;
+        }
+        scheduleRefresh();
       } catch (_) {
-        // ignore
+        // ignore malformed stream payloads
       }
     };
-
     return () => {
-      source.close();
+      src.close();
     };
-  }, [refreshState, scheduleRefresh]);
+  }, [refresh, scheduleRefresh]);
 
-  return { state, status, refreshState };
+  return { state, status, refresh };
 }
 
-function buildTaskTree(tasksById) {
-  const childrenByParent = {};
-  const roots = [];
-  Object.values(tasksById).forEach((task) => {
-    const parent = task.parent_id || task.metadata?.parent_id || "";
-    if (parent) {
-      if (!childrenByParent[parent]) childrenByParent[parent] = [];
-      childrenByParent[parent].push(task);
-    } else {
-      roots.push(task);
-    }
-  });
-
-  const sortedRoots = roots.sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
-  const list = [];
-
-  function walk(node, depth) {
-    list.push({ task: node, depth });
-    const children = (childrenByParent[node.id] || []).sort(
-      (a, b) => new Date(a.created_at) - new Date(b.created_at),
-    );
-    children.forEach((child) => walk(child, depth + 1));
-  }
-
-  sortedRoots.forEach((root) => walk(root, 0));
-  return list;
-}
-
-function deriveLLMTask(tasks, selectedTaskId) {
-  if (selectedTaskId) {
-    const selected = tasks.find((task) => task.id === selectedTaskId);
-    if (selected?.type === "llm") return selected;
-    if (selected?.owner) {
-      const candidate = tasks
-        .filter((task) => task.type === "llm" && task.owner === selected.owner)
-        .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))[0];
-      if (candidate) return candidate;
-    }
-  }
-  return tasks
-    .filter((task) => task.type === "llm")
-    .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))[0];
-}
-
-function toMarkdown(value) {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "string") return value;
-  try {
-    return `\n\n\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\`\n`;
-  } catch (_) {
-    return String(value);
-  }
-}
-
-function buildTrace(updates, promptText) {
-  const items = [];
-  if (promptText) {
-    items.push({ id: "prompt", role: "system", text: promptText });
-  }
-  if (!updates || updates.length === 0) return items;
-
-  const toolMap = new Map();
-  let assistantItem = null;
-  let thinkingItem = null;
-
-  updates.forEach((update, index) => {
-    const kind = update.kind;
-    const payload = update.payload || {};
-    if (kind === "input") {
-      const message = payload.message || payload.text || "";
-      if (message) {
-        assistantItem = null;
-        thinkingItem = null;
-        items.push({ id: update.id || `input-${index}`, role: "user", text: message });
-      }
-      return;
-    }
-
-    if (kind === "llm_text") {
-      if (!assistantItem) {
-        assistantItem = { id: update.id || `llm-${index}`, role: "assistant", text: "" };
-        items.push(assistantItem);
-      }
-      thinkingItem = null;
-      assistantItem.text += payload.text || "";
-      return;
-    }
-
-    if (kind === "llm_thinking") {
-      const text = payload.summary || payload.text || "";
-      if (thinkingItem) {
-        thinkingItem.text += text ? `\n${text}` : "";
-      } else {
-        thinkingItem = {
-          id: update.id || `thinking-${index}`,
-          role: "thinking",
-          text,
-        };
-        items.push(thinkingItem);
-      }
-      return;
-    }
-
-    if (kind === "llm_tool_start") {
-      const toolItem = {
-        id: payload.tool_call_id || update.id || `tool-${index}`,
-        role: "tool",
-        name: payload.tool_name || payload.tool_label || "tool",
-        input: "",
-        status: "start",
-        result: null,
-      };
-      toolMap.set(toolItem.id, toolItem);
-      items.push(toolItem);
-      return;
-    }
-
-    if (kind === "llm_tool_delta") {
-      const toolCallId = payload.tool_call_id;
-      if (!toolCallId) return;
-      let toolItem = toolMap.get(toolCallId);
-      if (!toolItem) {
-        toolItem = {
-          id: toolCallId,
-          role: "tool",
-          name: "tool",
-          input: "",
-          status: "delta",
-          result: null,
-        };
-        toolMap.set(toolCallId, toolItem);
-        items.push(toolItem);
-      }
-      toolItem.input += payload.delta || "";
-      toolItem.status = "streaming";
-      return;
-    }
-
-    if (kind === "llm_tool_status") {
-      const toolCallId = payload.tool_call_id;
-      if (!toolCallId) return;
-      const toolItem = toolMap.get(toolCallId);
-      if (toolItem) {
-        toolItem.status = payload.status || toolItem.status;
-      }
-      return;
-    }
-
-    if (kind === "llm_tool_done") {
-      const toolCallId = payload.tool_call_id;
-      if (!toolCallId) return;
-      const toolItem = toolMap.get(toolCallId);
-      if (toolItem) {
-        toolItem.status = "done";
-        toolItem.result = payload.result || payload.metadata || payload;
-      }
-      return;
-    }
-  });
-
-  return items;
-}
-
-const markdownSanitizer =
+const sanitizer =
   DOMPurify && typeof DOMPurify.sanitize === "function"
     ? DOMPurify
     : DOMPurify && DOMPurify.default && typeof DOMPurify.default.sanitize === "function"
@@ -514,156 +213,496 @@ const markdownSanitizer =
 
 function renderMarkdown(text) {
   if (!text) return "";
-  const html = marked.parse(text, {
-    breaks: true,
-    gfm: true,
-    mangle: false,
-    headerIds: false,
-  });
-  return markdownSanitizer ? markdownSanitizer.sanitize(html) : html;
+  const html = marked.parse(text, { gfm: true, breaks: true, mangle: false, headerIds: false });
+  return sanitizer ? sanitizer.sanitize(html) : html;
 }
 
 function Markdown({ text }) {
-  if (!text) {
-    return React.createElement("div", { className: "markdown empty" }, "-");
+  if (!text || text.trim() === "") {
+    return React.createElement("div", { className: "muted" }, "Empty");
   }
-  const html = renderMarkdown(text);
-  return React.createElement("div", { className: "markdown", dangerouslySetInnerHTML: { __html: html } });
+  return React.createElement("div", {
+    className: "markdown",
+    dangerouslySetInnerHTML: { __html: renderMarkdown(text) },
+  });
 }
 
-function StatusBadge({ status, label }) {
-  const cls = `status-pill status-${status || "unknown"}`;
-  return React.createElement("span", { className: cls }, label || status || "unknown");
+function StatusBadge({ status }) {
+  const normalized = normalizeStatus(status);
+  return React.createElement("span", { className: `status-pill status-${normalized}` }, normalized || "idle");
 }
 
-function escapeHtml(value) {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+function toJSON(value) {
+  if (value === null || value === undefined) return "";
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (_) {
+    return String(value);
+  }
 }
 
-function ToolInput({ toolName, raw }) {
-  if (!raw) return null;
-  if (toolName && toolName.toLowerCase() === "exec") {
-    try {
-      const parsed = JSON.parse(raw);
-      const code = typeof parsed.code === "string" ? parsed.code : "";
-      const rest = { ...parsed };
-      delete rest.code;
-      return React.createElement(
-        "div",
-        { className: "tool-input-block" },
-        code
-          ? React.createElement(
-              "pre",
-              { className: "code-block language-ts" },
-              React.createElement("code", { dangerouslySetInnerHTML: { __html: escapeHtml(code) } }),
-            )
-          : null,
-        Object.keys(rest).length > 0
-          ? React.createElement(Markdown, { text: `\n\n\`\`\`json\n${JSON.stringify(rest, null, 2)}\n\`\`\`\n` })
-          : null,
-      );
-    } catch (_) {
-      // fall through
+function isPrimitive(value) {
+  return value === null || ["string", "number", "boolean"].includes(typeof value);
+}
+
+function renderInlineObject(obj, className = "inline-fields") {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+  const entries = Object.entries(obj).filter(([, value]) => value !== undefined);
+  if (entries.length === 0) return null;
+  const allSimple = entries.every(([, value]) => isPrimitive(value) && String(value).length <= 120);
+  if (!allSimple || entries.length > 6) return null;
+  return React.createElement(
+    "dl",
+    { className },
+    entries.flatMap(([key, value]) => [
+      React.createElement("dt", { key: `${className}-k-${key}` }, key),
+      React.createElement("dd", { key: `${className}-v-${key}` }, String(value)),
+    ]),
+  );
+}
+
+function renderMaybeCollapsedJSON(title, value, options = {}) {
+  if (value === null || value === undefined) return null;
+  const collapseAt = typeof options.collapseAt === "number" ? options.collapseAt : 420;
+  const json = toJSON(value);
+  if (json.trim() === "") return null;
+  const content = React.createElement("pre", { className: "json" }, json);
+  if (json.length <= collapseAt) {
+    return React.createElement(
+      React.Fragment,
+      null,
+      title ? React.createElement("div", { className: "history-title compact" }, title) : null,
+      content,
+    );
+  }
+  return React.createElement(
+    "details",
+    null,
+    React.createElement("summary", null, title || "Details"),
+    content,
+  );
+}
+
+function JsonBlock({ value }) {
+  if (value === null || value === undefined) return null;
+  return React.createElement("pre", { className: "json" }, toJSON(value));
+}
+
+function CodeBlock({ code }) {
+  const language = Prism.languages.typescript || Prism.languages.javascript || Prism.languages.clike;
+  const html = Prism.highlight(String(code || ""), language, "typescript");
+  return React.createElement(
+    "pre",
+    { className: "code-block language-typescript" },
+    React.createElement("code", { dangerouslySetInnerHTML: { __html: html } }),
+  );
+}
+
+function statusRank(status) {
+  const normalized = normalizeStatus(status);
+  const rank = {
+    failed: 0,
+    error: 0,
+    cancelled: 1,
+    done: 2,
+    completed: 2,
+    running: 3,
+    streaming: 4,
+    start: 5,
+    queued: 6,
+  };
+  return rank[normalized] ?? 10;
+}
+
+function chooseStatus(current, next) {
+  if (!next) return current || "";
+  if (!current) return next;
+  return statusRank(next) <= statusRank(current) ? next : current;
+}
+
+function extractResultError(result) {
+  if (!result || typeof result !== "object") return "";
+  if (typeof result.error === "string" && result.error.trim() !== "") return result.error.trim();
+  return "";
+}
+
+function isToolEvent(entry) {
+  return TOOL_EVENT_TYPES.has(entry?.type);
+}
+
+function buildDisplayEntries(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) return [];
+  const ordered = [...entries].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  const out = [];
+  const toolByCallID = new Map();
+
+  for (const entry of ordered) {
+    if (isToolEvent(entry) && entry.tool_call_id) {
+      const callID = entry.tool_call_id;
+      let group = toolByCallID.get(callID);
+      if (!group) {
+        group = {
+          id: `tool-${callID}`,
+          type: "tool_call_group",
+          role: "tool",
+          task_id: entry.task_id || "",
+          tool_call_id: callID,
+          tool_name: entry.tool_name || "",
+          tool_status: entry.tool_status || (entry.type === "tool_call" ? "start" : ""),
+          created_at: entry.created_at,
+          updated_at: entry.created_at,
+          args_raw: "",
+          args: undefined,
+          args_parse_error: "",
+          result: undefined,
+          result_error: "",
+          metadata: undefined,
+          events: [],
+        };
+        toolByCallID.set(callID, group);
+        out.push(group);
+      }
+
+      group.updated_at = entry.created_at || group.updated_at;
+      if (entry.tool_name) group.tool_name = entry.tool_name;
+      if (entry.tool_status) group.tool_status = chooseStatus(group.tool_status, entry.tool_status);
+      if (entry.type === "tool_result" && !group.tool_status) {
+        group.tool_status = "done";
+      }
+
+      const data = entry.data || {};
+      if (typeof data.delta === "string" && data.delta !== "") {
+        group.args_raw += data.delta;
+      }
+      if (typeof data.args_raw === "string" && data.args_raw.trim() !== "") {
+        group.args_raw = data.args_raw;
+      }
+      if (data.args !== undefined) {
+        group.args = data.args;
+      } else if (group.args === undefined && group.args_raw.trim() !== "") {
+        const parsed = parseJSONSafe(group.args_raw);
+        if (parsed.ok) {
+          group.args = parsed.value;
+          group.args_parse_error = "";
+        } else {
+          group.args_parse_error = parsed.error;
+        }
+      }
+      if (data.result !== undefined) {
+        group.result = data.result;
+      }
+      if (data.metadata !== undefined) {
+        group.metadata = data.metadata;
+      }
+      const resultError = extractResultError(group.result);
+      if (resultError !== "") {
+        group.result_error = resultError;
+        group.tool_status = "failed";
+      }
+      group.events.push({
+        type: entry.type,
+        status: entry.tool_status || "",
+        at: entry.created_at,
+      });
+      continue;
     }
+
+    if (entry.type === "reasoning") {
+      const last = out.length > 0 ? out[out.length - 1] : null;
+      if (last && last.type === "reasoning_group") {
+        if (entry.content) {
+          last.content += entry.content;
+          last.parts += 1;
+        }
+        if (typeof entry.data?.summary === "string" && entry.data.summary.trim() !== "") {
+          last.summary = entry.data.summary.trim();
+        }
+        last.updated_at = entry.created_at || last.updated_at;
+        if (entry.data?.reasoning_id) {
+          last.reasoning_id = String(entry.data.reasoning_id);
+        }
+        continue;
+      }
+
+      const group = {
+        id: `reasoning-${entry.id}`,
+        type: "reasoning_group",
+        role: "assistant",
+        created_at: entry.created_at,
+        updated_at: entry.created_at,
+        reasoning_id: entry.data?.reasoning_id || "",
+        content: entry.content || "",
+        summary: typeof entry.data?.summary === "string" ? entry.data.summary.trim() : "",
+        parts: entry.content ? 1 : 0,
+      };
+      out.push(group);
+      continue;
+    }
+
+    out.push(entry);
   }
-  return React.createElement(Markdown, { text: raw });
+
+  return out;
+}
+
+function renderToolArgs(toolEntry) {
+  const args = toolEntry.args;
+  const raw = String(toolEntry.args_raw || "");
+  if (toolEntry.tool_name === "exec" && args && typeof args === "object" && typeof args.code === "string") {
+    const extra = { ...args };
+    delete extra.code;
+    return React.createElement(
+      React.Fragment,
+      null,
+      React.createElement("div", { className: "history-title compact" }, "Arguments"),
+      React.createElement(CodeBlock, { code: args.code }),
+      renderInlineObject(extra) || (Object.keys(extra).length > 0 ? React.createElement(JsonBlock, { value: extra }) : null),
+    );
+  }
+
+  if (toolEntry.tool_name === "await_task" && args && typeof args === "object") {
+    return React.createElement(
+      React.Fragment,
+      null,
+      React.createElement("div", { className: "history-title compact" }, "Arguments"),
+      renderInlineObject(args) || React.createElement(JsonBlock, { value: args }),
+    );
+  }
+
+  if (args !== undefined) {
+    return React.createElement(
+      React.Fragment,
+      null,
+      React.createElement("div", { className: "history-title compact" }, "Arguments"),
+      renderInlineObject(args) || React.createElement(JsonBlock, { value: args }),
+    );
+  }
+
+  if (raw.trim() !== "") {
+    return React.createElement(
+      React.Fragment,
+      null,
+      React.createElement("div", { className: "history-title compact" }, "Arguments (raw stream)"),
+      React.createElement("pre", { className: "json" }, raw),
+      toolEntry.args_parse_error
+        ? React.createElement("div", { className: "muted" }, `parse error: ${toolEntry.args_parse_error}`)
+        : null,
+    );
+  }
+  return null;
+}
+
+function EntryCard({ entry }) {
+  const when = formatDateTime(entry.created_at);
+  const baseMeta = `${entry.role} · ${entry.type} · ${when}`;
+
+  if (entry.type === "system_prompt") {
+    return React.createElement(
+      "details",
+      { className: "history-card history-system" },
+      React.createElement("summary", null, baseMeta),
+      React.createElement(Markdown, { text: entry.content || "" }),
+    );
+  }
+
+  if (entry.type === "tools_config") {
+    const tools = Array.isArray(entry.data?.tools) ? entry.data.tools : [];
+    return React.createElement(
+      "div",
+      { className: "history-card history-system" },
+      React.createElement("div", { className: "history-meta" }, baseMeta),
+      React.createElement("div", { className: "history-title" }, "Tools Configuration"),
+      tools.length > 0
+        ? React.createElement(
+            "div",
+            { className: "tool-list" },
+            tools.map((tool) => React.createElement("span", { className: "tool-chip", key: tool }, tool)),
+          )
+        : React.createElement("div", { className: "muted" }, "No tools configured"),
+    );
+  }
+
+  if (entry.type === "user_message") {
+    return React.createElement(
+      "div",
+      { className: "history-card history-user" },
+      React.createElement("div", { className: "history-meta" }, baseMeta),
+      React.createElement(Markdown, { text: entry.content || "" }),
+    );
+  }
+
+  if (entry.type === "assistant_message") {
+    return React.createElement(
+      "div",
+      { className: "history-card history-assistant" },
+      React.createElement("div", { className: "history-meta" }, baseMeta),
+      React.createElement(Markdown, { text: entry.content || "" }),
+    );
+  }
+
+  if (entry.type === "reasoning_group") {
+    return React.createElement(
+      "div",
+      { className: "history-card history-reasoning history-compact" },
+      React.createElement("div", { className: "history-meta" }, `assistant · reasoning · ${formatDateTime(entry.updated_at || entry.created_at)}`),
+      entry.summary ? React.createElement("div", { className: "muted" }, `summary: ${entry.summary}`) : null,
+      React.createElement(Markdown, { text: entry.content || "_(empty reasoning block)_" }),
+    );
+  }
+
+  if (entry.type === "tool_call_group") {
+    return React.createElement(
+      "div",
+      { className: "history-card history-tool history-compact" },
+      React.createElement("div", { className: "history-meta" }, `tool · ${formatDateTime(entry.created_at)}`),
+      React.createElement(
+        "div",
+        { className: "tool-head" },
+        React.createElement("span", { className: "history-title compact" }, entry.tool_name || "tool"),
+        React.createElement(StatusBadge, { status: entry.tool_status || "running" }),
+      ),
+      entry.tool_call_id ? React.createElement("div", { className: "muted mono" }, `call: ${entry.tool_call_id}`) : null,
+      renderToolArgs(entry),
+      renderMaybeCollapsedJSON("Result", entry.result, { collapseAt: 600 }),
+      entry.result_error ? React.createElement("div", { className: "error" }, entry.result_error) : null,
+      renderMaybeCollapsedJSON("Metadata", entry.metadata, { collapseAt: 380 }),
+    );
+  }
+
+  if (entry.type === "context_event") {
+    return React.createElement(
+      "div",
+      { className: "history-card history-system-update history-compact" },
+      React.createElement("div", { className: "history-meta" }, baseMeta),
+      React.createElement(
+        "div",
+        { className: "history-title compact" },
+        `${entry.data?.stream || "event"}${entry.data?.priority ? ` · ${entry.data.priority}` : ""}`,
+      ),
+      entry.content ? React.createElement(Markdown, { text: entry.content }) : null,
+      renderMaybeCollapsedJSON("Event payload", entry.data, { collapseAt: 320 }),
+    );
+  }
+
+  if (entry.type === "system_update") {
+    return React.createElement(
+      "div",
+      { className: "history-card history-system-update history-compact" },
+      React.createElement("div", { className: "history-meta" }, baseMeta),
+      React.createElement("div", { className: "history-title compact" }, entry.content || "system update"),
+      renderMaybeCollapsedJSON("", entry.data, { collapseAt: 340 }),
+    );
+  }
+
+  if (entry.type === "context_compaction") {
+    return React.createElement(
+      "div",
+      { className: "history-card history-compaction history-compact" },
+      React.createElement("div", { className: "history-meta" }, baseMeta),
+      React.createElement("div", { className: "history-title compact" }, entry.content || "context compacted"),
+      renderMaybeCollapsedJSON("", entry.data, { collapseAt: 420 }),
+    );
+  }
+
+  return React.createElement(
+    "div",
+    { className: "history-card history-system" },
+    React.createElement("div", { className: "history-meta" }, baseMeta),
+    entry.content ? React.createElement(Markdown, { text: entry.content }) : null,
+    entry.data && Object.keys(entry.data).length > 0
+      ? React.createElement("pre", { className: "json" }, toJSON(entry.data))
+      : null,
+  );
 }
 
 function App() {
-  const { state, status } = useSyncState();
-  const [selectedTaskId, setSelectedTaskId] = useState(null);
-  const [activeTab, setActiveTab] = useState("trace");
-  const [activeStream, setActiveStream] = useState("messages");
-  const [messageInput, setMessageInput] = useState("");
-  const [sendStatus, setSendStatus] = useState(null);
-  const traceRef = useRef(null);
+  const { state, status, refresh } = useRuntimeState();
+  const [selectedAgent, setSelectedAgent] = useState(DEFAULT_AGENT);
+  const [message, setMessage] = useState("");
+  const [sendStatus, setSendStatus] = useState("");
+  const [compactStatus, setCompactStatus] = useState("");
+  const timelineRef = useRef(null);
 
-  const tasks = useMemo(() => Object.values(state.tasksById || {}), [state.tasksById]);
-  const taskTree = useMemo(() => buildTaskTree(state.tasksById || {}), [state.tasksById]);
-  const activeTasks = useMemo(
-    () => tasks.filter((task) => task.status === "running" || task.status === "queued"),
-    [tasks],
-  );
-  const latestTask = useMemo(
-    () => tasks.slice().sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))[0],
-    [tasks],
-  );
-  const selectedTask = selectedTaskId
-    ? state.tasksById[selectedTaskId]
-    : latestTask || null;
-
-  useEffect(() => {
-    if (!selectedTaskId && latestTask) {
-      setSelectedTaskId(latestTask.id);
-    }
-  }, [selectedTaskId, latestTask]);
-
-  const llmTask = useMemo(() => deriveLLMTask(tasks, selectedTaskId), [tasks, selectedTaskId]);
-  const llmUpdates = llmTask ? state.updatesByTask?.[llmTask.id] || [] : [];
-  const prompt = state.sessions?.[AGENT_ID]?.prompt || "";
-  const trace = useMemo(() => buildTrace(llmUpdates, prompt), [llmUpdates, prompt]);
-
-  const streamItems = (state.streams?.[activeStream] || []).slice().sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-
-  const chatMessages = (state.streams?.messages || []).slice().sort(
-    (a, b) => new Date(a.created_at) - new Date(b.created_at),
-  );
-
-  const agents = useMemo(
-    () => deriveAgents(state.sessions || {}, tasks, state.updatesByTask || {}),
-    [state.sessions, tasks, state.updatesByTask],
-  );
-
-  const totalTasks = tasks.length;
-  const runningTasks = tasks.filter((task) => task.status === "running").length;
-  const failedTasks = tasks.filter((task) => task.status === "failed").length;
-
-  const logo = useMemo(() => {
-    const titleLines = renderAsciiText("GO-AGENTS");
-    const subtitle = "REALTIME OPERATIONS CONSOLE";
-    const paddedSubtitle = subtitle.padStart(Math.floor((titleLines[0].length + subtitle.length) / 2), " ");
-    return frameAscii([...titleLines, paddedSubtitle]);
-  }, []);
-
-  const handleSend = useCallback(async () => {
-    const message = messageInput.trim();
-    if (!message) return;
-    setSendStatus("sending");
-    setMessageInput("");
-    try {
-      const res = await fetch(`${API_BASE}/api/agents/${encodeURIComponent(AGENT_ID)}/run`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message, source: CLIENT_ID }),
-      });
-      if (!res.ok) {
-        let detail = "";
-        try {
-          const payload = await res.json();
-          detail = payload.error ? `: ${payload.error}` : "";
-        } catch (_) {
-          // ignore
-        }
-        setSendStatus(`error:${res.status}${detail}`);
-        return;
-      }
-      setSendStatus("sent");
-    } catch (err) {
-      setSendStatus(`error:${err.message || err}`);
-    }
-  }, [messageInput]);
+  const agents = useMemo(() => {
+    if (Array.isArray(state.agents) && state.agents.length > 0) return state.agents;
+    const ids = new Set([DEFAULT_AGENT]);
+    Object.keys(state.histories || {}).forEach((id) => ids.add(id));
+    Object.keys(state.sessions || {}).forEach((id) => ids.add(id));
+    return Array.from(ids).map((id) => ({
+      id,
+      status: "idle",
+      active_tasks: 0,
+      updated_at: "",
+      generation: state.histories?.[id]?.generation || 1,
+    }));
+  }, [state.agents, state.histories, state.sessions]);
 
   useEffect(() => {
-    if (activeTab !== "trace") return;
-    const node = traceRef.current;
+    if (!agents.some((agent) => agent.id === selectedAgent)) {
+      setSelectedAgent(agents[0]?.id || DEFAULT_AGENT);
+    }
+  }, [agents, selectedAgent]);
+
+  const selectedHistory = state.histories?.[selectedAgent] || { generation: 1, entries: [] };
+  const selectedSession = state.sessions?.[selectedAgent] || null;
+  const selectedAgentState = agents.find((agent) => agent.id === selectedAgent) || {
+    id: selectedAgent,
+    status: "idle",
+    active_tasks: 0,
+    generation: selectedHistory.generation || 1,
+  };
+  const timelineEntries = useMemo(
+    () => buildDisplayEntries(selectedHistory.entries || []),
+    [selectedHistory.entries],
+  );
+
+  useEffect(() => {
+    const node = timelineRef.current;
     if (!node) return;
     node.scrollTop = node.scrollHeight;
-  }, [trace, activeTab]);
+  }, [selectedAgent, timelineEntries.length]);
+
+  const handleSend = useCallback(async () => {
+    const trimmed = message.trim();
+    if (!trimmed) return;
+    setSendStatus("sending");
+    try {
+      const res = await fetch(`${API_BASE}/api/agents/${encodeURIComponent(selectedAgent)}/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: trimmed, source: "external", priority: "wake" }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        setSendStatus(`error ${res.status}: ${text}`);
+        return;
+      }
+      setMessage("");
+      setSendStatus("sent");
+    } catch (err) {
+      setSendStatus(`error: ${err.message || err}`);
+    }
+  }, [message, selectedAgent]);
+
+  const handleCompact = useCallback(async () => {
+    setCompactStatus("compacting");
+    try {
+      const res = await fetch(`${API_BASE}/api/agents/${encodeURIComponent(selectedAgent)}/compact`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "manual compact from UI" }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        setCompactStatus(`error ${res.status}: ${text}`);
+        return;
+      }
+      setCompactStatus("compacted");
+      refresh();
+    } catch (err) {
+      setCompactStatus(`error: ${err.message || err}`);
+    }
+  }, [refresh, selectedAgent]);
 
   return React.createElement(
     "div",
@@ -671,16 +710,19 @@ function App() {
     React.createElement(
       "header",
       { className: "topbar" },
-      React.createElement("pre", { className: "ascii-logo", "aria-label": "Go-Agents" }, logo),
       React.createElement(
         "div",
-        { className: "status" },
-        React.createElement("span", { className: "status-label" }, "STATUS"),
+        null,
+        React.createElement("h1", null, "go-agents"),
+        React.createElement("div", { className: "subtitle" }, "Agent History Console"),
+      ),
+      React.createElement(
+        "div",
+        { className: "status-bar" },
         React.createElement("span", { className: `dot ${status.connected ? "online" : ""}` }),
-        React.createElement("span", { className: "status-text" }, status.connected ? "Live" : "Disconnected"),
-        status.lastError
-          ? React.createElement("span", { className: "status-error" }, status.lastError)
-          : null,
+        React.createElement("span", null, status.connected ? "Live" : "Disconnected"),
+        React.createElement("span", { className: "muted" }, `snapshot ${formatTime(state.generated_at)}`),
+        status.error ? React.createElement("span", { className: "error" }, status.error) : null,
       ),
     ),
     React.createElement(
@@ -688,366 +730,87 @@ function App() {
       { className: "layout" },
       React.createElement(
         "aside",
-        { className: "sidebar" },
+        { className: "sidebar panel" },
+        React.createElement("h2", null, "Agents"),
         React.createElement(
-          "section",
-          { className: "panel" },
-          React.createElement(
-            "div",
-            { className: "panel-header" },
-            React.createElement("h2", null, "Overview"),
-          ),
-          React.createElement(
-            "div",
-            { className: "panel-body metrics" },
+          "div",
+          { className: "agent-list" },
+          agents.map((agent) =>
             React.createElement(
-              "div",
-              { className: "metric" },
-              React.createElement("span", { className: "metric-label" }, "Tasks"),
-              React.createElement("span", { className: "metric-value" }, totalTasks),
-            ),
-            React.createElement(
-              "div",
-              { className: "metric" },
-              React.createElement("span", { className: "metric-label" }, "Running"),
-              React.createElement("span", { className: "metric-value" }, runningTasks),
-            ),
-            React.createElement(
-              "div",
-              { className: "metric" },
-              React.createElement("span", { className: "metric-label" }, "Failed"),
-              React.createElement("span", { className: "metric-value" }, failedTasks),
-            ),
-            React.createElement(
-              "div",
-              { className: "metric" },
-              React.createElement("span", { className: "metric-label" }, "Snapshot"),
-              React.createElement("span", { className: "metric-value" }, formatTime(state.generatedAt)),
-            ),
-          ),
-        ),
-        React.createElement(
-          "section",
-          { className: "panel" },
-          React.createElement(
-            "div",
-            { className: "panel-header" },
-            React.createElement("h2", null, "Agents"),
-          ),
-          React.createElement(
-            "div",
-            { className: "panel-body agent-list" },
-            agents.length === 0
-              ? React.createElement("div", { className: "muted" }, "No agents yet.")
-              : agents.map((agent) =>
-                  React.createElement(
-                    "div",
-                    { key: agent.id, className: "agent-row" },
-                    React.createElement(
-                      "div",
-                      { className: "agent-main" },
-                      React.createElement(
-                        "div",
-                        { className: "agent-title" },
-                        React.createElement("span", { className: "agent-id" }, agent.id),
-                        React.createElement("span", { className: "agent-count" }, `${agent.activeCount} active`),
-                      ),
-                      React.createElement(
-                        "div",
-                        { className: "agent-detail" },
-                        agent.state.detail,
-                      ),
-                    ),
-                    React.createElement(StatusBadge, { status: agent.state.status, label: agent.state.label }),
-                  ),
+              "button",
+              {
+                key: agent.id,
+                className: `agent-row ${agent.id === selectedAgent ? "active" : ""}`,
+                onClick: () => setSelectedAgent(agent.id),
+              },
+              React.createElement(
+                "div",
+                { className: "agent-main" },
+                React.createElement("div", { className: "agent-id" }, agent.id),
+                React.createElement(
+                  "div",
+                  { className: "agent-meta" },
+                  `active ${agent.active_tasks || 0} · gen ${agent.generation || 1} · ${formatTime(agent.updated_at)}`,
                 ),
+              ),
+              React.createElement(StatusBadge, { status: agent.status || "idle" }),
+            ),
           ),
-        ),
-        React.createElement(
-          "section",
-          { className: "panel" },
-          React.createElement(
-            "div",
-            { className: "panel-header" },
-            React.createElement("h2", null, "Tasks"),
-          ),
-          React.createElement(
-            "div",
-            { className: "panel-body task-list" },
-            taskTree.length === 0
-              ? React.createElement("div", { className: "muted" }, "No tasks yet.")
-              : React.createElement(
-                  React.Fragment,
-                  null,
-                  React.createElement(
-                    "div",
-                    { className: "task-group" },
-                    React.createElement(
-                      "div",
-                      { className: "task-group-title" },
-                      `Active (${activeTasks.length})`,
-                    ),
-                    activeTasks.length === 0
-                      ? React.createElement("div", { className: "muted" }, "No active tasks.")
-                      : activeTasks
-                          .slice()
-                          .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))
-                          .map((task) =>
-                            React.createElement(
-                              "button",
-                              {
-                                key: `active-${task.id}`,
-                                className: `task-row ${selectedTaskId === task.id ? "active" : ""}`,
-                                onClick: () => setSelectedTaskId(task.id),
-                              },
-                              React.createElement("span", { className: "task-main" },
-                                React.createElement("span", { className: "task-type" }, task.type),
-                                React.createElement("span", { className: "task-id" }, task.id.slice(0, 8)),
-                              ),
-                              React.createElement(StatusBadge, { status: task.status }),
-                            ),
-                          ),
-                  ),
-                  React.createElement("div", { className: "task-group-title" }, "All"),
-                  taskTree.map(({ task, depth }) =>
-                    React.createElement(
-                      "button",
-                      {
-                        key: task.id,
-                        className: `task-row ${selectedTaskId === task.id ? "active" : ""}`,
-                        onClick: () => setSelectedTaskId(task.id),
-                      },
-                      React.createElement(
-                        "span",
-                        { className: "task-indent", style: { width: `${depth * 12}px` } },
-                        depth > 0 ? "└" : "",
-                      ),
-                      React.createElement(
-                        "span",
-                        { className: "task-main" },
-                        React.createElement("span", { className: "task-type" }, task.type),
-                        React.createElement("span", { className: "task-id" }, task.id.slice(0, 8)),
-                      ),
-                      React.createElement(StatusBadge, { status: task.status }),
-                    ),
-                  ),
-                ),
-          ),
+          agents.length <= 1
+            ? React.createElement("div", { className: "muted" }, "No subagents observed yet.")
+            : null,
         ),
       ),
       React.createElement(
         "section",
-        { className: "detail" },
+        { className: "panel detail" },
         React.createElement(
-          "section",
-          { className: "panel" },
+          "div",
+          { className: "detail-head" },
+          React.createElement("h2", null, selectedAgent),
           React.createElement(
             "div",
-            { className: "panel-header" },
-            React.createElement("h2", null, "Drilldown"),
-            React.createElement(
-              "div",
-              { className: "tab-row" },
-              [
-                { id: "trace", label: "Trace" },
-                { id: "chat", label: "Chat" },
-                { id: "events", label: "Events" },
-                { id: "task", label: "Task" },
-              ].map((tab) =>
-                React.createElement(
-                  "button",
-                  {
-                    key: tab.id,
-                    className: `tab ${activeTab === tab.id ? "active" : ""}`,
-                    onClick: () => setActiveTab(tab.id),
-                  },
-                  tab.label,
-                ),
-              ),
-            ),
-          ),
-          React.createElement(
-            "div",
-            { className: "panel-body" },
-            activeTab === "trace"
-              ? React.createElement(
-                  "div",
-                  { className: "trace" },
-                  React.createElement(
-                    "div",
-                    { className: "trace-scroll", ref: traceRef },
-                    llmTask
-                      ? React.createElement(
-                          "div",
-                          { className: "trace-header" },
-                          React.createElement("span", { className: "muted" }, `LLM Task: ${llmTask.id.slice(0, 8)} · ${llmTask.status}`),
-                          React.createElement("span", { className: "muted" }, formatDateTime(llmTask.updated_at)),
-                        )
-                      : React.createElement("div", { className: "muted" }, "No LLM task found."),
-                    trace.map((item) => {
-                      if (item.role === "tool") {
-                        return React.createElement(
-                          "div",
-                          { className: "trace-item trace-tool", key: item.id },
-                          React.createElement(
-                            "div",
-                            { className: "trace-meta trace-tool-meta" },
-                            React.createElement("span", null, item.name || "tool"),
-                            React.createElement(StatusBadge, { status: item.status, label: item.status }),
-                          ),
-                          item.input ? React.createElement(ToolInput, { toolName: item.name, raw: item.input }) : null,
-                          item.result ? React.createElement(Markdown, { text: toMarkdown(item.result) }) : null,
-                        );
-                      }
-                      if (item.role === "thinking") {
-                        return React.createElement(
-                          "details",
-                          { className: "trace-item trace-thinking", key: item.id },
-                          React.createElement("summary", null, "Thinking"),
-                          React.createElement(Markdown, { text: item.text }),
-                        );
-                      }
-                      return React.createElement(
-                        "div",
-                        { className: `trace-item trace-${item.role}`, key: item.id },
-                        React.createElement(
-                          "div",
-                          { className: "trace-meta" },
-                          item.role.toUpperCase(),
-                        ),
-                        React.createElement(Markdown, { text: item.text }),
-                      );
-                    }),
-                  ),
-                  React.createElement(
-                    "div",
-                    { className: "trace-chat" },
-                    React.createElement("input", {
-                      className: "trace-chat-input",
-                      value: messageInput,
-                      onChange: (event) => setMessageInput(event.target.value),
-                      onKeyDown: (event) => {
-                        if (event.key === "Enter") {
-                          event.preventDefault();
-                          handleSend();
-                        }
-                      },
-                      placeholder: "Message the agent…",
-                    }),
-                    React.createElement(
-                      "div",
-                      { className: "muted" },
-                      sendStatus ? `Status: ${sendStatus}` : "Enter to send",
-                    ),
-                  ),
-                )
-              : null,
-            activeTab === "chat"
-              ? React.createElement(
-                  "div",
-                  { className: "chat" },
-                  React.createElement(
-                    "div",
-                    { className: "chat-log" },
-                    chatMessages.length === 0
-                      ? React.createElement("div", { className: "muted" }, "No messages yet.")
-                      : chatMessages.map((msg) => {
-                          const source = msg.metadata?.source || "system";
-                          return React.createElement(
-                            "div",
-                            { key: msg.id, className: `chat-item chat-${source === CLIENT_ID ? "user" : "assistant"}` },
-                            React.createElement(
-                              "div",
-                              { className: "chat-meta" },
-                              `${source} · ${formatTime(msg.created_at)}`,
-                            ),
-                            React.createElement(Markdown, { text: msg.body || "" }),
-                          );
-                        }),
-                  ),
-                )
-              : null,
-            activeTab === "events"
-              ? React.createElement(
-                  "div",
-                  { className: "events" },
-                  React.createElement(
-                    "div",
-                    { className: "event-tabs" },
-                    STREAMS.map((stream) =>
-                      React.createElement(
-                        "button",
-                        {
-                          key: stream,
-                          className: `tab ${activeStream === stream ? "active" : ""}`,
-                          onClick: () => setActiveStream(stream),
-                        },
-                        stream,
-                      ),
-                    ),
-                  ),
-                  React.createElement(
-                    "div",
-                    { className: "event-log" },
-                    streamItems.length === 0
-                      ? React.createElement("div", { className: "muted" }, "No events.")
-                      : streamItems.map((evt) =>
-                          React.createElement(
-                            "div",
-                            { className: "event-item", key: evt.id },
-                            React.createElement(
-                              "div",
-                              { className: "event-meta" },
-                              `${evt.stream} · ${formatTime(evt.created_at)} · ${evt.subject || evt.body}`,
-                            ),
-                            React.createElement(Markdown, { text: toMarkdown(evt.payload || evt.metadata || evt.body) }),
-                          ),
-                        ),
-                  ),
-                )
-              : null,
-            activeTab === "task"
-              ? React.createElement(TaskDetail, { task: selectedTask })
+            { className: "detail-meta" },
+            React.createElement(StatusBadge, { status: selectedAgentState.status || "idle" }),
+            React.createElement("span", { className: "muted" }, `generation ${selectedHistory.generation || 1}`),
+            selectedSession?.updated_at
+              ? React.createElement("span", { className: "muted" }, `updated ${formatDateTime(selectedSession.updated_at)}`)
               : null,
           ),
         ),
+        React.createElement(
+          "div",
+          { className: "timeline", ref: timelineRef },
+          !timelineEntries || timelineEntries.length === 0
+            ? React.createElement("div", { className: "muted" }, "No history yet.")
+            : timelineEntries.map((entry) => React.createElement(EntryCard, { key: entry.id || `${entry.type}-${entry.created_at}`, entry })),
+        ),
+        React.createElement(
+          "div",
+          { className: "composer" },
+          React.createElement("textarea", {
+            value: message,
+            onChange: (event) => setMessage(event.target.value),
+            placeholder: `Message ${selectedAgent}...`,
+          }),
+          React.createElement(
+            "div",
+            { className: "composer-actions" },
+            React.createElement(
+              "button",
+              { onClick: handleSend },
+              "Send",
+            ),
+            React.createElement(
+              "button",
+              { className: "danger", onClick: handleCompact },
+              "Compact Context",
+            ),
+            sendStatus ? React.createElement("span", { className: "muted" }, sendStatus) : null,
+            compactStatus ? React.createElement("span", { className: "muted" }, compactStatus) : null,
+          ),
+        ),
       ),
-    ),
-  );
-}
-
-function TaskDetail({ task }) {
-  if (!task) {
-    return React.createElement("div", { className: "muted" }, "Select a task to inspect.");
-  }
-  return React.createElement(
-    "div",
-    { className: "task-detail" },
-    React.createElement(
-      "div",
-      { className: "task-detail-header" },
-      React.createElement("h3", null, task.type),
-      React.createElement("span", { className: "muted" }, task.id),
-    ),
-    React.createElement(
-      "div",
-      { className: "task-detail-grid" },
-      React.createElement("div", { className: "task-field" }, "Status", React.createElement(StatusBadge, { status: task.status })),
-      React.createElement("div", { className: "task-field" }, "Owner", task.owner || "-"),
-      React.createElement("div", { className: "task-field" }, "Parent", task.parent_id || "-"),
-      React.createElement("div", { className: "task-field" }, "Updated", formatDateTime(task.updated_at)),
-    ),
-    React.createElement(
-      "div",
-      { className: "task-detail-block" },
-      React.createElement("h4", null, "Payload"),
-      React.createElement(Markdown, { text: toMarkdown(task.payload || {}) }),
-    ),
-    React.createElement(
-      "div",
-      { className: "task-detail-block" },
-      React.createElement("h4", null, "Result"),
-      React.createElement(Markdown, { text: toMarkdown(task.result || task.error || "-") }),
     ),
   );
 }

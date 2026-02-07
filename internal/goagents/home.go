@@ -1,4 +1,4 @@
-package karna
+package goagents
 
 import (
 	"fmt"
@@ -11,11 +11,11 @@ func HomeDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".karna"), nil
+	return filepath.Join(home, ".go-agents"), nil
 }
 
-// EnsureHome creates ~/.karna and seeds it with the embedded template if it does not exist.
-// If ~/.karna already exists, it is left untouched.
+// EnsureHome creates ~/.go-agents and seeds it with the embedded template if it does not exist.
+// If ~/.go-agents already exists, it is left untouched.
 func EnsureHome() (string, error) {
 	home, err := HomeDir()
 	if err != nil {

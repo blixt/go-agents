@@ -1,0 +1,24 @@
+{
+  "id": "correctness_followup",
+  "description": "Post-correctness follow-up: runtime health report, wake/cancel behavior, and project-root file discovery.",
+  "experiments": [
+    {
+      "id": "cf01_runtime_health_report",
+      "title": "Runtime health report",
+      "prompt": "Please generate a concise runtime health report for this running go-agents service. Include: (1) task counts by status and task type, (2) the top 3 oldest running tasks with id/type/age_seconds, and (3) whether any exec tasks are currently queued. Use live runtime data, not assumptions.",
+      "timeoutSeconds": 240
+    },
+    {
+      "id": "cf02_wake_cancel_stale_exec",
+      "title": "Wake and stale task cancellation",
+      "prompt": "Please start one deliberately long-running exec task (for example a sleep), wait for task_health wake behavior to detect it as stale, and then cancel it. Return the task id and final task status from runtime state.",
+      "timeoutSeconds": 360
+    },
+    {
+      "id": "cf03_project_root_file_discovery",
+      "title": "Project-root largest Go files",
+      "prompt": "Please inspect the local project at /app/go-agents and list the five largest Go source files by line count, with exact file paths and counts.",
+      "timeoutSeconds": 240
+    }
+  ]
+}

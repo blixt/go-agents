@@ -74,6 +74,7 @@ func (d *busDebugger) push(subject string, payload map[string]any) {
 			"agent_id":  d.agentID,
 			"task_id":   d.taskID,
 			"direction": subject,
+			"priority":  "low",
 		},
 		Payload: payload,
 	})

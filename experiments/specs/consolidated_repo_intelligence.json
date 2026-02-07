@@ -1,0 +1,48 @@
+{
+  "id": "consolidated_repo_intelligence",
+  "description": "Consolidated non-technical + self-improvement + long-horizon scenario on one external repo, focused on repeatability and grounded outputs.",
+  "experiments": [
+    {
+      "id": "cri01_onboarding_brief",
+      "title": "Onboarding brief with saved details",
+      "prompt": "I'm new to this codebase. Please use https://github.com/docker/compose and give me a short plain-language onboarding brief. Save the detailed version to a reusable file and tell me where you saved it.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "cri02_onboarding_refresh",
+      "title": "Refresh saved onboarding details",
+      "prompt": "Please refresh that same saved onboarding file and only summarize what changed.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "cri03_interface_inventory",
+      "title": "Interaction methods report",
+      "prompt": "Please list the ways people or systems can interact with this project. Keep full details in a file and provide only a short summary here.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "cri04_requirements_checklist",
+      "title": "Running requirements checklist",
+      "prompt": "Please make a practical checklist of what someone needs to provide to run this project locally (settings, keys, files, prerequisites). Keep it grounded in the repo.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "cri05_endpoint_json",
+      "title": "Structured endpoint map",
+      "prompt": "Please produce a concise JSON map of the key API endpoints or command interfaces this project exposes, with short descriptions.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "cri06_endpoint_refresh_fast",
+      "title": "Refresh endpoint map quickly",
+      "prompt": "Please refresh that same structured map and keep this response short, focused only on deltas and confidence level.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "cri07_scoped_change_risk_plan",
+      "title": "Scoped weekly risk plan",
+      "prompt": "For this week, please identify the highest-risk areas to modify in this repo and give me a short, scoped plan to reduce breakage if I touch them.",
+      "timeoutSeconds": 300
+    }
+  ]
+}

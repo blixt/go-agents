@@ -1,0 +1,42 @@
+{
+  "id": "creative_nontechnical_reuse_loop",
+  "description": "Natural-language recurring assistant tasks designed to implicitly reward helper invention and reuse across repeated refreshes.",
+  "experiments": [
+    {
+      "id": "cnrl01_go_agents_brief_create",
+      "title": "Create go-agents daily brief",
+      "prompt": "Could you set up my daily project brief for /app/go-agents? I want a short snapshot here, and keep the full version in /app/go-agents/.assistant/daily-brief.md plus a structured version in /app/go-agents/.assistant/daily-brief.json. Please include risk hotspots, likely breakage points, and run blockers.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "cnrl02_go_agents_brief_refresh_1",
+      "title": "Refresh go-agents brief once",
+      "prompt": "Please refresh that same go-agents daily brief now using those same two files, and only tell me what changed since the last version.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "cnrl03_go_agents_brief_refresh_2",
+      "title": "Refresh go-agents brief again",
+      "prompt": "Can you refresh it one more time in the same place and keep this reply very short, only new changes?",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "cnrl04_go_llms_brief_create",
+      "title": "Create go-llms daily brief",
+      "prompt": "Great. Now set up the same daily brief for /app/go-llms and store it in /app/go-llms/.assistant/daily-brief.md and /app/go-llms/.assistant/daily-brief.json. Same style as before.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "cnrl05_go_llms_brief_refresh",
+      "title": "Refresh go-llms brief",
+      "prompt": "Please refresh the go-llms brief in those same files and only summarize what changed.",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "cnrl06_compare_briefs",
+      "title": "Compare both briefs",
+      "prompt": "Using the briefs you just updated for both projects, tell me which project looks riskier to touch today and give me a short reasoned recommendation.",
+      "timeoutSeconds": 300
+    }
+  ]
+}
