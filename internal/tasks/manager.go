@@ -67,6 +67,9 @@ type ListFilter struct {
 type Manager struct {
 	db  *sql.DB
 	bus *eventbus.Bus
+
+	nowFn   func() time.Time
+	newIDFn func() string
 }
 
 var ErrAwaitTimeout = errors.New("await timeout")
@@ -121,16 +124,59 @@ func IsInterrupt(err error) bool {
 
 var wakeStreams = []string{"task_output", "signals", "errors", "external", "messages"}
 
-func NewManager(db *sql.DB, bus *eventbus.Bus) *Manager {
-	return &Manager{db: db, bus: bus}
+type Option func(*Manager)
+
+func WithClock(nowFn func() time.Time) Option {
+	return func(m *Manager) {
+		if nowFn != nil {
+			m.nowFn = nowFn
+		}
+	}
+}
+
+func WithIDGenerator(newIDFn func() string) Option {
+	return func(m *Manager) {
+		if newIDFn != nil {
+			m.newIDFn = newIDFn
+		}
+	}
+}
+
+func NewManager(db *sql.DB, bus *eventbus.Bus, opts ...Option) *Manager {
+	m := &Manager{
+		db:      db,
+		bus:     bus,
+		nowFn:   func() time.Time { return time.Now().UTC() },
+		newIDFn: func() string { return ulid.Make().String() },
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(m)
+		}
+	}
+	return m
+}
+
+func (m *Manager) now() time.Time {
+	if m.nowFn == nil {
+		return time.Now().UTC()
+	}
+	return m.nowFn().UTC()
+}
+
+func (m *Manager) newID() string {
+	if m.newIDFn == nil {
+		return ulid.Make().String()
+	}
+	return m.newIDFn()
 }
 
 func (m *Manager) Spawn(ctx context.Context, spec Spec) (Task, error) {
 	if strings.TrimSpace(spec.Type) == "" {
 		return Task{}, fmt.Errorf("task type is required")
 	}
-	id := ulid.Make().String()
-	createdAt := time.Now().UTC()
+	id := m.newID()
+	createdAt := m.now()
 	metadata := map[string]any{}
 	for k, v := range spec.Metadata {
 		metadata[k] = v
@@ -299,8 +345,8 @@ func (m *Manager) RecordUpdate(ctx context.Context, taskID, kind string, payload
 	if kind == "" {
 		return fmt.Errorf("kind is required")
 	}
-	id := ulid.Make().String()
-	createdAt := time.Now().UTC()
+	id := m.newID()
+	createdAt := m.now()
 	payloadJSON, err := encodeJSON(payload)
 	if err != nil {
 		return fmt.Errorf("encode payload: %w", err)
@@ -342,7 +388,7 @@ func (m *Manager) MarkRunning(ctx context.Context, taskID string) error {
 	if taskID == "" {
 		return fmt.Errorf("task_id is required")
 	}
-	updatedAt := time.Now().UTC()
+	updatedAt := m.now()
 	res, err := m.db.ExecContext(ctx, `UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND status = ?`, StatusRunning, updatedAt.Format(time.RFC3339Nano), taskID, StatusQueued)
 	if err != nil {
 		return fmt.Errorf("update task status: %w", err)
@@ -774,7 +820,7 @@ func (m *Manager) ClaimQueued(ctx context.Context, taskType string, limit int) (
 		return nil, nil
 	}
 
-	updatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	updatedAt := m.now().Format(time.RFC3339Nano)
 	claimed := make([]Task, 0, len(tasks))
 	for _, task := range tasks {
 		res, err := tx.ExecContext(ctx, `UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND status = ?`, StatusRunning, updatedAt, task.ID, StatusQueued)
@@ -823,7 +869,7 @@ func (m *Manager) updateStatus(ctx context.Context, taskID string, status Status
 	if err != nil {
 		return fmt.Errorf("encode result: %w", err)
 	}
-	updatedAt := time.Now().UTC()
+	updatedAt := m.now()
 
 	res, err := m.db.ExecContext(ctx, `
 		UPDATE tasks SET status = ?, updated_at = ?, result = ?, error = ? WHERE id = ? AND status = ?

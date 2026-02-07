@@ -47,7 +47,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := stateResponse{
-		GeneratedAt: time.Now().UTC(),
+		GeneratedAt: s.now(),
 		Updates:     map[string][]tasks.Update{},
 		Sessions:    map[string]engine.Session{},
 		Histories:   map[string]engine.AgentHistory{},

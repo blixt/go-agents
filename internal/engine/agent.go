@@ -93,6 +93,8 @@ type Runtime struct {
 	historyGenerationByAgent map[string]int64
 	historyCompactionCutoff  map[string]time.Time
 	historyPreambleByAgent   map[string]int64
+
+	nowFn func() time.Time
 }
 
 const (
@@ -108,14 +110,24 @@ const (
 	minTimePassedDelta      = 60 * time.Second
 )
 
-func NewRuntime(bus *eventbus.Bus, tasksMgr *tasks.Manager, client *ai.Client) *Runtime {
+type Option func(*Runtime)
+
+func WithClock(nowFn func() time.Time) Option {
+	return func(r *Runtime) {
+		if nowFn != nil {
+			r.nowFn = nowFn
+		}
+	}
+}
+
+func NewRuntime(bus *eventbus.Bus, tasksMgr *tasks.Manager, client *ai.Client, opts ...Option) *Runtime {
 	home, err := goagents.EnsureHome()
 	if err != nil {
 		home = ""
 	}
 	ctxMgr := &agentctx.Manager{Home: home}
 
-	return &Runtime{
+	r := &Runtime{
 		Bus:                      bus,
 		Tasks:                    tasksMgr,
 		LLM:                      client,
@@ -130,7 +142,21 @@ func NewRuntime(bus *eventbus.Bus, tasksMgr *tasks.Manager, client *ai.Client) *
 		historyGenerationByAgent: map[string]int64{},
 		historyCompactionCutoff:  map[string]time.Time{},
 		historyPreambleByAgent:   map[string]int64{},
+		nowFn:                    func() time.Time { return time.Now().UTC() },
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(r)
+		}
+	}
+	return r
+}
+
+func (r *Runtime) now() time.Time {
+	if r.nowFn == nil {
+		return time.Now().UTC()
+	}
+	return r.nowFn().UTC()
 }
 
 func (r *Runtime) SetLLMDebugDir(dir string) {
@@ -178,7 +204,7 @@ func (r *Runtime) emitTaskHealth(ctx context.Context) {
 		return
 	}
 
-	now := time.Now().UTC()
+	now := r.now()
 	byTarget := map[string][]map[string]any{}
 	staleByTarget := map[string][]map[string]any{}
 	for _, task := range tasksList {
@@ -666,7 +692,7 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 		LLMTaskID:  llmTask.ID,
 		Prompt:     promptText,
 		LastInput:  message,
-		UpdatedAt:  time.Now().UTC(),
+		UpdatedAt:  r.now(),
 	}
 	turnCtx := r.nextTurnContext(agentID, session.UpdatedAt)
 	contextEvents, _ := r.collectUnreadContextEvents(ctx, agentID, maxContextEventsPerTurn*2)
@@ -851,7 +877,7 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 			if turnNumber == 1 {
 				turnInput = input
 			} else {
-				now := time.Now().UTC()
+				now := r.now()
 				snapshot := TurnContext{
 					Now:      now,
 					Previous: lastContextSnapshotAt,
@@ -1357,7 +1383,7 @@ func (r *Runtime) BuildSession(ctx context.Context, agentID string) (Session, er
 	}
 	state := r.ensureAgentState(agentID)
 	if state == nil || state.Prompt == nil {
-		session := Session{AgentID: agentID, UpdatedAt: time.Now().UTC()}
+		session := Session{AgentID: agentID, UpdatedAt: r.now()}
 		r.SetSession(session)
 		return session, nil
 	}
@@ -1371,7 +1397,7 @@ func (r *Runtime) BuildSession(ctx context.Context, agentID string) (Session, er
 	if systemOverride != "" {
 		promptText = fmt.Sprintf("%s\n\n%s", promptText, systemOverride)
 	}
-	session := Session{AgentID: agentID, Prompt: promptText, UpdatedAt: time.Now().UTC()}
+	session := Session{AgentID: agentID, Prompt: promptText, UpdatedAt: r.now()}
 	r.SetSession(session)
 	return session, nil
 }
@@ -1679,7 +1705,7 @@ func getMetaString(meta map[string]any, key string) string {
 
 func (r *Runtime) nextTurnContext(agentID string, now time.Time) TurnContext {
 	if now.IsZero() {
-		now = time.Now().UTC()
+		now = r.now()
 	}
 	now = now.UTC()
 	r.turnMu.Lock()

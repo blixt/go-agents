@@ -64,7 +64,7 @@ func (r *Runtime) appendHistory(ctx context.Context, agentID, entryType, role, c
 		"role":       role,
 		"content":    content,
 		"task_id":    strings.TrimSpace(taskID),
-		"created_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"created_at": r.now().Format(time.RFC3339Nano),
 	}
 	for k, v := range data {
 		if v == nil {
@@ -288,7 +288,7 @@ func (r *Runtime) CompactAgentContext(ctx context.Context, agentID, reason strin
 	if agentID == "" {
 		return 0, fmt.Errorf("agent_id is required")
 	}
-	now := time.Now().UTC()
+	now := r.now()
 	current := r.historyGeneration(ctx, agentID)
 	next := current + 1
 

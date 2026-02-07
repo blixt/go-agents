@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/flitsinc/go-agents/internal/engine"
 	"github.com/flitsinc/go-agents/internal/eventbus"
@@ -16,6 +17,14 @@ type Server struct {
 	Tasks   *tasks.Manager
 	Bus     *eventbus.Bus
 	Runtime *engine.Runtime
+	NowFn   func() time.Time
+}
+
+func (s *Server) now() time.Time {
+	if s == nil || s.NowFn == nil {
+		return time.Now().UTC()
+	}
+	return s.NowFn().UTC()
 }
 
 func (s *Server) Handler() http.Handler {

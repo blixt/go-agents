@@ -17,6 +17,9 @@ type Bus struct {
 
 	mu   sync.RWMutex
 	subs map[string]*subscriber
+
+	nowFn   func() time.Time
+	newIDFn func() string
 }
 
 type subscriber struct {
@@ -24,8 +27,51 @@ type subscriber struct {
 	ch      chan Event
 }
 
-func NewBus(db *sql.DB) *Bus {
-	return &Bus{db: db, subs: map[string]*subscriber{}}
+type Option func(*Bus)
+
+func WithClock(nowFn func() time.Time) Option {
+	return func(b *Bus) {
+		if nowFn != nil {
+			b.nowFn = nowFn
+		}
+	}
+}
+
+func WithIDGenerator(newIDFn func() string) Option {
+	return func(b *Bus) {
+		if newIDFn != nil {
+			b.newIDFn = newIDFn
+		}
+	}
+}
+
+func NewBus(db *sql.DB, opts ...Option) *Bus {
+	b := &Bus{
+		db:      db,
+		subs:    map[string]*subscriber{},
+		nowFn:   func() time.Time { return time.Now().UTC() },
+		newIDFn: func() string { return ulid.Make().String() },
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(b)
+		}
+	}
+	return b
+}
+
+func (b *Bus) now() time.Time {
+	if b.nowFn == nil {
+		return time.Now().UTC()
+	}
+	return b.nowFn().UTC()
+}
+
+func (b *Bus) newID() string {
+	if b.newIDFn == nil {
+		return ulid.Make().String()
+	}
+	return b.newIDFn()
 }
 
 func (b *Bus) Push(ctx context.Context, input EventInput) (Event, error) {
@@ -45,8 +91,8 @@ func (b *Bus) Push(ctx context.Context, input EventInput) (Event, error) {
 		scopeID = "*"
 	}
 
-	id := ulid.Make().String()
-	createdAt := time.Now().UTC()
+	id := b.newID()
+	createdAt := b.now()
 	metadataJSON, err := encodeJSON(input.Metadata)
 	if err != nil {
 		return Event{}, fmt.Errorf("encode metadata: %w", err)
@@ -266,7 +312,7 @@ func (b *Bus) Subscribe(ctx context.Context, streams []string) <-chan Event {
 		}
 		streamSet[s] = struct{}{}
 	}
-	id := ulid.Make().String()
+	id := b.newID()
 
 	sub := &subscriber{streams: streamSet, ch: ch}
 	b.mu.Lock()

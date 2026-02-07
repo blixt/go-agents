@@ -5,7 +5,7 @@
   "scripts": {
     "start": "bun run server.tsx",
     "dev": "bun --watch server.tsx",
-    "build": "bun run src/build.ts"
+    "build": "bun build --target=bun --production --outdir=dist ./server.tsx"
   },
   "dependencies": {
     "dompurify": "^3.3.1",
