@@ -68,6 +68,44 @@ func ExecToolFactory() ToolFactory {
 	}
 }
 
+type MockExecParams struct {
+	Code        string `json:"code"`
+	ID          string `json:"id,omitempty"`
+	WaitSeconds int    `json:"wait_seconds,omitempty"`
+}
+
+func MockExecToolFactory(result map[string]any) ToolFactory {
+	cloned := cloneAnyMap(result)
+	return func(_ *tasks.Manager) llmtools.Tool {
+		return llmtools.Func(
+			"Exec",
+			"Run TypeScript code in an isolated Bun runtime and return a task id",
+			"exec",
+			func(_ llmtools.Runner, _ MockExecParams) llmtools.Result {
+				out := map[string]any{
+					"status":  "completed",
+					"task_id": "mock-exec-task",
+				}
+				if len(cloned) > 0 {
+					out["result"] = cloneAnyMap(cloned)
+				}
+				return llmtools.Success(out)
+			},
+		)
+	}
+}
+
+func cloneAnyMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
 type SnapshotFixtureOptions struct {
 	StartTime     time.Time
 	Tick          time.Duration

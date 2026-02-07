@@ -198,6 +198,160 @@ func TestAwaitWakeEvent(t *testing.T) {
 	}
 }
 
+func TestAwaitKeepsAwaitedTerminalWakeUnread(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	ctx := context.Background()
+
+	task, err := mgr.Spawn(ctx, tasks.Spec{
+		Type:  "wake",
+		Owner: "agent-a",
+		Metadata: map[string]any{
+			"notify_target": "agent-a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	if err := mgr.MarkRunning(ctx, task.ID); err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := mgr.Await(ctx, task.ID, 2*time.Second)
+		done <- err
+	}()
+
+	time.Sleep(25 * time.Millisecond)
+	if err := mgr.Complete(ctx, task.ID, map[string]any{"ok": true}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("await: %v", err)
+	}
+
+	summaries, err := bus.List(ctx, "task_output", eventbus.ListOptions{
+		Reader: "agent-a",
+		Limit:  50,
+		Order:  "fifo",
+	})
+	if err != nil {
+		t.Fatalf("list task_output: %v", err)
+	}
+	ids := make([]string, 0, len(summaries))
+	for _, summary := range summaries {
+		ids = append(ids, summary.ID)
+	}
+	events, err := bus.Read(ctx, "task_output", ids, "agent-a")
+	if err != nil {
+		t.Fatalf("read task_output: %v", err)
+	}
+
+	foundCompleted := false
+	for _, evt := range events {
+		if evt.ID == "" {
+			continue
+		}
+		if evt.Metadata == nil || evt.Metadata["task_id"] != task.ID || evt.Metadata["task_kind"] != "completed" {
+			continue
+		}
+		foundCompleted = true
+		if evt.Read {
+			t.Fatalf("expected awaited terminal wake event to remain unread")
+		}
+	}
+	if !foundCompleted {
+		t.Fatalf("expected completed task_output event for task %s", task.ID)
+	}
+}
+
+func TestAwaitAnyKeepsCompletedTaskWakeUnread(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	ctx := context.Background()
+
+	taskA, err := mgr.Spawn(ctx, tasks.Spec{
+		Type:  "wake",
+		Owner: "agent-a",
+		Metadata: map[string]any{
+			"notify_target": "agent-a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("spawn taskA: %v", err)
+	}
+	taskB, err := mgr.Spawn(ctx, tasks.Spec{
+		Type:  "wake",
+		Owner: "agent-a",
+		Metadata: map[string]any{
+			"notify_target": "agent-a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("spawn taskB: %v", err)
+	}
+	if err := mgr.MarkRunning(ctx, taskA.ID); err != nil {
+		t.Fatalf("mark taskA running: %v", err)
+	}
+	if err := mgr.MarkRunning(ctx, taskB.ID); err != nil {
+		t.Fatalf("mark taskB running: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := mgr.AwaitAny(ctx, []string{taskA.ID, taskB.ID}, 2*time.Second)
+		done <- err
+	}()
+
+	time.Sleep(25 * time.Millisecond)
+	if err := mgr.Complete(ctx, taskA.ID, map[string]any{"ok": true}); err != nil {
+		t.Fatalf("complete taskA: %v", err)
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("await any: %v", err)
+	}
+
+	summaries, err := bus.List(ctx, "task_output", eventbus.ListOptions{
+		Reader: "agent-a",
+		Limit:  50,
+		Order:  "fifo",
+	})
+	if err != nil {
+		t.Fatalf("list task_output: %v", err)
+	}
+	ids := make([]string, 0, len(summaries))
+	for _, summary := range summaries {
+		ids = append(ids, summary.ID)
+	}
+	events, err := bus.Read(ctx, "task_output", ids, "agent-a")
+	if err != nil {
+		t.Fatalf("read task_output: %v", err)
+	}
+
+	foundCompleted := false
+	for _, evt := range events {
+		if evt.Metadata == nil || evt.Metadata["task_id"] != taskA.ID || evt.Metadata["task_kind"] != "completed" {
+			continue
+		}
+		foundCompleted = true
+		if evt.Read {
+			t.Fatalf("expected completed task wake event to remain unread after AwaitAny")
+		}
+	}
+	if !foundCompleted {
+		t.Fatalf("expected completed task_output event for task %s", taskA.ID)
+	}
+}
+
 func TestAwaitSeesPreexistingWakeEvent(t *testing.T) {
 	db, closeFn := testutil.OpenTestDB(t)
 	defer closeFn()

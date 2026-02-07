@@ -500,11 +500,14 @@ func (m *Manager) Await(ctx context.Context, taskID string, timeout time.Duratio
 			if err := applyWakeGrace(ctx, evt); err != nil {
 				return task, err
 			}
-			_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, reader)
 			current, _ := m.Get(ctx, taskID)
 			if isTerminalStatus(current.Status) {
+				if !preserveTerminalTaskWakeEvent(evt, taskID) {
+					_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, reader)
+				}
 				return current, nil
 			}
+			_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, reader)
 			return current, &WakeError{Event: evt, Priority: priority}
 		}
 
@@ -532,11 +535,14 @@ func (m *Manager) Await(ctx context.Context, taskID string, timeout time.Duratio
 				if err := applyWakeGrace(ctx, evt); err != nil {
 					return task, err
 				}
-				_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, reader)
 				current, _ := m.Get(ctx, taskID)
 				if isTerminalStatus(current.Status) {
+					if !preserveTerminalTaskWakeEvent(evt, taskID) {
+						_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, reader)
+					}
 					return current, nil
 				}
+				_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, reader)
 				return current, &WakeError{Event: evt, Priority: priority}
 			}
 		}
@@ -602,16 +608,19 @@ func (m *Manager) AwaitAny(ctx context.Context, taskIDs []string, timeout time.D
 			if err := applyWakeGrace(ctx, evt); err != nil {
 				return AwaitAnyResult{PendingIDs: pending}, err
 			}
-			_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, reader)
 			if completed, done, pendingIDs, err := m.firstCompletedTask(ctx, taskIDs); err != nil {
 				return AwaitAnyResult{PendingIDs: pending}, err
 			} else if done {
+				if !preserveTerminalTaskWakeEvent(evt, completed.ID) {
+					_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, reader)
+				}
 				return AwaitAnyResult{
 					TaskID:     completed.ID,
 					Task:       completed,
 					PendingIDs: pendingIDs,
 				}, nil
 			}
+			_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, reader)
 			return AwaitAnyResult{
 				PendingIDs:   pending,
 				WakeEvent:    &evt,
@@ -656,16 +665,19 @@ func (m *Manager) AwaitAny(ctx context.Context, taskIDs []string, timeout time.D
 				if err := applyWakeGrace(ctx, evt); err != nil {
 					return AwaitAnyResult{PendingIDs: pending}, err
 				}
-				_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, reader)
 				if completed, done, pendingIDs, err := m.firstCompletedTask(ctx, taskIDs); err != nil {
 					return AwaitAnyResult{PendingIDs: pending}, err
 				} else if done {
+					if !preserveTerminalTaskWakeEvent(evt, completed.ID) {
+						_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, reader)
+					}
 					return AwaitAnyResult{
 						TaskID:     completed.ID,
 						Task:       completed,
 						PendingIDs: pendingIDs,
 					}, nil
 				}
+				_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, reader)
 				return AwaitAnyResult{
 					PendingIDs:   pending,
 					WakeEvent:    &evt,
@@ -1152,6 +1164,24 @@ func shouldIgnoreWakeEvent(evt eventbus.Event, ignoredIDs map[string]struct{}) b
 	}
 	_, ok := ignoredIDs[strings.TrimSpace(evt.ID)]
 	return ok
+}
+
+func preserveTerminalTaskWakeEvent(evt eventbus.Event, taskID string) bool {
+	if strings.TrimSpace(taskID) == "" {
+		return false
+	}
+	if strings.TrimSpace(evt.Stream) != "task_output" {
+		return false
+	}
+	if strings.TrimSpace(getMetaString(evt.Metadata, "task_id")) != strings.TrimSpace(taskID) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(getMetaString(evt.Metadata, "task_kind"))) {
+	case "completed", "failed", "cancelled", "killed":
+		return true
+	default:
+		return false
+	}
 }
 
 func awaitReaderForTargets(targets map[string]struct{}) string {
