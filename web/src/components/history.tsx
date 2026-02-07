@@ -2,13 +2,20 @@ import React from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import Prism from "prismjs";
-import ReactJson from "react-json-view";
 import XMLViewer from "react-xml-viewer";
 import "prismjs/components/prism-markup";
 import "prismjs/components/prism-javascript";
 import "prismjs/components/prism-typescript";
 import type { DisplayEntry, HistoryEntry, ReasoningGroup, ToolGroup } from "../types";
 import { formatDateTime, isPrimitive, normalizeStatus, parseJSONSafe, toJSON, xmlTheme } from "../utils";
+
+let reactJSONComponent: React.ComponentType<any> | null = null;
+
+function getReactJSONComponent(): React.ComponentType<any> {
+  if (reactJSONComponent !== null) return reactJSONComponent;
+  reactJSONComponent = (require("react-json-view") as { default: React.ComponentType<any> }).default;
+  return reactJSONComponent;
+}
 
 const TOOL_EVENT_TYPES = new Set(["tool_call", "tool_status", "tool_result"]);
 
@@ -54,6 +61,7 @@ function renderInlineObject(obj: Record<string, unknown>, className = "inline-fi
 
 function JsonView({ value, darkMode, collapsed = false }: { value: unknown; darkMode: boolean; collapsed?: boolean }): React.ReactElement | null {
   if (value === null || value === undefined) return null;
+  const ReactJson = getReactJSONComponent();
   const src =
     value !== null && typeof value === "object" && !Array.isArray(value)
       ? (value as Record<string, unknown>)
