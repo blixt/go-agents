@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/oklog/ulid/v2"
+	"github.com/flitsinc/go-agents/internal/idgen"
 )
 
 type Bus struct {
@@ -50,7 +50,7 @@ func NewBus(db *sql.DB, opts ...Option) *Bus {
 		db:      db,
 		subs:    map[string]*subscriber{},
 		nowFn:   func() time.Time { return time.Now().UTC() },
-		newIDFn: func() string { return ulid.Make().String() },
+		newIDFn: idgen.New,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -69,7 +69,7 @@ func (b *Bus) now() time.Time {
 
 func (b *Bus) newID() string {
 	if b.newIDFn == nil {
-		return ulid.Make().String()
+		return idgen.New()
 	}
 	return b.newIDFn()
 }

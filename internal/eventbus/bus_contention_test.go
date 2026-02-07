@@ -5,8 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oklog/ulid/v2"
-
+	"github.com/flitsinc/go-agents/internal/idgen"
 	"github.com/flitsinc/go-agents/internal/testutil"
 )
 
@@ -25,7 +24,7 @@ func TestBusPushWithWriteContention(t *testing.T) {
 	_, err = tx.Exec(`
 		INSERT INTO events (id, stream, scope_type, scope_id, subject, body, metadata, payload, created_at, read_by)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, ulid.Make().String(), "signals", "global", "*", "hold", "hold", "{}", "{}", createdAt, "[]")
+	`, idgen.New(), "signals", "global", "*", "hold", "hold", "{}", "{}", createdAt, "[]")
 	if err != nil {
 		_ = tx.Rollback()
 		t.Fatalf("seed event: %v", err)

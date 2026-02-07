@@ -10,9 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oklog/ulid/v2"
-
 	"github.com/flitsinc/go-agents/internal/eventbus"
+	"github.com/flitsinc/go-agents/internal/idgen"
 )
 
 type Status string
@@ -147,7 +146,7 @@ func NewManager(db *sql.DB, bus *eventbus.Bus, opts ...Option) *Manager {
 		db:      db,
 		bus:     bus,
 		nowFn:   func() time.Time { return time.Now().UTC() },
-		newIDFn: func() string { return ulid.Make().String() },
+		newIDFn: idgen.New,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -166,7 +165,7 @@ func (m *Manager) now() time.Time {
 
 func (m *Manager) newID() string {
 	if m.newIDFn == nil {
-		return ulid.Make().String()
+		return idgen.New()
 	}
 	return m.newIDFn()
 }

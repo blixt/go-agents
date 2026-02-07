@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/oklog/ulid/v2"
+	"github.com/flitsinc/go-agents/internal/idgen"
 )
 
 type Store struct {
@@ -37,7 +37,7 @@ type Action struct {
 }
 
 func (s *Store) CreateAgent(ctx context.Context, profile, status string) (Agent, error) {
-	id := ulid.Make().String()
+	id := idgen.New()
 	now := time.Now().UTC()
 	_, err := s.db.ExecContext(ctx, `INSERT INTO agents (id, profile, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
 		id, profile, status, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
@@ -75,7 +75,7 @@ func (s *Store) ListAgents(ctx context.Context, limit int) ([]Agent, error) {
 }
 
 func (s *Store) CreateAction(ctx context.Context, agentID, content, status string, metadata map[string]any) (Action, error) {
-	id := ulid.Make().String()
+	id := idgen.New()
 	now := time.Now().UTC()
 	metadataJSON, err := encodeJSON(metadata)
 	if err != nil {

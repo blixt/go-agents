@@ -58,6 +58,15 @@ type TurnContext struct {
 	DateChanged bool
 }
 
+type ContextUpdateFrame struct {
+	Events      []eventbus.Event
+	FromEventID string
+	ToEventID   string
+	Scanned     int
+	Emitted     int
+	Superseded  int
+}
+
 type Runtime struct {
 	Bus         *eventbus.Bus
 	Tasks       *tasks.Manager
@@ -88,6 +97,9 @@ type Runtime struct {
 
 	knownMu     sync.RWMutex
 	knownAgents map[string]struct{}
+
+	contextCursorMu          sync.Mutex
+	lastContextCursorByAgent map[string]string
 
 	historyMu                sync.Mutex
 	historyGenerationByAgent map[string]int64
@@ -139,6 +151,7 @@ func NewRuntime(bus *eventbus.Bus, tasksMgr *tasks.Manager, client *ai.Client, o
 		lastWake:                 map[string]time.Time{},
 		lastTurnStart:            map[string]time.Time{},
 		knownAgents:              map[string]struct{}{},
+		lastContextCursorByAgent: map[string]string{},
 		historyGenerationByAgent: map[string]int64{},
 		historyCompactionCutoff:  map[string]time.Time{},
 		historyPreambleByAgent:   map[string]int64{},
@@ -164,6 +177,40 @@ func (r *Runtime) SetLLMDebugDir(dir string) {
 		return
 	}
 	r.LLMDebugDir = strings.TrimSpace(dir)
+}
+
+func (r *Runtime) contextCursor(agentID string) string {
+	if strings.TrimSpace(agentID) == "" {
+		return ""
+	}
+	r.contextCursorMu.Lock()
+	defer r.contextCursorMu.Unlock()
+	return strings.TrimSpace(r.lastContextCursorByAgent[agentID])
+}
+
+func (r *Runtime) advanceContextCursor(agentID string, events []eventbus.Event) {
+	if strings.TrimSpace(agentID) == "" || len(events) == 0 {
+		return
+	}
+	maxID := ""
+	for _, evt := range events {
+		id := strings.TrimSpace(evt.ID)
+		if id == "" {
+			continue
+		}
+		if maxID == "" || id > maxID {
+			maxID = id
+		}
+	}
+	if maxID == "" {
+		return
+	}
+	r.contextCursorMu.Lock()
+	defer r.contextCursorMu.Unlock()
+	if existing := strings.TrimSpace(r.lastContextCursorByAgent[agentID]); existing != "" && existing >= maxID {
+		return
+	}
+	r.lastContextCursorByAgent[agentID] = maxID
 }
 
 func (r *Runtime) Start(ctx context.Context) {
@@ -583,6 +630,23 @@ func (r *Runtime) EnsureRootTask(ctx context.Context, agentID string) (tasks.Tas
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
+	return r.ensureRootTaskForState(ctx, agentID, state)
+}
+
+func (r *Runtime) RunOnce(ctx context.Context, agentID, message string) (Session, error) {
+	return r.HandleMessage(ctx, agentID, "", message, nil)
+}
+
+func (r *Runtime) ensureRootTaskForState(ctx context.Context, agentID string, state *AgentState) (tasks.Task, error) {
+	if r.Tasks == nil {
+		return tasks.Task{}, fmt.Errorf("task manager unavailable")
+	}
+	if strings.TrimSpace(agentID) == "" {
+		return tasks.Task{}, fmt.Errorf("agent_id is required")
+	}
+	if state == nil {
+		return tasks.Task{}, fmt.Errorf("agent state unavailable")
+	}
 	if state.RootTaskID != "" {
 		task, err := r.Tasks.Get(ctx, state.RootTaskID)
 		if err == nil && task.ID != "" {
@@ -606,10 +670,6 @@ func (r *Runtime) EnsureRootTask(ctx context.Context, agentID string) (tasks.Tas
 	_ = r.Tasks.MarkRunning(ctx, created.ID)
 	state.RootTaskID = created.ID
 	return created, nil
-}
-
-func (r *Runtime) RunOnce(ctx context.Context, agentID, message string) (Session, error) {
-	return r.HandleMessage(ctx, agentID, "", message, nil)
 }
 
 func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message string, messageMeta map[string]any) (Session, error) {
@@ -645,25 +705,9 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 	var rootTask tasks.Task
 	var llmTask tasks.Task
 	if r.Tasks != nil {
-		if state.RootTaskID == "" {
-			created, _ := r.Tasks.Spawn(ctx, tasks.Spec{
-				Type:  "agent",
-				Owner: agentID,
-				Mode:  "async",
-				Metadata: map[string]any{
-					"agent_id":      agentID,
-					"input_target":  agentID,
-					"notify_target": agentID,
-				},
-			})
-			_ = r.Tasks.MarkRunning(ctx, created.ID)
-			state.RootTaskID = created.ID
-			rootTask = created
-		} else {
-			rootTask, _ = r.Tasks.Get(ctx, state.RootTaskID)
-			if rootTask.ID == "" {
-				rootTask.ID = state.RootTaskID
-			}
+		rootTask, _ = r.ensureRootTaskForState(ctx, agentID, state)
+		if rootTask.ID == "" {
+			rootTask.ID = state.RootTaskID
 		}
 
 		llmTask, _ = r.Tasks.Spawn(ctx, tasks.Spec{
@@ -695,8 +739,20 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 		UpdatedAt:  r.now(),
 	}
 	turnCtx := r.nextTurnContext(agentID, session.UpdatedAt)
-	contextEvents, _ := r.collectUnreadContextEvents(ctx, agentID, maxContextEventsPerTurn*2)
-	contextEvents = selectContextEventsForPrompt(contextEvents, maxContextEventsPerTurn)
+	rawContextEvents, _ := r.collectUnreadContextEvents(ctx, agentID, maxContextEventsPerTurn*2)
+	contextEvents, initialSuperseded := projectContextEventsForPrompt(rawContextEvents, maxContextEventsPerTurn)
+	currentContextCursor := r.contextCursor(agentID)
+	initialFrame := ContextUpdateFrame{
+		Events:      contextEvents,
+		FromEventID: currentContextCursor,
+		ToEventID:   maxEventID(rawContextEvents),
+		Scanned:     len(rawContextEvents),
+		Emitted:     len(contextEvents),
+		Superseded:  initialSuperseded,
+	}
+	if initialFrame.ToEventID != "" {
+		currentContextCursor = initialFrame.ToEventID
+	}
 	toolsSnapshot := []string{}
 	if state.Prompt != nil && len(state.Prompt.ToolNames) > 0 {
 		toolsSnapshot = append(toolsSnapshot, state.Prompt.ToolNames...)
@@ -754,13 +810,13 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 		if source != "" && source != agentID {
 			_, _ = r.pushMessage(ctx, source, session.LastOutput, agentID, nil)
 		}
-		r.ackContextEvents(context.Background(), agentID, contextEvents)
+		r.ackContextEvents(context.Background(), agentID, rawContextEvents)
 		return session, nil
 	}
 	r.attachDebugger(llmClient, agentID, llmTask.ID)
 
 	var output string
-	trackedContextEvents := make([]eventbus.Event, 0, len(contextEvents))
+	trackedContextEvents := make([]eventbus.Event, 0, len(rawContextEvents))
 	trackedContextEventKeys := map[string]struct{}{}
 	contextEventKey := func(evt eventbus.Event) string {
 		stream := strings.TrimSpace(evt.Stream)
@@ -800,12 +856,12 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 		}
 		return out
 	}
-	markTrackedContextEvents(contextEvents)
+	markTrackedContextEvents(rawContextEvents)
 
 	{
 		llmCtx := tasks.WithParentTaskID(ctx, llmTask.ID)
 		llmCtx = agentcontext.WithAgentID(llmCtx, agentID)
-		llmCtx = tasks.WithIgnoredWakeEventIDs(llmCtx, ignoredWakeEventIDsForTurn(messageMeta, contextEvents))
+		llmCtx = tasks.WithIgnoredWakeEventIDs(llmCtx, ignoredWakeEventIDsForTurn(messageMeta, rawContextEvents))
 		llmCtx, cancel := context.WithCancel(llmCtx)
 		r.registerInflight(llmTask.ID, cancel)
 		defer func() {
@@ -827,7 +883,7 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 		}()
 
 		turns := r.loadRecentConversation(llmCtx, agentID, maxConversationTurns)
-		input := buildInputWithHistory(turns, source, message, messageMeta, turnCtx, contextEvents)
+		input := buildInputWithHistory(turns, source, message, messageMeta, turnCtx, initialFrame)
 		runSource := source
 		if strings.TrimSpace(runSource) == "" {
 			runSource = "external"
@@ -874,8 +930,18 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 			turnInput := ""
 			turnSource := runSource
 			turnPriority := runPriority
+			turnFromEventID := ""
+			turnToEventID := ""
+			turnScanned := 0
+			turnEmitted := 0
+			turnSuperseded := 0
 			if turnNumber == 1 {
 				turnInput = input
+				turnFromEventID = initialFrame.FromEventID
+				turnToEventID = initialFrame.ToEventID
+				turnScanned = initialFrame.Scanned
+				turnEmitted = initialFrame.Emitted
+				turnSuperseded = initialFrame.Superseded
 			} else {
 				now := r.now()
 				snapshot := TurnContext{
@@ -893,26 +959,58 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 				if err != nil {
 					return err
 				}
-				fresh := untrackedContextEvents(pending)
-				fresh = selectContextEventsForPrompt(fresh, maxContextEventsPerTurn)
+				freshRaw := untrackedContextEvents(pending)
+				fresh, superseded := projectContextEventsForPrompt(freshRaw, maxContextEventsPerTurn)
+				frame := ContextUpdateFrame{
+					Events:      fresh,
+					FromEventID: currentContextCursor,
+					ToEventID:   maxEventID(freshRaw),
+					Scanned:     len(freshRaw),
+					Emitted:     len(fresh),
+					Superseded:  superseded,
+				}
+				if len(freshRaw) > 0 {
+					markTrackedContextEvents(freshRaw)
+				}
+				if frame.ToEventID != "" {
+					currentContextCursor = frame.ToEventID
+				}
 				if len(fresh) > 0 || snapshot.TimePassed || snapshot.DateChanged {
-					if len(fresh) > 0 {
-						markTrackedContextEvents(fresh)
-					}
 					r.appendContextUpdateHistory(hookCtx, agentID, llmTask.ID, currentGeneration, snapshot, fresh)
-					turnInput = buildInputWithHistory(nil, "runtime", "", map[string]any{"priority": "normal"}, snapshot, fresh)
+					turnInput = buildInputWithHistory(nil, "runtime", "", map[string]any{"priority": "normal"}, snapshot, frame)
 					before.Append(llms.Message{Role: "user", Content: content.FromText(turnInput)})
 					turnSource = "runtime"
 					turnPriority = "normal"
+					turnFromEventID = frame.FromEventID
+					turnToEventID = frame.ToEventID
+					turnScanned = frame.Scanned
+					turnEmitted = frame.Emitted
+					turnSuperseded = frame.Superseded
 				}
 			}
 
 			if strings.TrimSpace(turnInput) != "" {
-				r.appendHistory(hookCtx, agentID, "llm_input", "system", turnInput, llmTask.ID, currentGeneration, map[string]any{
+				data := map[string]any{
 					"source":   turnSource,
 					"priority": turnPriority,
 					"turn":     turnNumber,
-				})
+				}
+				if turnFromEventID != "" {
+					data["from_event_id"] = turnFromEventID
+				}
+				if turnToEventID != "" {
+					data["to_event_id"] = turnToEventID
+				}
+				if turnScanned > 0 {
+					data["scanned"] = turnScanned
+				}
+				if turnEmitted > 0 {
+					data["emitted"] = turnEmitted
+				}
+				if turnSuperseded > 0 {
+					data["superseded"] = turnSuperseded
+				}
+				r.appendHistory(hookCtx, agentID, "llm_input", "system", turnInput, llmTask.ID, currentGeneration, data)
 			}
 			return nil
 		}
@@ -1377,52 +1475,6 @@ func (r *Runtime) SessionCount() int {
 	return len(r.sessions)
 }
 
-func (r *Runtime) BuildSession(ctx context.Context, agentID string) (Session, error) {
-	if agentID == "" {
-		return Session{}, fmt.Errorf("agent_id is required")
-	}
-	state := r.ensureAgentState(agentID)
-	if state == nil || state.Prompt == nil {
-		session := Session{AgentID: agentID, UpdatedAt: r.now()}
-		r.SetSession(session)
-		return session, nil
-	}
-	_, promptText, err := state.Prompt.BuildSystemPrompt(ctx, r.Bus)
-	if err != nil {
-		return Session{}, err
-	}
-	state.mu.Lock()
-	systemOverride := state.System
-	state.mu.Unlock()
-	if systemOverride != "" {
-		promptText = fmt.Sprintf("%s\n\n%s", promptText, systemOverride)
-	}
-	session := Session{AgentID: agentID, Prompt: promptText, UpdatedAt: r.now()}
-	r.SetSession(session)
-	return session, nil
-}
-
-func (r *Runtime) BuildPrompt(ctx context.Context, agentID string) (string, error) {
-	if agentID == "" {
-		return "", fmt.Errorf("agent_id is required")
-	}
-	state := r.ensureAgentState(agentID)
-	if state == nil || state.Prompt == nil {
-		return "", fmt.Errorf("prompt unavailable")
-	}
-	_, promptText, err := state.Prompt.BuildSystemPrompt(ctx, r.Bus)
-	if err != nil {
-		return "", err
-	}
-	state.mu.Lock()
-	systemOverride := state.System
-	state.mu.Unlock()
-	if systemOverride != "" {
-		promptText = fmt.Sprintf("%s\n\n%s", promptText, systemOverride)
-	}
-	return promptText, nil
-}
-
 func (r *Runtime) Run(ctx context.Context, agentID string) error {
 	if r.Bus == nil {
 		return nil
@@ -1430,20 +1482,11 @@ func (r *Runtime) Run(ctx context.Context, agentID string) error {
 	if agentID == "" {
 		return fmt.Errorf("agent_id is required")
 	}
-	sub := r.Bus.Subscribe(ctx, append([]string{"messages"}, contextEventStreams...))
+	sub := r.Bus.Subscribe(ctx, contextEventStreams)
 	replayTicker := time.NewTicker(500 * time.Millisecond)
 	defer replayTicker.Stop()
 
 	for {
-		// Recover from missed in-memory fanout by replaying unread durable messages.
-		replayed, err := r.replayUnreadMessages(ctx, agentID, 64)
-		if err != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if replayed > 0 {
-			continue
-		}
-		// If no direct message is pending, wake on unread wake/interrupt context events.
 		replayedWake, err := r.replayUnreadWakeEvents(ctx, agentID, maxContextEventsPerTurn*2)
 		if err != nil && ctx.Err() != nil {
 			return ctx.Err()
@@ -1464,84 +1507,11 @@ func (r *Runtime) Run(ctx context.Context, agentID string) error {
 			if !eventTargetsAgent(evt, agentID) {
 				continue
 			}
-			if _, err := r.replayUnreadMessages(ctx, agentID, 64); err != nil && ctx.Err() != nil {
-				return ctx.Err()
-			}
 			if _, err := r.replayUnreadWakeEvents(ctx, agentID, maxContextEventsPerTurn*2); err != nil && ctx.Err() != nil {
 				return ctx.Err()
 			}
 		}
 	}
-}
-
-func (r *Runtime) replayUnreadMessages(ctx context.Context, agentID string, limit int) (int, error) {
-	if r.Bus == nil {
-		return 0, nil
-	}
-	if limit <= 0 {
-		limit = 64
-	}
-	summaries, err := r.Bus.List(ctx, "messages", eventbus.ListOptions{
-		Reader: agentID,
-		Limit:  limit,
-		Order:  "fifo",
-	})
-	if err != nil {
-		return 0, err
-	}
-	if len(summaries) == 0 {
-		return 0, nil
-	}
-
-	ids := make([]string, 0, len(summaries))
-	for _, summary := range summaries {
-		if !summary.Read {
-			ids = append(ids, summary.ID)
-		}
-	}
-	if len(ids) == 0 {
-		return 0, nil
-	}
-
-	events, err := r.Bus.Read(ctx, "messages", ids, agentID)
-	if err != nil {
-		return 0, err
-	}
-	byID := map[string]eventbus.Event{}
-	for _, evt := range events {
-		byID[evt.ID] = evt
-	}
-
-	unread := make([]eventbus.Event, 0, len(summaries))
-	for _, summary := range summaries {
-		if summary.Read {
-			continue
-		}
-		evt, ok := byID[summary.ID]
-		if !ok {
-			continue
-		}
-		unread = append(unread, evt)
-	}
-	sort.SliceStable(unread, func(i, j int) bool {
-		pi := eventPriority(unread[i].Metadata)
-		pj := eventPriority(unread[j].Metadata)
-		if priorityRank(pi) != priorityRank(pj) {
-			return priorityRank(pi) < priorityRank(pj)
-		}
-		if unread[i].CreatedAt.Equal(unread[j].CreatedAt) {
-			return unread[i].ID < unread[j].ID
-		}
-		return unread[i].CreatedAt.Before(unread[j].CreatedAt)
-	})
-
-	processed := 0
-	for _, evt := range unread {
-		if r.handleMessageEvent(ctx, agentID, evt) {
-			processed++
-		}
-	}
-	return processed, nil
 }
 
 func (r *Runtime) replayUnreadWakeEvents(ctx context.Context, agentID string, limit int) (int, error) {
@@ -1556,8 +1526,8 @@ func (r *Runtime) replayUnreadWakeEvents(ctx context.Context, agentID string, li
 		return 0, nil
 	}
 	sort.SliceStable(events, func(i, j int) bool {
-		pi := eventPriority(events[i].Metadata)
-		pj := eventPriority(events[j].Metadata)
+		pi := eventPriorityForEvent(events[i])
+		pj := eventPriorityForEvent(events[j])
 		if priorityRank(pi) != priorityRank(pj) {
 			return priorityRank(pi) < priorityRank(pj)
 		}
@@ -1567,7 +1537,7 @@ func (r *Runtime) replayUnreadWakeEvents(ctx context.Context, agentID string, li
 		return events[i].CreatedAt.Before(events[j].CreatedAt)
 	})
 	for _, evt := range events {
-		priority := eventPriority(evt.Metadata)
+		priority := eventPriorityForEvent(evt)
 		if priority != "wake" && priority != "interrupt" {
 			continue
 		}
@@ -1579,10 +1549,18 @@ func (r *Runtime) replayUnreadWakeEvents(ctx context.Context, agentID string, li
 			"priority": priority,
 			"stream":   evt.Stream,
 			"event_id": evt.ID,
-			"kind":     "wake",
-			"source":   "runtime",
 		}
-		if _, err := r.HandleMessage(ctx, agentID, "", "", meta); err != nil {
+		for k, v := range evt.Metadata {
+			meta[k] = v
+		}
+		if _, ok := meta["kind"]; !ok {
+			meta["kind"] = "event"
+		}
+		source := getMetaString(evt.Metadata, "source")
+		if source == "" {
+			source = "runtime"
+		}
+		if _, err := r.HandleMessage(ctx, agentID, source, "", meta); err != nil {
 			return 0, nil
 		}
 		return 1, nil
@@ -1611,54 +1589,7 @@ func (r *Runtime) isInternalLLMWakeEvent(ctx context.Context, agentID string, ev
 	return task.Owner == agentID
 }
 
-func (r *Runtime) handleMessageEvent(ctx context.Context, agentID string, evt eventbus.Event) bool {
-	if r.Bus == nil {
-		return false
-	}
-	if r.messageAlreadyAcked(ctx, agentID, evt.ID) {
-		return false
-	}
-	if !eventTargetsAgent(evt, agentID) {
-		return false
-	}
-	if strings.TrimSpace(evt.Body) == "" {
-		_ = r.Bus.Ack(ctx, "messages", []string{evt.ID}, agentID)
-		return true
-	}
-	source := ""
-	if evt.Metadata != nil {
-		if val, ok := evt.Metadata["source"].(string); ok {
-			source = val
-		}
-	}
-	if source == "" {
-		source = "external"
-	}
-	meta := map[string]any{
-		"event_id": evt.ID,
-	}
-	for k, v := range evt.Metadata {
-		meta[k] = v
-	}
-	if _, err := r.HandleMessage(ctx, agentID, source, evt.Body, meta); err != nil {
-		return false
-	}
-	_ = r.Bus.Ack(ctx, "messages", []string{evt.ID}, agentID)
-	return true
-}
-
-func (r *Runtime) messageAlreadyAcked(ctx context.Context, agentID, eventID string) bool {
-	if r.Bus == nil || agentID == "" || eventID == "" {
-		return false
-	}
-	events, err := r.Bus.Read(ctx, "messages", []string{eventID}, agentID)
-	if err != nil || len(events) == 0 {
-		return false
-	}
-	return events[0].Read
-}
-
-var contextEventStreams = []string{"task_output", "signals", "errors", "external"}
+var contextEventStreams = []string{"task_output", "signals", "errors", "external", "messages"}
 
 func eventPriority(metadata map[string]any) string {
 	if metadata == nil {
@@ -1671,6 +1602,16 @@ func eventPriority(metadata map[string]any) string {
 		}
 	}
 	return "normal"
+}
+
+func eventPriorityForEvent(evt eventbus.Event) string {
+	priority := eventPriority(evt.Metadata)
+	if priority == "normal" && evt.Stream == "messages" {
+		if getMetaString(evt.Metadata, "priority") == "" {
+			return "wake"
+		}
+	}
+	return priority
 }
 
 func priorityRank(priority string) int {
@@ -1751,7 +1692,7 @@ func (r *Runtime) appendContextUpdateHistory(
 		})
 	}
 	for _, evt := range events {
-		priority := eventPriority(evt.Metadata)
+		priority := eventPriorityForEvent(evt)
 		subject := clipText(strings.TrimSpace(evt.Subject), maxContextEventBody)
 		body := clipText(strings.TrimSpace(evt.Body), maxContextEventBody)
 		content := subject
@@ -1858,37 +1799,176 @@ func selectContextEventsForPrompt(events []eventbus.Event, limit int) []eventbus
 	if len(events) == 0 {
 		return nil
 	}
+	orderForPrompt := func(a, b eventbus.Event) bool {
+		pa := eventPriorityForEvent(a)
+		pb := eventPriorityForEvent(b)
+		if priorityRank(pa) != priorityRank(pb) {
+			return priorityRank(pa) < priorityRank(pb)
+		}
+		if a.CreatedAt.Equal(b.CreatedAt) {
+			return a.ID < b.ID
+		}
+		return a.CreatedAt.Before(b.CreatedAt)
+	}
+	orderForSelection := func(a, b eventbus.Event) bool {
+		pa := eventPriorityForEvent(a)
+		pb := eventPriorityForEvent(b)
+		if priorityRank(pa) != priorityRank(pb) {
+			return priorityRank(pa) < priorityRank(pb)
+		}
+		if a.CreatedAt.Equal(b.CreatedAt) {
+			return a.ID < b.ID
+		}
+		return a.CreatedAt.After(b.CreatedAt)
+	}
 	if limit <= 0 || len(events) <= limit {
 		out := append([]eventbus.Event{}, events...)
-		sort.SliceStable(out, func(i, j int) bool {
-			if out[i].CreatedAt.Equal(out[j].CreatedAt) {
-				return out[i].ID < out[j].ID
-			}
-			return out[i].CreatedAt.Before(out[j].CreatedAt)
-		})
+		sort.SliceStable(out, func(i, j int) bool { return orderForPrompt(out[i], out[j]) })
 		return out
 	}
 
 	scored := append([]eventbus.Event{}, events...)
-	sort.SliceStable(scored, func(i, j int) bool {
-		pi := eventPriority(scored[i].Metadata)
-		pj := eventPriority(scored[j].Metadata)
-		if priorityRank(pi) != priorityRank(pj) {
-			return priorityRank(pi) < priorityRank(pj)
-		}
-		if scored[i].CreatedAt.Equal(scored[j].CreatedAt) {
-			return scored[i].ID < scored[j].ID
-		}
-		return scored[i].CreatedAt.After(scored[j].CreatedAt)
-	})
+	sort.SliceStable(scored, func(i, j int) bool { return orderForSelection(scored[i], scored[j]) })
 	scored = scored[:limit]
-	sort.SliceStable(scored, func(i, j int) bool {
-		if scored[i].CreatedAt.Equal(scored[j].CreatedAt) {
-			return scored[i].ID < scored[j].ID
-		}
-		return scored[i].CreatedAt.Before(scored[j].CreatedAt)
-	})
+	sort.SliceStable(scored, func(i, j int) bool { return orderForPrompt(scored[i], scored[j]) })
 	return scored
+}
+
+func maxEventID(events []eventbus.Event) string {
+	maxID := ""
+	for _, evt := range events {
+		id := strings.TrimSpace(evt.ID)
+		if id == "" {
+			continue
+		}
+		if maxID == "" || id > maxID {
+			maxID = id
+		}
+	}
+	return maxID
+}
+
+func copyMapAny(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
+}
+
+func isActionablePromptEvent(evt eventbus.Event) bool {
+	priority := eventPriorityForEvent(evt)
+	if priority == "wake" || priority == "interrupt" {
+		return true
+	}
+	if evt.Stream == "errors" || evt.Stream == "messages" {
+		return true
+	}
+	if evt.Stream == "task_output" {
+		switch strings.ToLower(strings.TrimSpace(getMetaString(evt.Metadata, "task_kind"))) {
+		case "completed", "failed", "cancelled", "killed":
+			return true
+		}
+	}
+	return false
+}
+
+func aggregateTaskOutputEvents(events []eventbus.Event) (eventbus.Event, int) {
+	if len(events) == 0 {
+		return eventbus.Event{}, 0
+	}
+	if len(events) == 1 {
+		return events[0], 0
+	}
+	latest := events[len(events)-1]
+	taskID := getMetaString(latest.Metadata, "task_id")
+	kinds := make([]string, 0, len(events))
+	seen := map[string]struct{}{}
+	for _, evt := range events {
+		kind := strings.ToLower(strings.TrimSpace(getMetaString(evt.Metadata, "task_kind")))
+		if kind == "" {
+			kind = strings.ToLower(strings.TrimSpace(evt.Body))
+		}
+		if kind == "" {
+			continue
+		}
+		if _, ok := seen[kind]; ok {
+			continue
+		}
+		seen[kind] = struct{}{}
+		kinds = append(kinds, kind)
+	}
+	metadata := copyMapAny(latest.Metadata)
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata["kind"] = "task_update_summary"
+	metadata["task_kind"] = "summary"
+	metadata["supersedes_count"] = len(events) - 1
+	payload := map[string]any{
+		"count":       len(events),
+		"kinds":       kinds,
+		"latest_kind": strings.ToLower(strings.TrimSpace(getMetaString(latest.Metadata, "task_kind"))),
+	}
+	if latest.Payload != nil {
+		payload["latest"] = latest.Payload
+	}
+	summary := latest
+	summary.Metadata = metadata
+	summary.Payload = payload
+	summary.Body = "summary"
+	if taskID != "" {
+		summary.Subject = fmt.Sprintf("Task %s summary", taskID)
+	}
+	return summary, len(events) - 1
+}
+
+func projectContextEventsForPrompt(events []eventbus.Event, limit int) ([]eventbus.Event, int) {
+	if len(events) == 0 {
+		return nil, 0
+	}
+	ordered := append([]eventbus.Event{}, events...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].CreatedAt.Equal(ordered[j].CreatedAt) {
+			return ordered[i].ID < ordered[j].ID
+		}
+		return ordered[i].CreatedAt.Before(ordered[j].CreatedAt)
+	})
+
+	out := make([]eventbus.Event, 0, len(ordered))
+	grouped := map[string][]eventbus.Event{}
+	groupOrder := make([]string, 0, len(ordered))
+	superseded := 0
+	for _, evt := range ordered {
+		if eventPriorityForEvent(evt) == "low" && !isActionablePromptEvent(evt) {
+			superseded++
+			continue
+		}
+		if isActionablePromptEvent(evt) {
+			out = append(out, evt)
+			continue
+		}
+		if evt.Stream == "task_output" {
+			taskID := getMetaString(evt.Metadata, "task_id")
+			if taskID != "" {
+				if _, ok := grouped[taskID]; !ok {
+					groupOrder = append(groupOrder, taskID)
+				}
+				grouped[taskID] = append(grouped[taskID], evt)
+				continue
+			}
+		}
+		out = append(out, evt)
+	}
+	for _, taskID := range groupOrder {
+		summary, reduced := aggregateTaskOutputEvents(grouped[taskID])
+		out = append(out, summary)
+		superseded += reduced
+	}
+	return selectContextEventsForPrompt(out, limit), superseded
 }
 
 func (r *Runtime) ackContextEvents(ctx context.Context, agentID string, events []eventbus.Event) {
@@ -1908,9 +1988,10 @@ func (r *Runtime) ackContextEvents(ctx context.Context, agentID string, events [
 		}
 		_ = r.Bus.Ack(ctx, stream, uniqueStrings(ids), agentID)
 	}
+	r.advanceContextCursor(agentID, events)
 }
 
-func buildInputWithHistory(turns []ConversationTurn, source, message string, metadata map[string]any, turnCtx TurnContext, contextEvents []eventbus.Event) string {
+func buildInputWithHistory(turns []ConversationTurn, source, message string, metadata map[string]any, turnCtx TurnContext, frame ContextUpdateFrame) string {
 	if source == "" {
 		source = "external"
 	}
@@ -1930,27 +2011,48 @@ func buildInputWithHistory(turns []ConversationTurn, source, message string, met
 		b.WriteString("</message>\n")
 	}
 
-	if recent := renderRecentContextXML(turns, maxHistoryBytes); recent != "" {
+	if recent := renderRecentContextXML(turns, maxHistoryBytes, message); recent != "" {
 		b.WriteString(indentXML(recent, "  "))
 		b.WriteString("\n")
 	}
 
 	b.WriteString("  <system_updates user_authored=\"false\">\n")
-	b.WriteString(indentXML(renderContextUpdatesXML(turnCtx, contextEvents), "    "))
+	b.WriteString(indentXML(renderContextUpdatesXML(turnCtx, frame), "    "))
 	b.WriteString("\n")
 	b.WriteString("  </system_updates>\n")
 	b.WriteString("</user_turn>")
 	return b.String()
 }
 
-func renderRecentContextXML(turns []ConversationTurn, limit int) string {
+func renderRecentContextXML(turns []ConversationTurn, limit int, currentMessage string) string {
 	if len(turns) == 0 || limit <= 0 {
 		return ""
+	}
+	seenFacts := map[string]struct{}{}
+	messageFact := strings.TrimSpace(currentMessage)
+	if messageFact != "" {
+		seenFacts["input:"+strings.ToLower(messageFact)] = struct{}{}
 	}
 	var b strings.Builder
 	b.WriteString("<recent_context>\n")
 	used := 0
 	for _, turn := range turns {
+		inputFact := strings.TrimSpace(turn.Input)
+		outputFact := strings.TrimSpace(turn.Output)
+		if inputFact != "" {
+			key := "input:" + strings.ToLower(inputFact)
+			if _, ok := seenFacts[key]; ok {
+				continue
+			}
+			seenFacts[key] = struct{}{}
+		}
+		if outputFact != "" {
+			key := "output:" + strings.ToLower(outputFact)
+			if _, ok := seenFacts[key]; ok {
+				continue
+			}
+			seenFacts[key] = struct{}{}
+		}
 		approx := len(turn.Source) + len(turn.Priority) + len(turn.Input) + len(turn.Output) + 128
 		if used+approx > limit && used > 0 {
 			break
@@ -2000,11 +2102,36 @@ func indentXML(raw, prefix string) string {
 	return strings.Join(lines, "\n")
 }
 
-func renderContextUpdatesXML(turnCtx TurnContext, events []eventbus.Event) string {
+func renderContextUpdatesXML(turnCtx TurnContext, frame ContextUpdateFrame) string {
 	var b strings.Builder
 	b.WriteString("<context_updates generated_at=\"")
 	b.WriteString(turnCtx.Now.UTC().Format(time.RFC3339))
 	b.WriteString("\"")
+	if strings.TrimSpace(frame.FromEventID) != "" {
+		b.WriteString(" from_event_id=\"")
+		b.WriteString(xmlEscape(frame.FromEventID))
+		b.WriteString("\"")
+	}
+	if strings.TrimSpace(frame.ToEventID) != "" {
+		b.WriteString(" to_event_id=\"")
+		b.WriteString(xmlEscape(frame.ToEventID))
+		b.WriteString("\"")
+	}
+	if frame.Scanned > 0 {
+		b.WriteString(" scanned=\"")
+		b.WriteString(fmt.Sprintf("%d", frame.Scanned))
+		b.WriteString("\"")
+	}
+	if frame.Emitted > 0 {
+		b.WriteString(" emitted=\"")
+		b.WriteString(fmt.Sprintf("%d", frame.Emitted))
+		b.WriteString("\"")
+	}
+	if frame.Superseded > 0 {
+		b.WriteString(" superseded=\"")
+		b.WriteString(fmt.Sprintf("%d", frame.Superseded))
+		b.WriteString("\"")
+	}
 	if !turnCtx.Previous.IsZero() {
 		b.WriteString(" elapsed_seconds=\"")
 		b.WriteString(fmt.Sprintf("%d", int64(turnCtx.Elapsed.Seconds())))
@@ -2029,8 +2156,8 @@ func renderContextUpdatesXML(turnCtx TurnContext, events []eventbus.Event) strin
 		b.WriteString("\" />\n")
 	}
 
-	for _, evt := range events {
-		priority := eventPriority(evt.Metadata)
+	for _, evt := range frame.Events {
+		priority := eventPriorityForEvent(evt)
 		taskID := getMetaString(evt.Metadata, "task_id")
 		taskKind := getMetaString(evt.Metadata, "task_kind")
 		subject := clipText(strings.TrimSpace(evt.Subject), maxContextEventBody)

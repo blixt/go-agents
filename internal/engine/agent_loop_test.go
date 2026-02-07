@@ -150,7 +150,21 @@ func TestRuntimeRunLoopReplaysUnreadMessages(t *testing.T) {
 			t.Fatalf("timeout waiting for replayed message to run")
 		default:
 			session, ok := rt.GetSession("operator")
-			if ok && session.LastInput == "queued-before-loop" && session.LastOutput == "loop" {
+			if ok && session.LastOutput == "loop" {
+				inputs := llmInputsFromHistory(t, bus, "operator")
+				if len(inputs) == 0 {
+					t.Fatalf("expected at least one llm_input history entry")
+				}
+				foundMessage := false
+				for _, input := range inputs {
+					if strings.Contains(input, "queued-before-loop") {
+						foundMessage = true
+						break
+					}
+				}
+				if !foundMessage {
+					t.Fatalf("expected replayed message in llm_input history, inputs=%v", inputs)
+				}
 				summaries, err := bus.List(context.Background(), "messages", eventbus.ListOptions{
 					Reader: "operator",
 					Limit:  10,
@@ -218,8 +232,27 @@ func TestRuntimeRunLoopDoesNotDuplicateBufferedMessages(t *testing.T) {
 	for {
 		select {
 		case <-deadline:
-			t.Fatalf("timeout waiting for two llm tasks")
+			t.Fatalf("timeout waiting for buffered messages to be acked")
 		default:
+			summaries, err := bus.List(context.Background(), "messages", eventbus.ListOptions{
+				Reader: "operator",
+				Limit:  10,
+				Order:  "fifo",
+			})
+			if err != nil {
+				t.Fatalf("list messages: %v", err)
+			}
+			readCount := 0
+			for _, summary := range summaries {
+				if summary.Read {
+					readCount++
+				}
+			}
+			if readCount < 2 {
+				time.Sleep(10 * time.Millisecond)
+				continue
+			}
+
 			items, err := mgr.List(context.Background(), tasks.ListFilter{
 				Type:  "llm",
 				Owner: "operator",
@@ -228,22 +261,13 @@ func TestRuntimeRunLoopDoesNotDuplicateBufferedMessages(t *testing.T) {
 			if err != nil {
 				t.Fatalf("list llm tasks: %v", err)
 			}
-			if len(items) >= 2 {
-				time.Sleep(150 * time.Millisecond)
-				items, err = mgr.List(context.Background(), tasks.ListFilter{
-					Type:  "llm",
-					Owner: "operator",
-					Limit: 10,
-				})
-				if err != nil {
-					t.Fatalf("list llm tasks: %v", err)
-				}
-				if len(items) != 2 {
-					t.Fatalf("expected exactly 2 llm tasks, got %d", len(items))
-				}
-				return
+			if len(items) == 0 {
+				t.Fatalf("expected at least one llm task after buffered messages")
 			}
-			time.Sleep(10 * time.Millisecond)
+			if len(items) > 2 {
+				t.Fatalf("expected no duplicate llm tasks for 2 buffered messages, got %d", len(items))
+			}
+			return
 		}
 	}
 }
@@ -373,40 +397,31 @@ func TestRuntimeRunLoopPrioritizesWakeOverLow(t *testing.T) {
 	for {
 		select {
 		case <-deadline:
-			items, _ := mgr.List(context.Background(), tasks.ListFilter{
-				Type:  "llm",
-				Owner: "operator",
-				Limit: 20,
-			})
-			sort.Slice(items, func(i, j int) bool {
-				if items[i].CreatedAt.Equal(items[j].CreatedAt) {
-					return items[i].ID < items[j].ID
-				}
-				return items[i].CreatedAt.Before(items[j].CreatedAt)
-			})
-			collected := collectNonEmptyLLMInputs(t, mgr, items)
-			t.Fatalf("did not observe wake+low ordering before timeout, inputs=%v", collected)
+			inputs := llmInputsFromHistory(t, bus, "operator")
+			t.Fatalf("did not observe wake+low ordering before timeout, llm_inputs=%v", inputs)
 		default:
-			items, listErr := mgr.List(context.Background(), tasks.ListFilter{
-				Type:  "llm",
-				Owner: "operator",
-				Limit: 20,
-			})
-			if listErr != nil {
-				t.Fatalf("list llm tasks: %v", listErr)
-			}
-			sort.Slice(items, func(i, j int) bool {
-				if items[i].CreatedAt.Equal(items[j].CreatedAt) {
-					return items[i].ID < items[j].ID
+			inputs := llmInputsFromHistory(t, bus, "operator")
+			wakeInputIdx := -1
+			lowInputIdx := -1
+			for i, input := range inputs {
+				if wakeInputIdx < 0 && strings.Contains(input, "wake-priority-message") {
+					wakeInputIdx = i
 				}
-				return items[i].CreatedAt.Before(items[j].CreatedAt)
-			})
-			collected := collectNonEmptyLLMInputs(t, mgr, items)
-			wakeIdx := indexOf(collected, "wake-priority-message")
-			lowIdx := indexOf(collected, "low-priority-message")
-			if wakeIdx >= 0 && lowIdx >= 0 {
-				if wakeIdx > lowIdx {
-					t.Fatalf("expected wake message before low message, inputs=%v", collected)
+				if lowInputIdx < 0 && strings.Contains(input, "low-priority-message") {
+					lowInputIdx = i
+				}
+			}
+			if wakeInputIdx >= 0 && lowInputIdx >= 0 {
+				if wakeInputIdx > lowInputIdx {
+					t.Fatalf("expected wake message before low message, llm_inputs=%v", inputs)
+				}
+				if wakeInputIdx == lowInputIdx {
+					input := inputs[wakeInputIdx]
+					wakeOffset := strings.Index(input, "wake-priority-message")
+					lowOffset := strings.Index(input, "low-priority-message")
+					if wakeOffset < 0 || lowOffset < 0 || wakeOffset > lowOffset {
+						t.Fatalf("expected wake message before low message within llm_input, input=%q", input)
+					}
 				}
 				return
 			}
@@ -415,37 +430,43 @@ func TestRuntimeRunLoopPrioritizesWakeOverLow(t *testing.T) {
 	}
 }
 
-func collectNonEmptyLLMInputs(t *testing.T, mgr *tasks.Manager, items []tasks.Task) []string {
+func llmInputsFromHistory(t *testing.T, bus *eventbus.Bus, agentID string) []string {
 	t.Helper()
-	collected := make([]string, 0, len(items))
-	for _, item := range items {
-		updates, err := mgr.ListUpdates(context.Background(), item.ID, 10)
-		if err != nil {
-			t.Fatalf("list task updates: %v", err)
-		}
-		for _, upd := range updates {
-			if upd.Kind != "input" {
-				continue
-			}
-			msg, _ := upd.Payload["message"].(string)
-			msg = strings.TrimSpace(msg)
-			if msg == "" {
-				continue
-			}
-			collected = append(collected, msg)
-			break
-		}
+	summaries, err := bus.List(context.Background(), "history", eventbus.ListOptions{
+		ScopeType: "agent",
+		ScopeID:   agentID,
+		Limit:     200,
+		Order:     "fifo",
+	})
+	if err != nil {
+		t.Fatalf("list history: %v", err)
 	}
-	return collected
-}
-
-func indexOf(items []string, want string) int {
-	for i, item := range items {
-		if item == want {
-			return i
-		}
+	if len(summaries) == 0 {
+		return nil
 	}
-	return -1
+	ids := make([]string, 0, len(summaries))
+	for _, summary := range summaries {
+		ids = append(ids, summary.ID)
+	}
+	events, err := bus.Read(context.Background(), "history", ids, "")
+	if err != nil {
+		t.Fatalf("read history: %v", err)
+	}
+	sort.Slice(events, func(i, j int) bool {
+		if events[i].CreatedAt.Equal(events[j].CreatedAt) {
+			return events[i].ID < events[j].ID
+		}
+		return events[i].CreatedAt.Before(events[j].CreatedAt)
+	})
+	inputs := make([]string, 0, len(events))
+	for _, evt := range events {
+		entry, ok := HistoryEntryFromEvent(evt)
+		if !ok || entry.Type != "llm_input" {
+			continue
+		}
+		inputs = append(inputs, entry.Content)
+	}
+	return inputs
 }
 
 func TestRuntimeRunLoopWakesOnTaskOutputEvents(t *testing.T) {

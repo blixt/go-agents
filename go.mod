@@ -4,13 +4,12 @@ go 1.25.7
 
 require (
 	github.com/flitsinc/go-llms v0.0.0-20260207093407-0dbf5d54274c
-	github.com/oklog/ulid/v2 v2.1.1
+	github.com/google/uuid v1.6.0
 	modernc.org/sqlite v1.44.3
 )
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/metalim/jsonmap v0.5.0 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect

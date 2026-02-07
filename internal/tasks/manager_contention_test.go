@@ -6,9 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oklog/ulid/v2"
-
 	"github.com/flitsinc/go-agents/internal/eventbus"
+	"github.com/flitsinc/go-agents/internal/idgen"
 	"github.com/flitsinc/go-agents/internal/testutil"
 )
 
@@ -44,7 +43,7 @@ func TestManagerRecordUpdateWithWriteContention(t *testing.T) {
 
 	err = mgr.RecordUpdate(ctx, task.ID, "progress", map[string]any{
 		"pct":   50,
-		"nonce": ulid.Make().String(),
+		"nonce": idgen.New(),
 	})
 	if err != nil {
 		t.Fatalf("record update: %v", err)

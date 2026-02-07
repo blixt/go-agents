@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/oklog/ulid/v2"
+	"github.com/flitsinc/go-agents/internal/idgen"
 )
 
 func (s *Server) handleAgentItem(w http.ResponseWriter, r *http.Request) {
@@ -80,7 +80,7 @@ func (s *Server) handleAgentItem(w http.ResponseWriter, r *http.Request) {
 	agentID := s.Runtime.ResolveAgentID(r.Context(), requestedAgentID)
 	requestID := strings.TrimSpace(payload.RequestID)
 	if requestID == "" {
-		requestID = ulid.Make().String()
+		requestID = idgen.New()
 	}
 	priority := normalizePriority(payload.Priority)
 	if payload.System != "" {
@@ -94,7 +94,7 @@ func (s *Server) handleAgentItem(w http.ResponseWriter, r *http.Request) {
 	evt, err := s.Runtime.SendMessageWithMeta(r.Context(), agentID, payload.Message, source, map[string]any{
 		"priority":   priority,
 		"request_id": requestID,
-		"kind":       "input",
+		"kind":       "message",
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)

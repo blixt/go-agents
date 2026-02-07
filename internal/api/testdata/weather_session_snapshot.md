@@ -69,7 +69,7 @@
     }
   },
   {
-    "id": "id-000035",
+    "id": "id-000034",
     "type": "exec",
     "status": "completed",
     "owner": "operator",
@@ -171,7 +171,7 @@
       "result": {
         "content": [
           {
-            "data": "{\"result\":{\"condition\":\"Partly Cloudy\",\"humidity\":\"75%\",\"location\":\"Amsterdam, Netherlands\",\"pressure\":\"1019 mb\",\"temperature\":\"5°C (41°F)\",\"wind\":\"19 km/h SW\"},\"status\":\"completed\",\"task_id\":\"id-000035\"}",
+            "data": "{\"result\":{\"condition\":\"Partly Cloudy\",\"humidity\":\"75%\",\"location\":\"Amsterdam, Netherlands\",\"pressure\":\"1019 mb\",\"temperature\":\"5°C (41°F)\",\"wind\":\"19 km/h SW\"},\"status\":\"completed\",\"task_id\":\"id-000034\"}",
             "truncated": false,
             "type": "json"
           }
@@ -206,7 +206,7 @@
 ]
 ```
 
-### id-000035
+### id-000034
 
 ```json
 [
@@ -435,7 +435,7 @@ I should call exec to gather fresh weather data before answering.
   "result": {
     "content": [
       {
-        "data": "{\"result\":{\"condition\":\"Partly Cloudy\",\"humidity\":\"75%\",\"location\":\"Amsterdam, Netherlands\",\"pressure\":\"1019 mb\",\"temperature\":\"5°C (41°F)\",\"wind\":\"19 km/h SW\"},\"status\":\"completed\",\"task_id\":\"id-000035\"}",
+        "data": "{\"result\":{\"condition\":\"Partly Cloudy\",\"humidity\":\"75%\",\"location\":\"Amsterdam, Netherlands\",\"pressure\":\"1019 mb\",\"temperature\":\"5°C (41°F)\",\"wind\":\"19 km/h SW\"},\"status\":\"completed\",\"task_id\":\"id-000034\"}",
         "truncated": false,
         "type": "json"
       }
@@ -457,18 +457,18 @@ I should call exec to gather fresh weather data before answering.
 ```
 
 ```text
-Task id-000002 update
+Task id-000002 summary
 ```
 
 ```json
 {
-  "body": "spawn",
+  "body": "summary",
   "kind": "context_event",
-  "metadata": "{\"kind\":\"task_update\",\"priority\":\"normal\",\"task_id\":\"id-000002\",\"task_kind\":\"spawn\"}",
-  "payload": "{\"status\":\"queued\"}",
+  "metadata": "{\"kind\":\"task_update_summary\",\"priority\":\"normal\",\"supersedes_count\":1,\"task_id\":\"id-000002\",\"task_kind\":\"summary\"}",
+  "payload": "{\"count\":2,\"kinds\":[\"spawn\",\"started\"],\"latest\":{\"status\":\"running\"},\"latest_kind\":\"started\"}",
   "priority": "normal",
   "stream": "task_output",
-  "subject": "Task id-000002 update"
+  "subject": "Task id-000002 summary"
 }
 ```
 
@@ -481,118 +481,22 @@ Task id-000002 update
 ```
 
 ```text
-Task id-000002 update
+Task id-000034 summary
 ```
 
 ```json
 {
-  "body": "started",
+  "body": "summary",
   "kind": "context_event",
-  "metadata": "{\"kind\":\"task_update\",\"priority\":\"normal\",\"task_id\":\"id-000002\",\"task_kind\":\"started\"}",
-  "payload": "{\"status\":\"running\"}",
+  "metadata": "{\"kind\":\"task_update_summary\",\"priority\":\"normal\",\"supersedes_count\":2,\"task_id\":\"id-000034\",\"task_kind\":\"summary\"}",
+  "payload": "{\"count\":3,\"kinds\":[\"spawn\",\"started\",\"stdout\"],\"latest\":{\"text\":\"Amsterdam now: 5°C, partly cloudy.\"},\"latest_kind\":\"stdout\"}",
   "priority": "normal",
   "stream": "task_output",
-  "subject": "Task id-000002 update"
+  "subject": "Task id-000034 summary"
 }
 ```
 
 #### Entry 10 · context_event · system
-
-```json
-{
-  "task_id": "id-000008"
-}
-```
-
-```text
-Task id-000035 update
-```
-
-```json
-{
-  "body": "completed",
-  "kind": "context_event",
-  "metadata": "{\"kind\":\"task_update\",\"priority\":\"wake\",\"task_id\":\"id-000035\",\"task_kind\":\"completed\"}",
-  "payload": "{\"condition\":\"Partly Cloudy\",\"humidity\":\"75%\",\"location\":\"Amsterdam, Netherlands\",\"pressure\":\"1019 mb\",\"temperature\":\"5°C (41°F)\",\"wind\":\"19 km/h SW\"}",
-  "priority": "wake",
-  "stream": "task_output",
-  "subject": "Task id-000035 update"
-}
-```
-
-#### Entry 11 · context_event · system
-
-```json
-{
-  "task_id": "id-000008"
-}
-```
-
-```text
-Task id-000035 update
-```
-
-```json
-{
-  "body": "spawn",
-  "kind": "context_event",
-  "metadata": "{\"kind\":\"task_update\",\"priority\":\"normal\",\"task_id\":\"id-000035\",\"task_kind\":\"spawn\"}",
-  "payload": "{\"status\":\"queued\"}",
-  "priority": "normal",
-  "stream": "task_output",
-  "subject": "Task id-000035 update"
-}
-```
-
-#### Entry 12 · context_event · system
-
-```json
-{
-  "task_id": "id-000008"
-}
-```
-
-```text
-Task id-000035 update
-```
-
-```json
-{
-  "body": "started",
-  "kind": "context_event",
-  "metadata": "{\"kind\":\"task_update\",\"priority\":\"normal\",\"task_id\":\"id-000035\",\"task_kind\":\"started\"}",
-  "payload": "{\"status\":\"running\"}",
-  "priority": "normal",
-  "stream": "task_output",
-  "subject": "Task id-000035 update"
-}
-```
-
-#### Entry 13 · context_event · system
-
-```json
-{
-  "task_id": "id-000008"
-}
-```
-
-```text
-Task id-000035 update
-```
-
-```json
-{
-  "body": "stdout",
-  "kind": "context_event",
-  "metadata": "{\"kind\":\"task_update\",\"priority\":\"normal\",\"task_id\":\"id-000035\",\"task_kind\":\"stdout\"}",
-  "payload": "{\"text\":\"Amsterdam now: 5°C, partly cloudy.\"}",
-  "priority": "normal",
-  "stream": "task_output",
-  "subject": "Task id-000035 update"
-}
-```
-
-#### Entry 14 · context_event · system
 
 ```json
 {
@@ -616,7 +520,7 @@ agent_run_start
 }
 ```
 
-#### Entry 15 · llm_input · system
+#### Entry 11 · llm_input · system
 
 ```json
 {
@@ -628,17 +532,13 @@ agent_run_start
 <user_turn priority="normal" source="external">
   <message>what&#39;s the weather in amsterdam</message>
   <recent_context>
-    <turn created_at="&lt;time&gt;" priority="normal" source="external">
-      <input>what&#39;s the weather in amsterdam</input>
-    </turn>
   </recent_context>
   <system_updates user_authored="false">
-    <context_updates generated_at="&lt;time&gt;">
-      <event created_at="&lt;time&gt;" id="&lt;id&gt;" stream="task_output" task_id="id-000002" task_kind="spawn">
-        <payload>{&#34;status&#34;:&#34;queued&#34;}</payload>
-      </event>
-      <event created_at="&lt;time&gt;" id="&lt;id&gt;" stream="task_output" task_id="id-000002" task_kind="started">
-        <payload>{&#34;status&#34;:&#34;running&#34;}</payload>
+    <context_updates emitted="1" generated_at="&lt;time&gt;" scanned="2" superseded="1" to_event_id="id-000007">
+      <event created_at="&lt;time&gt;" id="&lt;id&gt;" stream="task_output" task_id="id-000002" task_kind="summary">
+        <subject>Task id-000002 summary</subject>
+        <metadata>{&#34;kind&#34;:&#34;task_update_summary&#34;,&#34;supersedes_count&#34;:1}</metadata>
+        <payload>{&#34;count&#34;:2,&#34;kinds&#34;:[&#34;spawn&#34;,&#34;started&#34;],&#34;latest&#34;:{&#34;status&#34;:&#34;running&#34;},&#34;latest_kind&#34;:&#34;started&#34;}</payload>
       </event>
     </context_updates>
   </system_updates>
@@ -647,13 +547,17 @@ agent_run_start
 
 ```json
 {
+  "emitted": 1,
   "priority": "normal",
+  "scanned": 2,
   "source": "external",
+  "superseded": 1,
+  "to_event_id": "id-000007",
   "turn": 1
 }
 ```
 
-#### Entry 16 · assistant_message · assistant
+#### Entry 12 · assistant_message · assistant
 
 ```json
 {
@@ -672,7 +576,7 @@ I'll fetch the current weather in Amsterdam for you.
 }
 ```
 
-#### Entry 17 · llm_input · system
+#### Entry 13 · llm_input · system
 
 ```json
 {
@@ -683,24 +587,17 @@ I'll fetch the current weather in Amsterdam for you.
 ```xml
 <user_turn priority="normal" source="runtime">
   <system_updates user_authored="false">
-    <context_updates elapsed_seconds="&lt;seconds&gt;" generated_at="&lt;time&gt;">
+    <context_updates elapsed_seconds="&lt;seconds&gt;" emitted="2" from_event_id="id-000007" generated_at="&lt;time&gt;" scanned="4" superseded="2" to_event_id="id-000044">
       <event created_at="&lt;time&gt;" id="&lt;id&gt;" stream="signals">
         <subject>agent_run_start</subject>
         <body>agent run started</body>
         <metadata>{&#34;agent_id&#34;:&#34;operator&#34;}</metadata>
         <payload>null</payload>
       </event>
-      <event created_at="&lt;time&gt;" id="&lt;id&gt;" stream="task_output" task_id="id-000035" task_kind="spawn">
-        <payload>{&#34;status&#34;:&#34;queued&#34;}</payload>
-      </event>
-      <event created_at="&lt;time&gt;" id="&lt;id&gt;" stream="task_output" task_id="id-000035" task_kind="started">
-        <payload>{&#34;status&#34;:&#34;running&#34;}</payload>
-      </event>
-      <event created_at="&lt;time&gt;" id="&lt;id&gt;" stream="task_output" task_id="id-000035" task_kind="stdout">
-        <payload>{&#34;text&#34;:&#34;Amsterdam now: 5°C, partly cloudy.&#34;}</payload>
-      </event>
-      <event created_at="&lt;time&gt;" id="&lt;id&gt;" priority="wake" stream="task_output" task_id="id-000035" task_kind="completed">
-        <payload>{&#34;condition&#34;:&#34;Partly Cloudy&#34;,&#34;humidity&#34;:&#34;75%&#34;,&#34;location&#34;:&#34;Amsterdam, Netherlands&#34;,&#34;pressure&#34;:&#34;1019 mb&#34;,&#34;temperature&#34;:&#34;5°C (41°F)&#34;,&#34;wind&#34;:&#34;19 km/h SW&#34;}</payload>
+      <event created_at="&lt;time&gt;" id="&lt;id&gt;" stream="task_output" task_id="id-000034" task_kind="summary">
+        <subject>Task id-000034 summary</subject>
+        <metadata>{&#34;kind&#34;:&#34;task_update_summary&#34;,&#34;supersedes_count&#34;:2}</metadata>
+        <payload>{&#34;count&#34;:3,&#34;kinds&#34;:[&#34;spawn&#34;,&#34;started&#34;,&#34;stdout&#34;],&#34;latest&#34;:{&#34;text&#34;:&#34;Amsterdam now: 5°C, partly cloudy.&#34;},&#34;latest_kind&#34;:&#34;stdout&#34;}</payload>
       </event>
     </context_updates>
   </system_updates>
@@ -709,13 +606,18 @@ I'll fetch the current weather in Amsterdam for you.
 
 ```json
 {
+  "emitted": 2,
+  "from_event_id": "id-000007",
   "priority": "normal",
+  "scanned": 4,
   "source": "runtime",
+  "superseded": 2,
+  "to_event_id": "id-000044",
   "turn": 2
 }
 ```
 
-#### Entry 18 · assistant_message · assistant
+#### Entry 14 · assistant_message · assistant
 
 ```json
 {
