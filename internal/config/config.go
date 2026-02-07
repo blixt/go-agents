@@ -14,7 +14,6 @@ type Config struct {
 	DBPath      string
 	SnapshotDir string
 	LLMDebugDir string
-	WebDir      string
 
 	LLMProvider  string
 	LLMModel     string
@@ -38,7 +37,6 @@ type fileConfig struct {
 	DBPath       string `json:"db_path"`
 	SnapshotDir  string `json:"snapshot_dir"`
 	LLMDebugDir  string `json:"llm_debug_dir"`
-	WebDir       string `json:"web_dir"`
 	LLMProvider  string `json:"llm_provider"`
 	LLMModel     string `json:"llm_model"`
 	RestartToken string `json:"restart_token"`
@@ -48,7 +46,6 @@ func defaultConfig() Config {
 	return Config{
 		HTTPAddr:    ":8080",
 		DataDir:     "data",
-		WebDir:      "web",
 		LLMProvider: "anthropic",
 		LLMModel:    "claude-sonnet-4-5",
 	}
@@ -66,9 +63,6 @@ func applyDefaults(cfg Config) Config {
 	}
 	if cfg.LLMDebugDir == "" {
 		cfg.LLMDebugDir = filepath.Join(cfg.DataDir, "llm-debug")
-	}
-	if cfg.WebDir == "" {
-		cfg.WebDir = "web"
 	}
 	return cfg
 }
@@ -88,9 +82,6 @@ func mergeConfig(base Config, fileCfg fileConfig) Config {
 	}
 	if fileCfg.LLMDebugDir != "" {
 		base.LLMDebugDir = fileCfg.LLMDebugDir
-	}
-	if fileCfg.WebDir != "" {
-		base.WebDir = fileCfg.WebDir
 	}
 	if fileCfg.LLMProvider != "" {
 		base.LLMProvider = fileCfg.LLMProvider

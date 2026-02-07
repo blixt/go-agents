@@ -1,6 +1,6 @@
 [tools]
 go = "1.25.7"
-bun = "1.2.23"
+bun = "1.3.8"
 watchexec = "latest"
 golangci-lint = "latest"
 
@@ -13,7 +13,7 @@ run = [
 [tasks.dev]
 description = "Auto-reload agentd on changes"
 run = [
-  "watchexec -r -w . -w ../go-llms -- docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build --remove-orphans",
+  "watchexec -r -w . -w ../go-llms --ignore web -- docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build --remove-orphans",
 ]
 
 [tasks.reset]

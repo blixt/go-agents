@@ -19,7 +19,6 @@ import (
 	"github.com/flitsinc/go-agents/internal/goagents"
 	"github.com/flitsinc/go-agents/internal/state"
 	"github.com/flitsinc/go-agents/internal/tasks"
-	"github.com/flitsinc/go-agents/internal/web"
 )
 
 func main() {
@@ -106,11 +105,8 @@ func main() {
 		Bus:     bus,
 		Runtime: rt,
 	}
-	webServer := &web.Server{Dir: cfg.WebDir}
-
 	mux := http.NewServeMux()
 	mux.Handle("/api/", apiServer.Handler())
-	mux.Handle("/", webServer.Handler())
 
 	httpServer = &http.Server{
 		Handler:           loggingMiddleware(mux),

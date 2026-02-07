@@ -5,8 +5,22 @@ services:
       dockerfile: go-agents/Dockerfile
     working_dir: /app/go-agents
     command: ["agentd"]
+    env_file:
+      - .env
+
+  web:
+    build:
+      context: ..
+      dockerfile: go-agents/Dockerfile
+    working_dir: /app/go-agents/web
+    command: ["bun", "run", "start"]
     ports:
       - "8080:8080"
+    environment:
+      GO_AGENTS_UI_API_BASE: "http://agentd:8080"
+      GO_AGENTS_UI_ADDR: ":8080"
+    depends_on:
+      - agentd
     env_file:
       - .env
 

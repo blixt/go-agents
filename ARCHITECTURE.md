@@ -6,7 +6,8 @@ This document reviews the current architecture with emphasis on the **agentic ru
 
 `go-agents` is a compact **agent runtime control plane**:
 
-- `agentd` hosts HTTP API + web UI and orchestrates agents.
+- `agentd` hosts the HTTP API and orchestrates agents.
+- `web/server.tsx` hosts the React UI in Bun and proxies `/api/*` to `agentd`.
 - A SQLite-backed task/event substrate provides durable state.
 - Agent loops are event-driven (`messages` stream), invoke LLM tools, and emit task updates.
 - `execd` is the primary worker for `exec` tasks, running Bun/TypeScript in a sandbox-like temp workspace with optional snapshot state.
@@ -17,7 +18,8 @@ The architecture is strong for rapid iteration and observability, but has a few 
 
 ```mermaid
 flowchart LR
-  Human[Human / Browser] -->|HTTP + SSE| Agentd[agentd\nGo HTTP server]
+  Human[Human / Browser] -->|HTTP + SSE| Web[web/server.tsx\nBun UI server]
+  Web -->|/api/* proxy| Agentd[agentd\nGo HTTP API server]
   Agentd --> API[/API layer\ninternal/api/]
   Agentd --> Runtime[Runtime\ninternal/engine]
   Agentd --> Bus[(Event Bus\nSQLite events)]
@@ -53,7 +55,7 @@ flowchart LR
 ### API / UX / Workers
 
 - `internal/api`: minimal runtime/task/event endpoints + SSE stream.
-- `web/*`: operations UI over `/api/state` and SSE.
+- `web/*`: Bun + React + TypeScript UI over `/api/state` and SSE.
 - `exec/execd.ts`: external worker process for `exec` task execution.
 - `exec/bootstrap.ts`: isolated per-task entrypoint for code execution + state snapshot I/O.
 

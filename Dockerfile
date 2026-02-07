@@ -1,12 +1,13 @@
 FROM golang:1.25.7-bookworm
 
 ARG TARGETARCH
+ARG BUN_VERSION=1.3.8
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends curl ca-certificates git xz-utils unzip jq silversearcher-ag \
   && rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL https://bun.sh/install | bash
+RUN curl -fsSL https://bun.sh/install | bash -s -- bun-v${BUN_VERSION}
 ENV PATH="/root/.bun/bin:${PATH}"
 ENV GOTOOLCHAIN=auto
 
@@ -18,4 +19,5 @@ COPY go-agents ./go-agents
 WORKDIR /app/go-agents
 
 RUN go mod download
+RUN bun install --cwd /app/go-agents/web
 RUN go build -o /usr/local/bin/agentd ./cmd/agentd

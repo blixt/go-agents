@@ -2,6 +2,8 @@
 
 Minimal agent runtime with an exec tool (Bun/TypeScript), event bus, async tasks, and a web control panel.
 
+The web UI is served by `web/server.tsx` (Bun + React + TypeScript) and proxies `/api/*` to `agentd`.
+
 **Getting Started**
 1. Install tools: `mise install`
 2. Run the server: `mise start` (or `mise dev` for auto-reload)
@@ -23,7 +25,7 @@ Create `config.json` (or `data/config.json`) to adjust runtime settings:
   "data_dir": "data",
   "db_path": "data/go-agents.db",
   "snapshot_dir": "data/exec-snapshots",
-  "web_dir": "web",
+  "llm_debug_dir": "data/llm-debug",
   "llm_provider": "anthropic",
   "llm_model": "claude-sonnet-4-5",
   "restart_token": ""

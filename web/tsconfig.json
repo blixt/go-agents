@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "allowJs": false,
+    "skipLibCheck": true,
+    "types": ["bun", "node"]
+  },
+  "include": ["server.tsx", "src/**/*.ts", "src/**/*.tsx"]
+}

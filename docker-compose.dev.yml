@@ -1,6 +1,9 @@
 services:
   agentd:
     platform: linux/arm64
-    command: ["watchexec", "-r", "-e", "go,ts,html,css", "-w", ".", "--", "go", "run", "./cmd/agentd"]
+    command: ["watchexec", "-r", "-e", "go", "-w", "cmd", "-w", "internal", "-w", "go.mod", "-w", "go.sum", "--", "go", "run", "./cmd/agentd"]
+  web:
+    platform: linux/arm64
+    command: ["bun", "run", "dev"]
   execd:
     platform: linux/arm64
