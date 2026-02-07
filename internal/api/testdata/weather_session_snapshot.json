@@ -15,81 +15,29 @@
       "entries": [
         {
           "agent_id": "operator",
+          "content": "I'll fetch the current weather in Amsterdam for you.\n\n",
           "created_at": "\u003ctime\u003e",
           "data": {
-            "tools": []
+            "turn": 1
           },
           "generation": 1,
           "id": "\u003cid\u003e",
-          "role": "system",
+          "role": "assistant",
           "task_id": "\u003cid\u003e",
-          "type": "tools_config"
+          "type": "assistant_message"
         },
         {
           "agent_id": "operator",
-          "content": "You are go-agents, a runtime that uses tools to accomplish tasks.\n\nCore rules:\n- Available tools are runtime-defined; use only the tools exposed to you.\n- Use exec for all code execution, file I/O, and shell commands.\n- Use exec to spawn subagents via core/agent.ts. Use send_task to continue their work.\n- The only supported way to keep talking to a subagent is send_task using its task_id.\n- send_message is for direct actor-to-actor messages.\n- Use await_task to wait for a task result (with timeout), and cancel_task/kill_task to stop tasks.\n- Use send_task to send follow-up input to a running task. For exec tasks, pass text. For agent tasks, pass message or text. For custom input, pass json.\n- You cannot directly read/write files or run shell commands without exec.\n- Your default working directory is ~/.go-agents. Use absolute paths or change directories if you need to work elsewhere.\n\nExec tool:\n- Signature: { code: string, id?: string, wait_seconds?: number }\n- Runs TypeScript in Bun via exec/bootstrap.ts.\n- Provide stable id to reuse a persisted session state across calls.\n- A task is created; exec returns { task_id, status }. Results stream asynchronously.\n- If the user asks you to use exec or asks for computed/runtime data, your first response must be an exec tool call (no text preface).\n- After any tool call completes, you must send a final textual response that includes the results; do not stop after the tool call.\n- When reporting computed data, use the tool output directly; do not guess or fabricate numbers.\n- You can pass wait_seconds to block until the task completes and return its result (or pending status on timeout).\n\nSendMessage tool:\n- Signature: { agent_id?: string, message: string }\n- Sends a message to another agent.\n- Replies from other agents arrive as message events addressed to you.\n- Message priority can be interrupt | wake | normal | low (defaults to wake).\n- When replying to another actor, respond with plain text; the runtime will deliver your response back to the sender automatically. Only use send_message to initiate new conversations or spawn subagents.\n- For large intermediate outputs, delegate to a subagent or write results to files and return filenames.\n\nNoop tool:\n- Signature: { comment?: string }\n- Use noop when there is nothing better to do right now, but you want to leave a short rationale.\n- Noop does not wait; it simply records why you are idling.\n\nState + results:\n- Your code should read/write globalThis.state (object) for persistent state.\n- To return a result, set globalThis.result = \u003cjson-serializable value\u003e.\n- The bootstrap saves a snapshot of globalThis.state and a result JSON payload.\n\nTools in ~/.go-agents:\n- Use Bun built-ins directly:\n  - Bun.$ for shell commands (template literal). It supports .text(), .json(), .arrayBuffer(), .blob(),\n    and utilities like $.env(), $.cwd(), $.escape(), $.braces(), $.nothrow() / $.throws().\n  - Bun.spawn / Bun.spawnSync for lower-level process control and stdin/stdout piping.\n  - Bun.file(...) and Bun.write(...) for file I/O; Bun.Glob for fast globbing.\n  - Bun.JSONL.parse for newline-delimited JSON.\n- For edits: import { replaceText, replaceAllText, replaceTextFuzzy, applyUnifiedDiff, generateUnifiedDiff } from \"tools/edit.ts\".\n- You can create your own helpers under tools/ or core/ as needed.\n- A helper is available at core/agent.ts: agent({ message, system?, model?, agent_id? }). It returns { agent_id, task_id }.\n- Model aliases: fast | balanced | smart (for Claude: haiku | sonnet | opus).\n\nShell helpers and CLI tools:\n- Use jq for JSON transformations and filtering when running shell commands.\n- Use ag (the silver searcher) for fast search across files.\n\nWorkflow:\n- Plan short iterations, validate with exec, then proceed.\n- Keep outputs structured and actionable.\n- If context grows large, request compaction before continuing.\n- On requests like refresh/same/again, first locate and reuse existing artifacts before asking clarifying questions.\n- If a similar task repeats, prefer creating a small helper and reusing it.\n- If any required exec step fails, report partial progress and the failure instead of claiming success.\n- Do not reply with intent-only statements. If the user requests computed data or runtime state, you must use exec to obtain it and include the results in your response.",
-          "created_at": "\u003ctime\u003e",
-          "generation": 1,
-          "id": "\u003cid\u003e",
-          "role": "system",
-          "task_id": "\u003cid\u003e",
-          "type": "system_prompt"
-        },
-        {
-          "agent_id": "operator",
-          "content": "what's the weather in amsterdam",
+          "content": "Perfect! Here's the current weather in Amsterdam:\n\n🌤️ Amsterdam, Netherlands\n\nTemperature: 5°C (41°F)\nCondition: Partly Cloudy\nHumidity: 75%\nWind: 19 km/h SW\nPressure: 1019 mb",
           "created_at": "\u003ctime\u003e",
           "data": {
-            "event_id": "",
-            "priority": "normal",
-            "request_id": "",
-            "source": ""
+            "turn": 2
           },
           "generation": 1,
           "id": "\u003cid\u003e",
-          "role": "user",
+          "role": "assistant",
           "task_id": "\u003cid\u003e",
-          "type": "user_message"
-        },
-        {
-          "agent_id": "operator",
-          "content": "Task \u003cid\u003e update",
-          "created_at": "\u003ctime\u003e",
-          "data": {
-            "body": "spawn",
-            "event_id": "\u003cid\u003e",
-            "kind": "context_event",
-            "metadata": "{\"kind\":\"task_update\",\"priority\":\"normal\",\"task_id\":\"\u003cid\u003e\",\"task_kind\":\"spawn\"}",
-            "payload": "{\"status\":\"queued\"}",
-            "priority": "normal",
-            "stream": "task_output",
-            "subject": "Task \u003cid\u003e update"
-          },
-          "generation": 1,
-          "id": "\u003cid\u003e",
-          "role": "system",
-          "task_id": "\u003cid\u003e",
-          "type": "context_event"
-        },
-        {
-          "agent_id": "operator",
-          "content": "Task \u003cid\u003e update",
-          "created_at": "\u003ctime\u003e",
-          "data": {
-            "body": "started",
-            "event_id": "\u003cid\u003e",
-            "kind": "context_event",
-            "metadata": "{\"kind\":\"task_update\",\"priority\":\"normal\",\"task_id\":\"\u003cid\u003e\",\"task_kind\":\"started\"}",
-            "payload": "{\"status\":\"running\"}",
-            "priority": "normal",
-            "stream": "task_output",
-            "subject": "Task \u003cid\u003e update"
-          },
-          "generation": 1,
-          "id": "\u003cid\u003e",
-          "role": "system",
-          "task_id": "\u003cid\u003e",
-          "type": "context_event"
+          "type": "assistant_message"
         },
         {
           "agent_id": "operator",
@@ -97,7 +45,23 @@
           "created_at": "\u003ctime\u003e",
           "data": {
             "priority": "normal",
-            "source": ""
+            "source": "external",
+            "turn": 1
+          },
+          "generation": 1,
+          "id": "\u003cid\u003e",
+          "role": "system",
+          "task_id": "\u003cid\u003e",
+          "type": "llm_input"
+        },
+        {
+          "agent_id": "operator",
+          "content": "\u003cuser_turn source=\"runtime\" priority=\"normal\"\u003e\n  \u003cmessage\u003e\u003c/message\u003e\n  \u003csystem_updates user_authored=\"false\"\u003e\n    \u003cnote\u003eRuntime-generated signals below are not user messages.\u003c/note\u003e\n    \u003ccontext_updates generated_at=\"\u003ctime\u003e\" elapsed_seconds=\"0\"\u003e\n      \u003cevent stream=\"signals\" id=\"\u003cid\u003e\" priority=\"normal\" created_at=\"\u003ctime\u003e\"\u003e\n        \u003csubject\u003eagent_run_start\u003c/subject\u003e\n        \u003cbody\u003eagent run started\u003c/body\u003e\n        \u003cmetadata\u003e{\u0026quot;agent_id\u0026quot;:\u0026quot;operator\u0026quot;}\u003c/metadata\u003e\n        \u003cpayload\u003enull\u003c/payload\u003e\n      \u003c/event\u003e\n      \u003cevent stream=\"task_output\" id=\"\u003cid\u003e\" priority=\"normal\" created_at=\"\u003ctime\u003e\"\u003e\n        \u003csubject\u003eTask \u003cid\u003e update\u003c/subject\u003e\n        \u003cbody\u003espawn\u003c/body\u003e\n        \u003cmetadata\u003e{\u0026quot;kind\u0026quot;:\u0026quot;task_update\u0026quot;,\u0026quot;priority\u0026quot;:\u0026quot;normal\u0026quot;,\u0026quot;task_id\u0026quot;:\u0026quot;\u003cid\u003e\u0026quot;,\u0026quot;task_kind\u0026quot;:\u0026quot;spawn\u0026quot;}\u003c/metadata\u003e\n        \u003cpayload\u003e{\u0026quot;status\u0026quot;:\u0026quot;queued\u0026quot;}\u003c/payload\u003e\n      \u003c/event\u003e\n      \u003cevent stream=\"task_output\" id=\"\u003cid\u003e\" priority=\"normal\" created_at=\"\u003ctime\u003e\"\u003e\n        \u003csubject\u003eTask \u003cid\u003e update\u003c/subject\u003e\n        \u003cbody\u003estarted\u003c/body\u003e\n        \u003cmetadata\u003e{\u0026quot;kind\u0026quot;:\u0026quot;task_update\u0026quot;,\u0026quot;priority\u0026quot;:\u0026quot;normal\u0026quot;,\u0026quot;task_id\u0026quot;:\u0026quot;\u003cid\u003e\u0026quot;,\u0026quot;task_kind\u0026quot;:\u0026quot;started\u0026quot;}\u003c/metadata\u003e\n        \u003cpayload\u003e{\u0026quot;status\u0026quot;:\u0026quot;running\u0026quot;}\u003c/payload\u003e\n      \u003c/event\u003e\n      \u003cevent stream=\"task_output\" id=\"\u003cid\u003e\" priority=\"normal\" created_at=\"\u003ctime\u003e\"\u003e\n        \u003csubject\u003eTask \u003cid\u003e update\u003c/subject\u003e\n        \u003cbody\u003estdout\u003c/body\u003e\n        \u003cmetadata\u003e{\u0026quot;kind\u0026quot;:\u0026quot;task_update\u0026quot;,\u0026quot;priority\u0026quot;:\u0026quot;normal\u0026quot;,\u0026quot;task_id\u0026quot;:\u0026quot;\u003cid\u003e\u0026quot;,\u0026quot;task_kind\u0026quot;:\u0026quot;stdout\u0026quot;}\u003c/metadata\u003e\n        \u003cpayload\u003e{\u0026quot;text\u0026quot;:\u0026quot;Amsterdam now: 5°C, partly cloudy.\u0026quot;}\u003c/payload\u003e\n      \u003c/event\u003e\n      \u003cevent stream=\"task_output\" id=\"\u003cid\u003e\" priority=\"wake\" created_at=\"\u003ctime\u003e\"\u003e\n        \u003csubject\u003eTask \u003cid\u003e update\u003c/subject\u003e\n        \u003cbody\u003ecompleted\u003c/body\u003e\n        \u003cmetadata\u003e{\u0026quot;kind\u0026quot;:\u0026quot;task_update\u0026quot;,\u0026quot;priority\u0026quot;:\u0026quot;wake\u0026quot;,\u0026quot;task_id\u0026quot;:\u0026quot;\u003cid\u003e\u0026quot;,\u0026quot;task_kind\u0026quot;:\u0026quot;completed\u0026quot;}\u003c/metadata\u003e\n        \u003cpayload\u003e{\u0026quot;condition\u0026quot;:\u0026quot;Partly Cloudy\u0026quot;,\u0026quot;humidity\u0026quot;:\u0026quot;75%\u0026quot;,\u0026quot;location\u0026quot;:\u0026quot;Amsterdam, Netherlands\u0026quot;,\u0026quot;pressure\u0026quot;:\u0026quot;1019 mb\u0026quot;,\u0026quot;temperature\u0026quot;:\u0026quot;5°C (41°F)\u0026quot;,\u0026quot;wind\u0026quot;:\u0026quot;19 km/h SW\u0026quot;}\u003c/payload\u003e\n      \u003c/event\u003e\n    \u003c/context_updates\u003e\n  \u003c/system_updates\u003e\n\u003c/user_turn\u003e",
+          "created_at": "\u003ctime\u003e",
+          "data": {
+            "priority": "normal",
+            "source": "runtime",
+            "turn": 2
           },
           "generation": 1,
           "id": "\u003cid\u003e",
@@ -121,6 +85,16 @@
         },
         {
           "agent_id": "operator",
+          "content": "You are go-agents, a runtime that uses tools to accomplish tasks.\n\nCore rules:\n- Available tools are runtime-defined; use only the tools exposed to you.\n- Use exec for all code execution, file I/O, and shell commands.\n- Use exec to spawn subagents via core/agent.ts. Use send_task to continue their work.\n- The only supported way to keep talking to a subagent is send_task using its task_id.\n- send_message is for direct actor-to-actor messages.\n- Use await_task to wait for a task result (with timeout), and cancel_task/kill_task to stop tasks.\n- Use send_task to send follow-up input to a running task. For exec tasks, pass text. For agent tasks, pass message or text. For custom input, pass json.\n- You cannot directly read/write files or run shell commands without exec.\n- Your default working directory is ~/.go-agents. Use absolute paths or change directories if you need to work elsewhere.\n\nExec tool:\n- Signature: { code: string, id?: string, wait_seconds?: number }\n- Runs TypeScript in Bun via exec/bootstrap.ts.\n- Provide stable id to reuse a persisted session state across calls.\n- A task is created; exec returns { task_id, status }. Results stream asynchronously.\n- If the user asks you to use exec or asks for computed/runtime data, your first response must be an exec tool call (no text preface).\n- After any tool call completes, you must send a final textual response that includes the results; do not stop after the tool call.\n- When reporting computed data, use the tool output directly; do not guess or fabricate numbers.\n- You can pass wait_seconds to block until the task completes and return its result (or pending status on timeout).\n\nSendMessage tool:\n- Signature: { agent_id?: string, message: string }\n- Sends a message to another agent.\n- Replies from other agents arrive as message events addressed to you.\n- Message priority can be interrupt | wake | normal | low (defaults to wake).\n- When replying to another actor, respond with plain text; the runtime will deliver your response back to the sender automatically. Only use send_message to initiate new conversations or spawn subagents.\n- For large intermediate outputs, delegate to a subagent or write results to files and return filenames.\n\nNoop tool:\n- Signature: { comment?: string }\n- Use noop when there is nothing better to do right now, but you want to leave a short rationale.\n- Noop does not wait; it simply records why you are idling.\n\nState + results:\n- Your code should read/write globalThis.state (object) for persistent state.\n- To return a result, set globalThis.result = \u003cjson-serializable value\u003e.\n- The bootstrap saves a snapshot of globalThis.state and a result JSON payload.\n\nTools in ~/.go-agents:\n- Use Bun built-ins directly:\n  - Bun.$ for shell commands (template literal). It supports .text(), .json(), .arrayBuffer(), .blob(),\n    and utilities like $.env(), $.cwd(), $.escape(), $.braces(), $.nothrow() / $.throws().\n  - Bun.spawn / Bun.spawnSync for lower-level process control and stdin/stdout piping.\n  - Bun.file(...) and Bun.write(...) for file I/O; Bun.Glob for fast globbing.\n  - Bun.JSONL.parse for newline-delimited JSON.\n- For edits: import { replaceText, replaceAllText, replaceTextFuzzy, applyUnifiedDiff, generateUnifiedDiff } from \"tools/edit.ts\".\n- You can create your own helpers under tools/ or core/ as needed.\n- A helper is available at core/agent.ts: agent({ message, system?, model?, agent_id? }). It returns { agent_id, task_id }.\n- Model aliases: fast | balanced | smart (for Claude: haiku | sonnet | opus).\n\nShell helpers and CLI tools:\n- Use jq for JSON transformations and filtering when running shell commands.\n- Use ag (the silver searcher) for fast search across files.\n\nWorkflow:\n- Plan short iterations, validate with exec, then proceed.\n- Keep outputs structured and actionable.\n- If context grows large, request compaction before continuing.\n- On requests like refresh/same/again, first locate and reuse existing artifacts before asking clarifying questions.\n- If a similar task repeats, prefer creating a small helper and reusing it.\n- If any required exec step fails, report partial progress and the failure instead of claiming success.\n- Do not reply with intent-only statements. If the user requests computed data or runtime state, you must use exec to obtain it and include the results in your response.",
+          "created_at": "\u003ctime\u003e",
+          "generation": 1,
+          "id": "\u003cid\u003e",
+          "role": "system",
+          "task_id": "\u003cid\u003e",
+          "type": "system_prompt"
+        },
+        {
+          "agent_id": "operator",
           "created_at": "\u003ctime\u003e",
           "data": {
             "tool_call_id": "toolu_weather_exec_1",
@@ -137,22 +111,6 @@
           "tool_name": "exec",
           "tool_status": "start",
           "type": "tool_call"
-        },
-        {
-          "agent_id": "operator",
-          "created_at": "\u003ctime\u003e",
-          "data": {
-            "delta_bytes": 199,
-            "tool_call_id": "toolu_weather_exec_1",
-            "tool_status": "streaming"
-          },
-          "generation": 1,
-          "id": "\u003cid\u003e",
-          "role": "tool",
-          "task_id": "\u003cid\u003e",
-          "tool_call_id": "toolu_weather_exec_1",
-          "tool_status": "streaming",
-          "type": "tool_status"
         },
         {
           "agent_id": "operator",
@@ -188,13 +146,47 @@
         },
         {
           "agent_id": "operator",
-          "content": "I'll fetch the current weather in Amsterdam for you.\n\nPerfect! Here's the current weather in Amsterdam:\n\n🌤️ Amsterdam, Netherlands\n\nTemperature: 5°C (41°F)\nCondition: Partly Cloudy\nHumidity: 75%\nWind: 19 km/h SW\nPressure: 1019 mb",
           "created_at": "\u003ctime\u003e",
+          "data": {
+            "delta_bytes": 199,
+            "tool_call_id": "toolu_weather_exec_1",
+            "tool_status": "streaming"
+          },
           "generation": 1,
           "id": "\u003cid\u003e",
-          "role": "assistant",
+          "role": "tool",
           "task_id": "\u003cid\u003e",
-          "type": "assistant_message"
+          "tool_call_id": "toolu_weather_exec_1",
+          "tool_status": "streaming",
+          "type": "tool_status"
+        },
+        {
+          "agent_id": "operator",
+          "created_at": "\u003ctime\u003e",
+          "data": {
+            "tools": []
+          },
+          "generation": 1,
+          "id": "\u003cid\u003e",
+          "role": "system",
+          "task_id": "\u003cid\u003e",
+          "type": "tools_config"
+        },
+        {
+          "agent_id": "operator",
+          "content": "what's the weather in amsterdam",
+          "created_at": "\u003ctime\u003e",
+          "data": {
+            "event_id": "",
+            "priority": "normal",
+            "request_id": "",
+            "source": ""
+          },
+          "generation": 1,
+          "id": "\u003cid\u003e",
+          "role": "user",
+          "task_id": "\u003cid\u003e",
+          "type": "user_message"
         }
       ],
       "generation": 1

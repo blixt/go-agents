@@ -726,6 +726,48 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 	r.attachDebugger(llmClient, agentID, llmTask.ID)
 
 	var output string
+	trackedContextEvents := make([]eventbus.Event, 0, len(contextEvents))
+	trackedContextEventKeys := map[string]struct{}{}
+	contextEventKey := func(evt eventbus.Event) string {
+		stream := strings.TrimSpace(evt.Stream)
+		id := strings.TrimSpace(evt.ID)
+		if stream == "" || id == "" {
+			return ""
+		}
+		return stream + ":" + id
+	}
+	markTrackedContextEvents := func(events []eventbus.Event) {
+		for _, evt := range events {
+			key := contextEventKey(evt)
+			if key == "" {
+				continue
+			}
+			if _, ok := trackedContextEventKeys[key]; ok {
+				continue
+			}
+			trackedContextEventKeys[key] = struct{}{}
+			trackedContextEvents = append(trackedContextEvents, evt)
+		}
+	}
+	untrackedContextEvents := func(events []eventbus.Event) []eventbus.Event {
+		if len(events) == 0 {
+			return nil
+		}
+		out := make([]eventbus.Event, 0, len(events))
+		for _, evt := range events {
+			key := contextEventKey(evt)
+			if key == "" {
+				continue
+			}
+			if _, ok := trackedContextEventKeys[key]; ok {
+				continue
+			}
+			out = append(out, evt)
+		}
+		return out
+	}
+	markTrackedContextEvents(contextEvents)
+
 	{
 		llmCtx := tasks.WithParentTaskID(ctx, llmTask.ID)
 		llmCtx = agentcontext.WithAgentID(llmCtx, agentID)
@@ -752,10 +794,98 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 
 		turns := r.loadRecentConversation(llmCtx, agentID, maxConversationTurns)
 		input := buildInputWithHistory(turns, source, message, messageMeta, turnCtx, contextEvents)
-		r.appendHistory(llmCtx, agentID, "llm_input", "system", input, llmTask.ID, currentGeneration, map[string]any{
-			"source":   source,
-			"priority": eventPriority(messageMeta),
-		})
+		runSource := source
+		if strings.TrimSpace(runSource) == "" {
+			runSource = "external"
+		}
+		runPriority := eventPriority(messageMeta)
+		lastContextSnapshotAt := turnCtx.Now
+		lastLLMTurn := 1
+		publishedAssistantTurns := map[int]struct{}{}
+		publishedAssistantPrefix := ""
+		publishAssistantTurn := func(turn int, text string, partial bool) {
+			if turn <= 0 || strings.TrimSpace(text) == "" {
+				return
+			}
+			if _, ok := publishedAssistantTurns[turn]; ok {
+				return
+			}
+			data := map[string]any{
+				"turn": turn,
+			}
+			if partial {
+				data["partial"] = true
+			}
+			r.appendHistory(llmCtx, agentID, "assistant_message", "assistant", text, llmTask.ID, currentGeneration, data)
+			publishedAssistantTurns[turn] = struct{}{}
+			publishedAssistantPrefix += text
+		}
+		prevBeforeResponse := llmClient.BeforeResponse
+		llmClient.BeforeResponse = func(hookCtx context.Context, before llms.BeforeResponseState) error {
+			if prevBeforeResponse != nil {
+				if err := prevBeforeResponse(hookCtx, before); err != nil {
+					return err
+				}
+			}
+
+			turnNumber := before.Turn()
+			if turnNumber <= 0 {
+				turnNumber = 1
+			}
+			lastLLMTurn = turnNumber
+			if turnNumber > 1 {
+				publishAssistantTurn(turnNumber-1, latestAssistantText(before.Messages()), false)
+			}
+
+			turnInput := ""
+			turnSource := runSource
+			turnPriority := runPriority
+			if turnNumber == 1 {
+				turnInput = input
+			} else {
+				now := time.Now().UTC()
+				snapshot := TurnContext{
+					Now:      now,
+					Previous: lastContextSnapshotAt,
+				}
+				if !lastContextSnapshotAt.IsZero() {
+					snapshot.Elapsed = now.Sub(lastContextSnapshotAt)
+					snapshot.TimePassed = snapshot.Elapsed >= minTimePassedDelta
+					snapshot.DateChanged = lastContextSnapshotAt.UTC().Format("2006-01-02") != now.Format("2006-01-02")
+				}
+				lastContextSnapshotAt = now
+
+				pending, err := r.collectUnreadContextEvents(hookCtx, agentID, maxContextEventsPerTurn*2)
+				if err != nil {
+					return err
+				}
+				fresh := untrackedContextEvents(pending)
+				fresh = selectContextEventsForPrompt(fresh, maxContextEventsPerTurn)
+				if len(fresh) > 0 || snapshot.TimePassed || snapshot.DateChanged {
+					if len(fresh) > 0 {
+						markTrackedContextEvents(fresh)
+					}
+					r.appendContextUpdateHistory(hookCtx, agentID, llmTask.ID, currentGeneration, snapshot, fresh)
+					turnInput = buildInputWithHistory(nil, "runtime", "", map[string]any{"priority": "normal"}, snapshot, fresh)
+					before.Append(llms.Message{Role: "user", Content: content.FromText(turnInput)})
+					turnSource = "runtime"
+					turnPriority = "normal"
+				}
+			}
+
+			if strings.TrimSpace(turnInput) != "" {
+				r.appendHistory(hookCtx, agentID, "llm_input", "system", turnInput, llmTask.ID, currentGeneration, map[string]any{
+					"source":   turnSource,
+					"priority": turnPriority,
+					"turn":     turnNumber,
+				})
+			}
+			return nil
+		}
+		defer func() {
+			llmClient.BeforeResponse = prevBeforeResponse
+		}()
+
 		updates := llmClient.ChatWithContext(llmCtx, input)
 		toolInputRaw := map[string]string{}
 		toolStreamingMarked := map[string]bool{}
@@ -847,11 +977,9 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 			session.LastError = err.Error()
 			session.LastOutput = output
 			r.SetSession(session)
-			if strings.TrimSpace(output) != "" {
-				r.appendHistory(llmCtx, agentID, "assistant_message", "assistant", output, llmTask.ID, currentGeneration, map[string]any{
-					"partial": true,
-				})
-			}
+			remainder := output
+			remainder = strings.TrimPrefix(remainder, publishedAssistantPrefix)
+			publishAssistantTurn(lastLLMTurn, remainder, true)
 			r.appendHistory(llmCtx, agentID, "error", "system", err.Error(), llmTask.ID, currentGeneration, nil)
 			if r.Tasks != nil {
 				ctx := context.Background()
@@ -888,14 +1016,14 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 			}
 			return session, err
 		}
+		remainder := output
+		remainder = strings.TrimPrefix(remainder, publishedAssistantPrefix)
+		publishAssistantTurn(lastLLMTurn, remainder, false)
 	}
 
-	r.ackContextEvents(context.Background(), agentID, contextEvents)
+	r.ackContextEvents(context.Background(), agentID, trackedContextEvents)
 	session.LastOutput = output
 	r.SetSession(session)
-	if strings.TrimSpace(output) != "" {
-		r.appendHistory(ctx, agentID, "assistant_message", "assistant", output, llmTask.ID, currentGeneration, nil)
-	}
 	if r.Tasks != nil {
 		ctx := context.Background()
 		if llmTask.ID != "" {
@@ -1044,6 +1172,29 @@ func parseJSONValue(raw string) (any, bool) {
 		return nil, false
 	}
 	return parsed, true
+}
+
+func latestAssistantText(messages []llms.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if strings.TrimSpace(messages[i].Role) != "assistant" {
+			continue
+		}
+		return textFromContent(messages[i].Content)
+	}
+	return ""
+}
+
+func textFromContent(items content.Content) string {
+	if len(items) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, item := range items {
+		if txt, ok := item.(*content.Text); ok {
+			b.WriteString(txt.Text)
+		}
+	}
+	return b.String()
 }
 
 func (r *Runtime) clearInflight(taskID string) {

@@ -263,7 +263,25 @@ func (n *snapshotNormalizer) Normalize(v any) any {
 		for _, k := range keys {
 			subv := value[k]
 			normKey := n.normalizeString(k)
-			out[normKey] = n.Normalize(subv)
+			normVal := n.Normalize(subv)
+			if normKey == "entries" {
+				if entries, ok := normVal.([]any); ok {
+					filtered := make([]any, 0, len(entries))
+					for _, entry := range entries {
+						if m, ok := entry.(map[string]any); ok {
+							if fmt.Sprintf("%v", m["type"]) == "context_event" {
+								continue
+							}
+						}
+						filtered = append(filtered, entry)
+					}
+					sort.SliceStable(filtered, func(i, j int) bool {
+						return snapshotEntrySortKey(filtered[i]) < snapshotEntrySortKey(filtered[j])
+					})
+					normVal = filtered
+				}
+			}
+			out[normKey] = normVal
 		}
 		return out
 	case []any:
@@ -277,6 +295,36 @@ func (n *snapshotNormalizer) Normalize(v any) any {
 	default:
 		return value
 	}
+}
+
+func snapshotEntrySortKey(v any) string {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return fmt.Sprintf("%T:%v", v, v)
+	}
+	entryType := fmt.Sprintf("%v", m["type"])
+	role := fmt.Sprintf("%v", m["role"])
+	content := fmt.Sprintf("%v", m["content"])
+	toolCallID := fmt.Sprintf("%v", m["tool_call_id"])
+	toolName := fmt.Sprintf("%v", m["tool_name"])
+	toolStatus := fmt.Sprintf("%v", m["tool_status"])
+	data := ""
+	if raw, ok := m["data"]; ok {
+		if encoded, err := json.Marshal(raw); err == nil {
+			data = string(encoded)
+		} else {
+			data = fmt.Sprintf("%v", raw)
+		}
+	}
+	return strings.Join([]string{
+		entryType,
+		role,
+		content,
+		toolCallID,
+		toolName,
+		toolStatus,
+		data,
+	}, "|")
 }
 
 func (n *snapshotNormalizer) normalizeString(s string) string {

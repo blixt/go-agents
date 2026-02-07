@@ -382,80 +382,15 @@ function isToolEvent(entry) {
   return TOOL_EVENT_TYPES.has(entry?.type);
 }
 
-function deriveLLMTextSegments(updatesByTask, orderedEntries) {
-  if (!updatesByTask || typeof updatesByTask !== "object") return {};
-  const taskIDs = new Set();
-  for (const entry of orderedEntries || []) {
-    if (entry && typeof entry.task_id === "string" && entry.task_id.trim() !== "") {
-      taskIDs.add(entry.task_id.trim());
-    }
-  }
-
-  const out = {};
-  for (const taskID of taskIDs) {
-    const updates = Array.isArray(updatesByTask[taskID]) ? [...updatesByTask[taskID]] : [];
-    if (updates.length === 0) continue;
-    updates.sort((a, b) => new Date(a?.created_at || 0) - new Date(b?.created_at || 0));
-
-    let sawTool = false;
-    let pre = "";
-    let post = "";
-    for (const upd of updates) {
-      const kind = String(upd?.kind || "").trim();
-      if (kind === "llm_tool_start") {
-        sawTool = true;
-        continue;
-      }
-      if (kind !== "llm_text") continue;
-      const chunk = typeof upd?.payload?.text === "string" ? upd.payload.text : "";
-      if (chunk === "") continue;
-      if (!sawTool) {
-        pre += chunk;
-      } else {
-        post += chunk;
-      }
-    }
-
-    if (sawTool && pre.trim() !== "" && post.trim() !== "") {
-      out[taskID] = { pre, post };
-    }
-  }
-  return out;
-}
-
-function buildDisplayEntries(entries, updatesByTask = {}) {
+function buildDisplayEntries(entries) {
   if (!Array.isArray(entries) || entries.length === 0) return [];
   const ordered = [...entries].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-  const llmTextSegmentsByTask = deriveLLMTextSegments(updatesByTask, ordered);
-  const tasksWithToolEvents = new Set(
-    ordered
-      .filter((entry) => isToolEvent(entry) && typeof entry?.task_id === "string" && entry.task_id.trim() !== "")
-      .map((entry) => entry.task_id.trim()),
-  );
   const out = [];
   const toolByCallID = new Map();
-  const emittedPreToolByTask = new Set();
 
   for (const entry of ordered) {
     if (entry.type === "context_event") {
       continue;
-    }
-
-    const entryTaskID = typeof entry?.task_id === "string" ? entry.task_id.trim() : "";
-    if (isToolEvent(entry) && entryTaskID) {
-      const seg = llmTextSegmentsByTask[entryTaskID];
-      if (seg && !emittedPreToolByTask.has(entryTaskID)) {
-        out.push({
-          id: `assistant-pretool-${entryTaskID}`,
-          type: "assistant_message",
-          role: "assistant",
-          created_at: entry.created_at,
-          task_id: entryTaskID,
-          content: seg.pre,
-          data: { segment: "pre_tool", synthetic: true },
-        });
-        emittedPreToolByTask.add(entryTaskID);
-      }
     }
 
     if (isToolEvent(entry) && entry.tool_call_id) {
@@ -526,18 +461,6 @@ function buildDisplayEntries(entries, updatesByTask = {}) {
         at: entry.created_at,
       });
       continue;
-    }
-
-    if (entry.type === "assistant_message" && entryTaskID) {
-      const seg = llmTextSegmentsByTask[entryTaskID];
-      if (seg && tasksWithToolEvents.has(entryTaskID) && emittedPreToolByTask.has(entryTaskID)) {
-        out.push({
-          ...entry,
-          content: seg.post,
-          data: { ...(entry.data || {}), segment: "post_tool" },
-        });
-        continue;
-      }
     }
 
     if (entry.type === "reasoning") {
@@ -687,13 +610,15 @@ function EntryCard({ entry }) {
   }
 
   if (entry.type === "assistant_message") {
-    const segment = entry.data?.segment;
-    const metaLabel =
-      segment === "pre_tool"
-        ? `assistant · pre-tool text · ${when}`
-        : segment === "post_tool"
-          ? `assistant · post-tool text · ${when}`
-          : baseMeta;
+    const turn = Number(entry.data?.turn || 0);
+    const partial = Boolean(entry.data?.partial);
+    let metaLabel = baseMeta;
+    if (turn > 0) {
+      metaLabel = `assistant · turn ${turn} · ${when}`;
+    }
+    if (partial) {
+      metaLabel += " · partial";
+    }
     return React.createElement(
       "div",
       { className: "history-card history-assistant" },
@@ -816,8 +741,8 @@ function App() {
     generation: selectedHistory.generation || 1,
   };
   const timelineEntries = useMemo(
-    () => buildDisplayEntries(selectedHistory.entries || [], state.updates || {}),
-    [selectedHistory.entries, state.updates],
+    () => buildDisplayEntries(selectedHistory.entries || []),
+    [selectedHistory.entries],
   );
 
   useEffect(() => {
