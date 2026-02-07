@@ -71,9 +71,14 @@ func TestServerStateAndQueue(t *testing.T) {
 	}
 
 	// Agent run enqueues work via the event bus.
-	resp = doJSON(t, client, "POST", "/api/agents/operator/run", map[string]any{"message": "hello", "source": "external"})
+	resp = doJSON(t, client, "POST", "/api/agents/run", map[string]any{"message": "hello", "source": "external"})
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("agent run status: %d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	var run map[string]any
+	decodeJSONResponse(t, resp, &run)
+	if run["agent_id"] != "agent-1" {
+		t.Fatalf("expected agent_id agent-1, got %#v", run["agent_id"])
 	}
 
 	// State snapshot.
@@ -91,6 +96,48 @@ func TestServerStateAndQueue(t *testing.T) {
 	}
 	if snapshot["histories"] == nil {
 		t.Fatalf("expected histories in snapshot")
+	}
+}
+
+func TestServerAgentRunResolvesNamedIDs(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	runtimeClient := &ai.Client{LLM: llms.New(&apiFakeProvider{})}
+	rt := engine.NewRuntime(bus, mgr, runtimeClient)
+	server := &Server{Tasks: mgr, Bus: bus, Runtime: rt}
+	client := testutil.NewInProcessClient(server.Handler())
+
+	resp := doJSON(t, client, "POST", "/api/agents/planner/run", map[string]any{"message": "first"})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("planner run status: %d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	var first map[string]any
+	decodeJSONResponse(t, resp, &first)
+	if first["agent_id"] != "planner-1" {
+		t.Fatalf("expected planner-1, got %#v", first["agent_id"])
+	}
+
+	resp = doJSON(t, client, "POST", "/api/agents/planner/run", map[string]any{"message": "second"})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("planner run status: %d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	var second map[string]any
+	decodeJSONResponse(t, resp, &second)
+	if second["agent_id"] != "planner-2" {
+		t.Fatalf("expected planner-2, got %#v", second["agent_id"])
+	}
+
+	resp = doJSON(t, client, "POST", "/api/agents/planner-2/run", map[string]any{"message": "continue"})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("planner-2 run status: %d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	var existing map[string]any
+	decodeJSONResponse(t, resp, &existing)
+	if existing["agent_id"] != "planner-2" {
+		t.Fatalf("expected planner-2 reuse, got %#v", existing["agent_id"])
 	}
 }
 

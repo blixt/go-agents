@@ -11,11 +11,17 @@
     }),
   );
 })({
+  "env": [
+    "browser",
+    "development",
+    "module"
+  ],
   "imports": {
     "dompurify": "https://ga.jspm.io/npm:dompurify@3.3.1/dist/purify.es.mjs",
     "marked": "https://ga.jspm.io/npm:marked@17.0.1/lib/marked.esm.js",
     "prismjs": "https://ga.jspm.io/npm:prismjs@1.30.0/prism.js",
     "prismjs/components/prism-javascript": "https://ga.jspm.io/npm:prismjs@1.30.0/components/prism-javascript.js",
+    "prismjs/components/prism-markup": "https://ga.jspm.io/npm:prismjs@1.30.0/components/prism-markup.js",
     "prismjs/components/prism-typescript": "https://ga.jspm.io/npm:prismjs@1.30.0/components/prism-typescript.js",
     "react": "https://ga.jspm.io/npm:react@19.2.4/dev.index.js",
     "react-dom/client": "https://ga.jspm.io/npm:react-dom@19.2.4/dev.client.js"

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -73,6 +74,7 @@ type Runtime struct {
 
 	agentMu sync.RWMutex
 	agents  map[string]*AgentState
+	nameMu  sync.Mutex
 
 	inflightMu sync.Mutex
 	inflight   map[string]context.CancelFunc
@@ -297,6 +299,124 @@ func (r *Runtime) EnsureAgentLoop(agentID string) {
 		delete(r.loops, agentID)
 		r.loopMu.Unlock()
 	}()
+}
+
+var trailingAgentIndexPattern = regexp.MustCompile(`-\d+$`)
+
+func normalizeAgentName(raw string) string {
+	name := strings.ToLower(strings.TrimSpace(raw))
+	if name == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(name))
+	prevDash := false
+	for _, ch := range name {
+		switch {
+		case ch >= 'a' && ch <= 'z':
+			b.WriteRune(ch)
+			prevDash = false
+		case ch >= '0' && ch <= '9':
+			b.WriteRune(ch)
+			prevDash = false
+		case ch == '-' || ch == '_' || ch == ' ':
+			if b.Len() == 0 || prevDash {
+				continue
+			}
+			b.WriteByte('-')
+			prevDash = true
+		default:
+			continue
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+func agentNameBase(name string) string {
+	base := trailingAgentIndexPattern.ReplaceAllString(name, "")
+	base = strings.Trim(base, "-")
+	if base == "" {
+		return "agent"
+	}
+	return base
+}
+
+func (r *Runtime) agentIDExists(ctx context.Context, agentID string) bool {
+	agentID = normalizeAgentName(agentID)
+	if agentID == "" {
+		return false
+	}
+
+	r.knownMu.RLock()
+	_, known := r.knownAgents[agentID]
+	r.knownMu.RUnlock()
+	if known {
+		return true
+	}
+
+	r.agentMu.RLock()
+	_, hasState := r.agents[agentID]
+	r.agentMu.RUnlock()
+	if hasState {
+		return true
+	}
+
+	r.mu.RLock()
+	_, hasSession := r.sessions[agentID]
+	r.mu.RUnlock()
+	if hasSession {
+		return true
+	}
+
+	if r.Tasks != nil {
+		items, err := r.Tasks.List(ctx, tasks.ListFilter{
+			Owner: agentID,
+			Limit: 1,
+		})
+		if err == nil && len(items) > 0 {
+			return true
+		}
+	}
+
+	if r.Bus != nil {
+		summaries, err := r.Bus.List(ctx, "history", eventbus.ListOptions{
+			ScopeType: "agent",
+			ScopeID:   agentID,
+			Limit:     1,
+			Order:     "lifo",
+		})
+		if err == nil && len(summaries) > 0 {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (r *Runtime) ResolveAgentID(ctx context.Context, requested string) string {
+	requestedName := normalizeAgentName(requested)
+	base := requestedName
+	if base == "" {
+		base = "agent"
+	}
+	base = agentNameBase(base)
+
+	r.nameMu.Lock()
+	defer r.nameMu.Unlock()
+
+	if requestedName != "" && r.agentIDExists(ctx, requestedName) {
+		r.rememberAgent(requestedName)
+		return requestedName
+	}
+
+	for i := 1; ; i++ {
+		candidate := fmt.Sprintf("%s-%d", base, i)
+		if r.agentIDExists(ctx, candidate) {
+			continue
+		}
+		r.rememberAgent(candidate)
+		return candidate
+	}
 }
 
 func (r *Runtime) ensureAgentState(agentID string) *AgentState {
@@ -609,6 +729,7 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 	{
 		llmCtx := tasks.WithParentTaskID(ctx, llmTask.ID)
 		llmCtx = agentcontext.WithAgentID(llmCtx, agentID)
+		llmCtx = tasks.WithIgnoredWakeEventIDs(llmCtx, ignoredWakeEventIDsForTurn(messageMeta, contextEvents))
 		llmCtx, cancel := context.WithCancel(llmCtx)
 		r.registerInflight(llmTask.ID, cancel)
 		defer func() {
@@ -631,6 +752,10 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 
 		turns := r.loadRecentConversation(llmCtx, agentID, maxConversationTurns)
 		input := buildInputWithHistory(turns, source, message, messageMeta, turnCtx, contextEvents)
+		r.appendHistory(llmCtx, agentID, "llm_input", "system", input, llmTask.ID, currentGeneration, map[string]any{
+			"source":   source,
+			"priority": eventPriority(messageMeta),
+		})
 		updates := llmClient.ChatWithContext(llmCtx, input)
 		toolInputRaw := map[string]string{}
 		toolStreamingMarked := map[string]bool{}
@@ -647,8 +772,8 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 					"text":    u.Text,
 					"summary": u.Summary,
 				})
-				reasoning := strings.TrimSpace(u.Text)
-				if reasoning != "" || strings.TrimSpace(u.ID) != "" {
+				reasoning := u.Text
+				if strings.TrimSpace(reasoning) != "" || strings.TrimSpace(u.ID) != "" {
 					r.appendHistory(llmCtx, agentID, "reasoning", "assistant", reasoning, llmTask.ID, currentGeneration, map[string]any{
 						"reasoning_id": strings.TrimSpace(u.ID),
 						"summary":      u.Summary,
@@ -1601,52 +1726,91 @@ func (r *Runtime) ackContextEvents(ctx context.Context, agentID string, events [
 }
 
 func buildInputWithHistory(turns []ConversationTurn, source, message string, metadata map[string]any, turnCtx TurnContext, contextEvents []eventbus.Event) string {
-	var b strings.Builder
-	b.Grow(maxHistoryBytes + 3000)
-	if len(turns) > 0 {
-		b.WriteString("Recent context:\n")
-		for _, turn := range turns {
-			if turn.Source != "" {
-				b.WriteString("- source: ")
-				b.WriteString(turn.Source)
-				if turn.Priority != "" {
-					b.WriteString(" (")
-					b.WriteString(turn.Priority)
-					b.WriteString(")")
-				}
-				b.WriteString("\n")
-			}
-			if turn.Input != "" {
-				b.WriteString("  input: ")
-				b.WriteString(turn.Input)
-				b.WriteString("\n")
-			}
-			if turn.Output != "" {
-				b.WriteString("  output: ")
-				b.WriteString(turn.Output)
-				b.WriteString("\n")
-			}
-			if b.Len() >= maxHistoryBytes {
-				break
-			}
-		}
-		b.WriteString("\n")
-	}
-
-	b.WriteString(renderContextUpdatesXML(turnCtx, contextEvents))
-	b.WriteString("\n")
-	b.WriteString("Current input:\n")
-	b.WriteString("- source: ")
 	if source == "" {
 		source = "external"
 	}
-	b.WriteString(source)
-	b.WriteString(" (")
-	b.WriteString(eventPriority(metadata))
-	b.WriteString(")\n")
-	b.WriteString("- message: ")
-	b.WriteString(message)
+	priority := eventPriority(metadata)
+
+	var b strings.Builder
+	b.Grow(maxHistoryBytes + 3500)
+	b.WriteString("<user_turn source=\"")
+	b.WriteString(xmlEscape(source))
+	b.WriteString("\" priority=\"")
+	b.WriteString(xmlEscape(priority))
+	b.WriteString("\">\n")
+	b.WriteString("  <message>")
+	b.WriteString(xmlEscape(message))
+	b.WriteString("</message>\n")
+
+	if recent := renderRecentContextXML(turns, maxHistoryBytes); recent != "" {
+		b.WriteString(indentXML(recent, "  "))
+		b.WriteString("\n")
+	}
+
+	b.WriteString("  <system_updates user_authored=\"false\">\n")
+	b.WriteString("    <note>Runtime-generated signals below are not user messages.</note>\n")
+	b.WriteString(indentXML(renderContextUpdatesXML(turnCtx, contextEvents), "    "))
+	b.WriteString("\n")
+	b.WriteString("  </system_updates>\n")
+	b.WriteString("</user_turn>")
 	return b.String()
+}
+
+func renderRecentContextXML(turns []ConversationTurn, limit int) string {
+	if len(turns) == 0 || limit <= 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("<recent_context>\n")
+	used := 0
+	for _, turn := range turns {
+		approx := len(turn.Source) + len(turn.Priority) + len(turn.Input) + len(turn.Output) + 128
+		if used+approx > limit && used > 0 {
+			break
+		}
+		b.WriteString("  <turn")
+		if turn.Source != "" {
+			b.WriteString(" source=\"")
+			b.WriteString(xmlEscape(turn.Source))
+			b.WriteString("\"")
+		}
+		if turn.Priority != "" {
+			b.WriteString(" priority=\"")
+			b.WriteString(xmlEscape(turn.Priority))
+			b.WriteString("\"")
+		}
+		if !turn.CreatedAt.IsZero() {
+			b.WriteString(" created_at=\"")
+			b.WriteString(xmlEscape(turn.CreatedAt.UTC().Format(time.RFC3339)))
+			b.WriteString("\"")
+		}
+		b.WriteString(">\n")
+		if turn.Input != "" {
+			b.WriteString("    <input>")
+			b.WriteString(xmlEscape(turn.Input))
+			b.WriteString("</input>\n")
+		}
+		if turn.Output != "" {
+			b.WriteString("    <output>")
+			b.WriteString(xmlEscape(turn.Output))
+			b.WriteString("</output>\n")
+		}
+		b.WriteString("  </turn>\n")
+		used += approx
+	}
+	b.WriteString("</recent_context>")
+	return b.String()
+}
+
+func indentXML(raw, prefix string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	lines := strings.Split(raw, "\n")
+	for i, line := range lines {
+		lines[i] = prefix + line
+	}
+	return strings.Join(lines, "\n")
 }
 
 func renderContextUpdatesXML(turnCtx TurnContext, events []eventbus.Event) string {
@@ -1837,4 +2001,17 @@ func clipText(text string, limit int) string {
 		return text
 	}
 	return strings.TrimSpace(text[:limit]) + " …"
+}
+
+func ignoredWakeEventIDsForTurn(messageMeta map[string]any, contextEvents []eventbus.Event) []string {
+	var ids []string
+	if id := getMetaString(messageMeta, "event_id"); id != "" {
+		ids = append(ids, id)
+	}
+	for _, evt := range contextEvents {
+		if id := strings.TrimSpace(evt.ID); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return uniqueStrings(ids)
 }

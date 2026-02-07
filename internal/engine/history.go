@@ -359,8 +359,9 @@ func HistoryEntryFromEvent(evt eventbus.Event) (AgentHistoryEntry, bool) {
 	if entry.Role == "" {
 		entry.Role = "system"
 	}
-	entry.Content = mapString(evt.Payload, "content")
-	if entry.Content == "" {
+	content, hasContent := mapContentString(evt.Payload, "content")
+	entry.Content = content
+	if !hasContent {
 		entry.Content = evt.Body
 	}
 	entry.TaskID = mapString(evt.Payload, "task_id")
@@ -410,6 +411,22 @@ func mapString(m map[string]any, key string) string {
 		return strings.TrimSpace(v)
 	default:
 		return strings.TrimSpace(fmt.Sprintf("%v", v))
+	}
+}
+
+func mapContentString(m map[string]any, key string) (string, bool) {
+	if m == nil {
+		return "", false
+	}
+	val, ok := m[key]
+	if !ok || val == nil {
+		return "", false
+	}
+	switch v := val.(type) {
+	case string:
+		return v, true
+	default:
+		return fmt.Sprintf("%v", v), true
 	}
 }
 

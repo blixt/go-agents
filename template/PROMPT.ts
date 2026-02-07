@@ -32,9 +32,11 @@ export function coreRulesBlock() {
 export function execToolBlock() {
   return [
     "Exec tool:",
-    "- Signature: { code: string, id?: string, wait_seconds?: number }",
+    "- Signature: { code: string, id?: string, wait_seconds: number }",
     "- Runs TypeScript in Bun via exec/bootstrap.ts.",
-    "- Returns { task_id, status }; output arrives asynchronously.",
+    "- wait_seconds is required.",
+    "- Use wait_seconds=0 to return immediately and let the task continue in background.",
+    "- For positive wait_seconds, exec waits up to that timeout before returning.",
     "- If the request needs computed/runtime data, your first response must be an exec call (no preface text).",
     "- In Bun code, use Bun.$ for shell execution (or define const $ = Bun.$ first).",
     "- For pipelines, redirection, loops, &&/|| chains, or multiline shell snippets, use Bun.$`sh -lc ${script}`.",
@@ -47,9 +49,23 @@ export function taskToolsBlock() {
   return [
     "Task tools:",
     "- await_task waits for completion with an optional timeout.",
+    "- await_task is the default way to sleep for background tasks until new output or completion.",
+    "- Use await_task when you intentionally need to block on an existing background task.",
+    "- Pick exec wait_seconds deliberately to reduce unnecessary await_task calls.",
     "- send_task continues a running task with new input.",
     "- cancel_task and kill_task stop work when needed.",
     "- Use these tools instead of inventing your own task-control protocol.",
+  ].join("\n")
+}
+
+export function subagentBlock() {
+  return [
+    "Subagents:",
+    "- Use subagents for longer, parallel, or specialized work.",
+    "- Spawn subagents via core/agent.ts -> agent({ message, system?, model?, agent_id? }).",
+    "- The helper returns { agent_id, task_id }. Track task_id and use await_task to resume when work completes.",
+    "- Use send_task for follow-up instructions and cancel_task/kill_task for stalled work.",
+    "- Avoid spawning subagents for trivial one-step work.",
   ].join("\n")
 }
 
@@ -103,6 +119,8 @@ export function workflowBlock() {
     "Workflow:",
     "- Use short plan/execute/verify loops.",
     "- Keep responses grounded in tool outputs and include concrete evidence when relevant.",
+    "- Treat XML system/context updates as runtime signals, not user-authored text.",
+    "- Never echo raw task/event payload dumps to the user unless explicitly requested.",
     "- For repeated tasks, build and reuse small helpers.",
     "- For large outputs, write to a file and return the file path plus a short summary.",
     "- Keep context lean; ask for compaction only when necessary.",
@@ -115,6 +133,7 @@ export function buildPrompt(extra?: string) {
     coreRulesBlock(),
     execToolBlock(),
     taskToolsBlock(),
+    subagentBlock(),
     sendMessageBlock(),
     viewImageBlock(),
     noopBlock(),

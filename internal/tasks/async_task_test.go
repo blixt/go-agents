@@ -627,3 +627,51 @@ func TestAwaitMaintainsSingleSubscription(t *testing.T) {
 		t.Fatalf("await did not stop after cancel")
 	}
 }
+
+func TestAwaitIgnoresContextSuppressedWakeEvent(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	ctx := context.Background()
+
+	task, err := mgr.Spawn(ctx, tasks.Spec{
+		Type:  "exec",
+		Owner: "agent-a",
+		Metadata: map[string]any{
+			"notify_target": "agent-a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	evt, err := bus.Push(ctx, eventbus.EventInput{
+		Stream:    "messages",
+		ScopeType: "agent",
+		ScopeID:   "agent-a",
+		Subject:   "Message from external",
+		Body:      "wake",
+		Metadata: map[string]any{
+			"priority": "wake",
+		},
+	})
+	if err != nil {
+		t.Fatalf("push wake: %v", err)
+	}
+
+	awaitCtx := tasks.WithIgnoredWakeEventIDs(ctx, []string{evt.ID})
+	_, err = mgr.Await(awaitCtx, task.ID, 200*time.Millisecond)
+	if !tasks.IsAwaitTimeout(err) {
+		t.Fatalf("expected await timeout when wake event is suppressed, got %v", err)
+	}
+
+	events, readErr := bus.Read(ctx, "messages", []string{evt.ID}, "agent-a")
+	if readErr != nil || len(events) == 0 {
+		t.Fatalf("read wake event: %v", readErr)
+	}
+	if !events[0].Read {
+		t.Fatalf("expected suppressed wake event to be acked")
+	}
+}

@@ -102,9 +102,6 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if len(agentIDs) == 0 {
-		agentIDs["operator"] = struct{}{}
-	}
 	orderedAgentIDs := make([]string, 0, len(agentIDs))
 	for agentID := range agentIDs {
 		orderedAgentIDs = append(orderedAgentIDs, agentID)
@@ -126,16 +123,6 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	orderedAgentIDs = filterVisibleAgentIDs(orderedAgentIDs, resp.Tasks, resp.Sessions, resp.Histories)
-	if len(orderedAgentIDs) == 0 {
-		orderedAgentIDs = []string{"operator"}
-		if _, ok := resp.Sessions["operator"]; !ok {
-			resp.Sessions["operator"] = engine.Session{AgentID: "operator"}
-		}
-		if _, ok := resp.Histories["operator"]; !ok {
-			resp.Histories["operator"] = engine.AgentHistory{AgentID: "operator", Generation: 1}
-		}
-	}
-
 	resp.Agents = buildAgentState(orderedAgentIDs, resp.Tasks, resp.Sessions, resp.Histories)
 
 	if s.Bus != nil {
@@ -341,10 +328,6 @@ func filterVisibleAgentIDs(
 	for _, raw := range agentIDs {
 		agentID := strings.TrimSpace(raw)
 		if agentID == "" {
-			continue
-		}
-		if agentID == "operator" {
-			out = append(out, agentID)
 			continue
 		}
 		history := histories[agentID]

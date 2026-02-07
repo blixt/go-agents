@@ -386,6 +386,19 @@ button.danger:hover {
   line-height: 1.45;
 }
 
+.text-block,
+.xml-block {
+  border: 1px solid var(--line);
+  background: var(--code-bg);
+  padding: 8px;
+  overflow: auto;
+  font-size: 12px;
+  margin: 6px 0 0;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .code-block .token.keyword,
 .code-block .token.operator,
 .code-block .token.punctuation {

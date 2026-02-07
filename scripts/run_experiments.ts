@@ -395,23 +395,23 @@ const main = async () => {
       priority: "wake",
       request_id: requestID,
     };
-    let runResp = await postJSONWithRetry(
-      base,
-      "/api/agents/operator/run",
-      request,
-    );
+    let runResp = await postJSONWithRetry(base, "/api/agents/run", request);
     let correlationRequestID = requestID;
     let correlationEventID =
       typeof runResp?.json?.event_id === "string" ? runResp.json.event_id : "";
+    let agentID =
+      typeof runResp?.json?.agent_id === "string" ? runResp.json.agent_id : "";
     if (unknownFieldError(runResp)) {
       request = {
         message: exp.prompt,
         source: "external",
       };
-      runResp = await postJSONWithRetry(base, "/api/agents/operator/run", request);
+      runResp = await postJSONWithRetry(base, "/api/agents/run", request);
       correlationRequestID = "";
       correlationEventID =
         typeof runResp?.json?.event_id === "string" ? runResp.json.event_id : "";
+      agentID =
+        typeof runResp?.json?.agent_id === "string" ? runResp.json.agent_id : "";
     }
 
     await writeJSON(join(expDir, "request.json"), {
@@ -428,7 +428,8 @@ const main = async () => {
       latestState = stateResp.json;
       const tasks = Array.isArray(latestState?.tasks) ? latestState.tasks : [];
       const llmCandidates = tasks.filter((task: any) => {
-        if (task?.type !== "llm" || task?.owner !== "operator") return false;
+        if (task?.type !== "llm") return false;
+        if (agentID && task?.owner !== agentID) return false;
         if (!correlationRequestID && !correlationEventID) return true;
         if (correlationRequestID && taskRequestID(task) === correlationRequestID) {
           return true;
@@ -491,7 +492,7 @@ const main = async () => {
     const updatesByTask = latestState?.updates || {};
     const updatesForLLM = updatesByTask[llmTask.id] || [];
     const sessions = latestState?.sessions || {};
-    const session = sessions.operator || null;
+    const session = (agentID && sessions[agentID]) || null;
 
     const execTasks = (latestState?.tasks || []).filter(
       (task: any) => task.type === "exec",
@@ -520,6 +521,7 @@ const main = async () => {
 
     await writeJSON(join(expDir, "result.json"), {
       llm_task: llmTaskFinal,
+      agent_id: agentID || null,
       correlation: {
         request_id: correlationRequestID,
         event_id: correlationEventID,

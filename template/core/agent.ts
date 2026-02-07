@@ -15,6 +15,7 @@ type AgentResult = {
   task_id?: string
   event_id?: string
   status?: string
+  requested_agent_id?: string
 }
 
 function resolveAPIURL() {
@@ -23,15 +24,11 @@ function resolveAPIURL() {
   return "http://localhost:8080"
 }
 
-function newAgentID() {
-  return `subagent-${crypto.randomUUID()}`
-}
-
 export async function agent(options: AgentOptions): Promise<AgentResult> {
   if (!options || !options.message || options.message.trim() === "") {
     throw new Error("agent: message is required")
   }
-  const agentID = options.agent_id && options.agent_id.trim() ? options.agent_id.trim() : newAgentID()
+  const requestedAgentID = options.agent_id && options.agent_id.trim() ? options.agent_id.trim() : ""
   const payload = {
     message: options.message,
     system: options.system,
@@ -40,7 +37,10 @@ export async function agent(options: AgentOptions): Promise<AgentResult> {
     priority: options.priority || "wake",
     request_id: options.request_id,
   }
-  const res = await fetch(`${resolveAPIURL()}/api/agents/${agentID}/run`, {
+  const endpoint = requestedAgentID
+    ? `${resolveAPIURL()}/api/agents/${encodeURIComponent(requestedAgentID)}/run`
+    : `${resolveAPIURL()}/api/agents/run`
+  const res = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -50,7 +50,7 @@ export async function agent(options: AgentOptions): Promise<AgentResult> {
     throw new Error(`agent: request failed (${res.status}) ${text}`)
   }
   const data = (await res.json()) as AgentResult
-  return { ...data, agent_id: agentID }
+  return data
 }
 
 export type { AgentOptions, AgentResult, AgentModel }

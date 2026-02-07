@@ -369,42 +369,59 @@ func TestRuntimeRunLoopPrioritizesWakeOverLow(t *testing.T) {
 		_ = rt.Run(ctx, "operator")
 	}()
 
-	var llmItems []tasks.Task
 	deadline := time.After(3 * time.Second)
 	for {
 		select {
 		case <-deadline:
-			t.Fatalf("timeout waiting for llm tasks")
+			items, _ := mgr.List(context.Background(), tasks.ListFilter{
+				Type:  "llm",
+				Owner: "operator",
+				Limit: 20,
+			})
+			sort.Slice(items, func(i, j int) bool {
+				if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+					return items[i].ID < items[j].ID
+				}
+				return items[i].CreatedAt.Before(items[j].CreatedAt)
+			})
+			collected := collectNonEmptyLLMInputs(t, mgr, items)
+			t.Fatalf("did not observe wake+low ordering before timeout, inputs=%v", collected)
 		default:
 			items, listErr := mgr.List(context.Background(), tasks.ListFilter{
 				Type:  "llm",
 				Owner: "operator",
-				Limit: 10,
+				Limit: 20,
 			})
 			if listErr != nil {
 				t.Fatalf("list llm tasks: %v", listErr)
 			}
-			if len(items) >= 2 {
-				llmItems = items
-				goto ready
+			sort.Slice(items, func(i, j int) bool {
+				if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+					return items[i].ID < items[j].ID
+				}
+				return items[i].CreatedAt.Before(items[j].CreatedAt)
+			})
+			collected := collectNonEmptyLLMInputs(t, mgr, items)
+			wakeIdx := indexOf(collected, "wake-priority-message")
+			lowIdx := indexOf(collected, "low-priority-message")
+			if wakeIdx >= 0 && lowIdx >= 0 {
+				if wakeIdx > lowIdx {
+					t.Fatalf("expected wake message before low message, inputs=%v", collected)
+				}
+				return
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
+}
 
-ready:
-	sort.Slice(llmItems, func(i, j int) bool {
-		if llmItems[i].CreatedAt.Equal(llmItems[j].CreatedAt) {
-			return llmItems[i].ID < llmItems[j].ID
-		}
-		return llmItems[i].CreatedAt.Before(llmItems[j].CreatedAt)
-	})
-
-	collected := make([]string, 0, 2)
-	for _, item := range llmItems {
-		updates, listErr := mgr.ListUpdates(context.Background(), item.ID, 10)
-		if listErr != nil {
-			t.Fatalf("list task updates: %v", listErr)
+func collectNonEmptyLLMInputs(t *testing.T, mgr *tasks.Manager, items []tasks.Task) []string {
+	t.Helper()
+	collected := make([]string, 0, len(items))
+	for _, item := range items {
+		updates, err := mgr.ListUpdates(context.Background(), item.ID, 10)
+		if err != nil {
+			t.Fatalf("list task updates: %v", err)
 		}
 		for _, upd := range updates {
 			if upd.Kind != "input" {
@@ -418,21 +435,17 @@ ready:
 			collected = append(collected, msg)
 			break
 		}
-		if len(collected) >= 2 {
-			break
+	}
+	return collected
+}
+
+func indexOf(items []string, want string) int {
+	for i, item := range items {
+		if item == want {
+			return i
 		}
 	}
-	if len(collected) < 2 {
-		t.Fatalf("expected at least two non-empty llm inputs, got %v", collected)
-	}
-	firstInput := collected[0]
-	secondInput := collected[1]
-	if firstInput != "wake-priority-message" {
-		t.Fatalf("expected wake message first, got %q", firstInput)
-	}
-	if secondInput != "low-priority-message" {
-		t.Fatalf("expected low message second, got %q", secondInput)
-	}
+	return -1
 }
 
 func TestRuntimeRunLoopWakesOnTaskOutputEvents(t *testing.T) {

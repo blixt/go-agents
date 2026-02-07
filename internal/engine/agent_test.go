@@ -317,6 +317,12 @@ func TestRuntimeInjectsAndAcksContextUpdates(t *testing.T) {
 	}
 
 	last := cp.LastInput()
+	if !strings.Contains(last, "<user_turn") {
+		t.Fatalf("expected user_turn xml wrapper in input, got: %q", last)
+	}
+	if !strings.Contains(last, "<system_updates user_authored=\"false\">") {
+		t.Fatalf("expected system_updates wrapper in input, got: %q", last)
+	}
 	if !strings.Contains(last, "<context_updates") {
 		t.Fatalf("expected context_updates xml in input, got: %q", last)
 	}
@@ -342,6 +348,7 @@ func TestRuntimeInjectsAndAcksContextUpdates(t *testing.T) {
 		t.Fatalf("read history: %v", err)
 	}
 	foundContextEvent := false
+	foundLLMInput := false
 	for _, evt := range historyEvents {
 		entry, ok := HistoryEntryFromEvent(evt)
 		if !ok {
@@ -349,11 +356,18 @@ func TestRuntimeInjectsAndAcksContextUpdates(t *testing.T) {
 		}
 		if entry.Type == "context_event" {
 			foundContextEvent = true
-			break
+		}
+		if entry.Type == "llm_input" {
+			if strings.Contains(entry.Content, "<user_turn") && strings.Contains(entry.Content, "<context_updates") {
+				foundLLMInput = true
+			}
 		}
 	}
 	if !foundContextEvent {
 		t.Fatalf("expected context_event entry in history")
+	}
+	if !foundLLMInput {
+		t.Fatalf("expected llm_input entry in history")
 	}
 
 	summaries, err := bus.List(ctx, "signals", eventbus.ListOptions{
@@ -373,6 +387,33 @@ func TestRuntimeInjectsAndAcksContextUpdates(t *testing.T) {
 		}
 	}
 	t.Fatalf("expected context update event to be listed")
+}
+
+func TestIgnoredWakeEventIDsForTurn(t *testing.T) {
+	messageMeta := map[string]any{
+		"event_id": "evt-message",
+	}
+	contextEvents := []eventbus.Event{
+		{ID: "evt-a"},
+		{ID: "evt-b"},
+		{ID: "evt-a"},
+		{ID: "   "},
+	}
+
+	ids := ignoredWakeEventIDsForTurn(messageMeta, contextEvents)
+	if len(ids) != 3 {
+		t.Fatalf("expected 3 unique event ids, got %d (%v)", len(ids), ids)
+	}
+	expected := map[string]struct{}{
+		"evt-message": {},
+		"evt-a":       {},
+		"evt-b":       {},
+	}
+	for _, id := range ids {
+		if _, ok := expected[id]; !ok {
+			t.Fatalf("unexpected id %q in ignore set %v", id, ids)
+		}
+	}
 }
 
 func TestRuntimeInjectsTimeAndDateSystemUpdates(t *testing.T) {
@@ -574,5 +615,31 @@ func TestRuntimeWritesSystemPromptAndToolsConfigOncePerGeneration(t *testing.T) 
 	}
 	if systemPromptCount != 1 {
 		t.Fatalf("expected 1 system_prompt entry in generation %d, got %d", currentGeneration, systemPromptCount)
+	}
+}
+
+func TestRuntimeResolveAgentID(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	rt := NewRuntime(bus, mgr, nil)
+	ctx := context.Background()
+
+	if got := rt.ResolveAgentID(ctx, ""); got != "agent-1" {
+		t.Fatalf("expected agent-1, got %q", got)
+	}
+	if got := rt.ResolveAgentID(ctx, ""); got != "agent-2" {
+		t.Fatalf("expected agent-2, got %q", got)
+	}
+	if got := rt.ResolveAgentID(ctx, "planner"); got != "planner-1" {
+		t.Fatalf("expected planner-1, got %q", got)
+	}
+	if got := rt.ResolveAgentID(ctx, "planner"); got != "planner-2" {
+		t.Fatalf("expected planner-2, got %q", got)
+	}
+	if got := rt.ResolveAgentID(ctx, "planner-2"); got != "planner-2" {
+		t.Fatalf("expected planner-2 reuse, got %q", got)
 	}
 }

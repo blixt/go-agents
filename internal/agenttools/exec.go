@@ -15,7 +15,7 @@ import (
 type ExecParams struct {
 	Code        string `json:"code" description:"TypeScript code to run in Bun"`
 	ID          string `json:"id,omitempty" description:"Optional session id for snapshot reuse"`
-	WaitSeconds int    `json:"wait_seconds,omitempty" description:"Optional seconds to wait for completion before returning"`
+	WaitSeconds *int   `json:"wait_seconds" description:"Required seconds to wait before returning; use 0 to return immediately"`
 }
 
 func ExecTool(manager *tasks.Manager) llmtools.Tool {
@@ -58,11 +58,19 @@ func ExecTool(manager *tasks.Manager) llmtools.Tool {
 				return llmtools.ErrorWithLabel("Exec failed", fmt.Errorf("spawn exec task: %w", err))
 			}
 
-			waitSeconds := p.WaitSeconds
-			if waitSeconds <= 0 {
+			if p.WaitSeconds == nil {
+				return llmtools.Errorf("wait_seconds is required (set 0 to return immediately)")
+			}
+			waitSeconds := *p.WaitSeconds
+			if waitSeconds < 0 {
+				return llmtools.Errorf("wait_seconds must be >= 0")
+			}
+			if waitSeconds == 0 {
 				return llmtools.Success(map[string]any{
-					"task_id": task.ID,
-					"status":  task.Status,
+					"task_id":    task.ID,
+					"status":     task.Status,
+					"pending":    true,
+					"background": true,
 				})
 			}
 
@@ -82,15 +90,33 @@ func ExecTool(manager *tasks.Manager) llmtools.Tool {
 				}
 			}
 			if awaitErr != nil {
-				resp["await_error"] = awaitErr.Error()
 				if tasks.IsAwaitTimeout(awaitErr) {
+					resp["await_error"] = tasks.ErrAwaitTimeout.Error()
 					resp["pending"] = true
-				}
-				if wakeErr, ok := tasks.AsWakeError(awaitErr); ok {
-					resp["wake"] = map[string]any{
-						"priority": wakeErr.Priority,
-						"event":    wakeErr.Event.Subject,
+					resp["background"] = true
+				} else if wakeErr, ok := tasks.AsWakeError(awaitErr); ok {
+					priority := strings.TrimSpace(wakeErr.Priority)
+					if priority == "" {
+						priority = "wake"
 					}
+					wakeEventID := strings.TrimSpace(wakeErr.Event.ID)
+					if wakeEventID != "" {
+						resp["wake_event_id"] = wakeEventID
+					}
+					if wakeStream := strings.TrimSpace(wakeErr.Event.Stream); wakeStream != "" {
+						resp["wake_stream"] = wakeStream
+					}
+					wakeMsg := fmt.Sprintf("awoken by %s event", priority)
+					if wakeEventID != "" {
+						wakeMsg = fmt.Sprintf("%s %s", wakeMsg, wakeEventID)
+					}
+					resp["await_error"] = wakeMsg
+					if awaited.Status == tasks.StatusQueued || awaited.Status == tasks.StatusRunning {
+						resp["pending"] = true
+					}
+					resp["background"] = true
+				} else {
+					resp["await_error"] = awaitErr.Error()
 				}
 			}
 			return llmtools.Success(resp)

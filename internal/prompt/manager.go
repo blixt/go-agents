@@ -19,6 +19,9 @@ type Manager struct {
 	ToolNames []string
 }
 
+const promptMemoryFile = "MEMORY.md"
+const maxPromptContextChars = 8000
+
 func (m *Manager) BuildSystemPrompt(ctx context.Context, _ *eventbus.Bus) (content.Content, string, error) {
 	text, err := BuildPrompt(ctx, m.Home)
 	if err != nil {
@@ -53,5 +56,67 @@ func BuildPrompt(ctx context.Context, home string) (string, error) {
 	if text == "" {
 		return "", fmt.Errorf("prompt builder returned empty prompt")
 	}
-	return text, nil
+	withContext, err := appendPromptContextFromWorkspace(home, text)
+	if err != nil {
+		return "", err
+	}
+	return withContext, nil
+}
+
+func appendPromptContextFromWorkspace(home, prompt string) (string, error) {
+	target := filepath.Join(home, promptMemoryFile)
+	data, err := os.ReadFile(target)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return prompt, nil
+		}
+		return "", fmt.Errorf("read prompt context file %s: %w", target, err)
+	}
+	raw := strings.TrimSpace(string(data))
+	if raw == "" {
+		return prompt, nil
+	}
+
+	trimmed, wasTrimmed := trimPromptContext(raw, maxPromptContextChars)
+	section := fmt.Sprintf("### %s\n%s", promptMemoryFile, trimmed)
+	if wasTrimmed {
+		section += fmt.Sprintf("\n\n[...truncated; read %s in ~/.go-agents for full content...]", promptMemoryFile)
+	}
+
+	var b strings.Builder
+	b.WriteString(prompt)
+	b.WriteString("\n\n## Workspace Context\n")
+	b.WriteString("The following workspace files were loaded from ~/.go-agents:\n\n")
+	b.WriteString(section)
+	return strings.TrimSpace(b.String()), nil
+}
+
+func trimPromptContext(text string, limit int) (string, bool) {
+	if limit <= 0 {
+		return text, false
+	}
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text, false
+	}
+	head := int(float64(limit) * 0.7)
+	tail := int(float64(limit) * 0.2)
+	if head < 1 {
+		head = 1
+	}
+	if tail < 1 {
+		tail = 1
+	}
+	if head+tail >= limit {
+		tail = limit - head
+		if tail < 1 {
+			tail = 1
+			head = limit - tail
+			if head < 1 {
+				head = 1
+			}
+		}
+	}
+	out := string(runes[:head]) + "\n\n[...truncated...]\n\n" + string(runes[len(runes)-tail:])
+	return out, true
 }

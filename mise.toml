@@ -16,6 +16,13 @@ run = [
   "watchexec -r -w . -w ../go-llms -- docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build --remove-orphans",
 ]
 
+[tasks.reset]
+description = "Reset docker compose stack with force recreate"
+run = [
+  "docker compose down --remove-orphans",
+  "docker compose up --build --force-recreate --remove-orphans -d",
+]
+
 [tasks.test]
 description = "Run all tests"
 run = [

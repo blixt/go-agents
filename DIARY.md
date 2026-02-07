@@ -668,3 +668,103 @@ Next replication targets
   Run: `2026-02-06T19-54-00-534Z` using `consolidated_runtime_resilience.json`.
   Results: all 5 experiments completed; each used exec and produced grounded outputs, including stale-task cancellation and file-first inventory output.
   Takeaway: New consolidated specs run successfully with current harness/runtime behavior.
+
+- Prompt + memory baseline update.
+  Date: 2026-02-07.
+  Changes:
+  - Updated `template/PROMPT.ts` with an explicit subagent section:
+    - when to spawn subagents,
+    - how to spawn via `core/agent.ts`,
+    - how to coordinate via `await_task` / `send_task` / cancellation tools.
+  - Added default `template/MEMORY.md` for new `~/.go-agents` homes.
+  - Updated prompt manager to append `MEMORY.md` from `~/.go-agents` to the built system prompt.
+  Takeaway: go-agents now has a default durable-memory file and prompt-level ingestion of `MEMORY.md`.
+
+- Deferred follow-ups (captured, intentionally not implemented in this pass).
+  Date: 2026-02-07.
+  Backlog:
+  - Pre-compaction memory-flush turn (silent system turn to persist durable notes before compaction).
+  - Helper index/context block for reusable scripts in `~/.go-agents/tools` (auto-discovered and injected).
+  - Runtime-enforced large-output-to-file guardrail (beyond prompt guidance).
+  - Minimal prompt mode for subagents to keep delegated turns compact.
+
+- Async exec semantics update + tests.
+  Date: 2026-02-07.
+  Changes:
+  - `exec` tool now requires `wait_seconds` (no implicit default).
+  - `wait_seconds=0` is the non-blocking mode; returns `{ pending: true, background: true }`.
+  - Negative `wait_seconds` is rejected.
+  - Await interruptions from wake events are surfaced with `background=true` in tool output.
+  - Added tests for:
+    - missing `wait_seconds` rejection,
+    - zero-timeout background return shape,
+    - completion-path wait behavior.
+  Takeaway: async behavior is explicit and model-driven; no hidden wait defaults.
+
+- Multi-exec turn progression coverage.
+  Date: 2026-02-07.
+  Changes:
+  - Added `internal/engine/multi_exec_turn_test.go` validating that when one turn launches multiple exec tasks, the next model turn starts when:
+    - any exec completes,
+    - any exec timeout returns,
+    - any wake-priority external signal arrives while waiting.
+  Takeaway: the runtime now has regression tests for the exact multi-exec wake/timeout progression model.
+
+- Signal framing + context injection cleanup.
+  Date: 2026-02-07.
+  Changes:
+  - LLM input is now framed as XML:
+    - `<user_turn source="..." priority="...">`
+    - `<system_updates user_authored="false">...</system_updates>`
+    - runtime context updates under `<context_updates ...>`.
+  - Added assertions in tests to verify these wrappers are present.
+  Takeaway: runtime-generated events are clearly separated from user-authored input for the model.
+
+- Reasoning whitespace preservation.
+  Date: 2026-02-07.
+  Changes:
+  - Removed unnecessary trimming before writing reasoning history entries; reasoning text is now concatenated as emitted.
+  Takeaway: avoids collapsed words in streamed reasoning blocks.
+
+- Snapshot coverage for full weather-style session state.
+  Date: 2026-02-07.
+  Changes:
+  - Added `internal/api/weather_snapshot_test.go` with a mocked provider and deterministic exec completion.
+  - Added snapshot fixture `internal/api/testdata/weather_session_snapshot.json`.
+  - Snapshot captures agent history, sessions, tasks, updates, and streams shape for regression detection.
+  Takeaway: we now have a concrete end-to-end state snapshot guardrail for the UI/event model.
+
+- Agent identity simplification (`agent-1` style defaults).
+  Date: 2026-02-07.
+  Changes:
+  - Added runtime `ResolveAgentID` with canonical naming:
+    - unnamed create -> `agent-1`, `agent-2`, ...
+    - named base -> `<name>-1`, `<name>-2`, ...
+    - explicit existing id reuse -> unchanged.
+  - Added API support for unnamed creation via `POST /api/agents/run`.
+  - `POST /api/agents/{id}/run` now resolves via runtime naming rules and returns resolved `agent_id`.
+  - Removed hardcoded `operator` fallback/special-casing from `/api/state`.
+  - Updated template subagent helper (`template/core/agent.ts`) to use `/api/agents/run` when `agent_id` is omitted.
+  - Updated UI (`web/app.js`) to start with no fixed agent, create on first send, then bind to returned `agent_id`.
+  - Updated experiment runner to correlate using returned `agent_id` instead of assuming `operator`.
+  - Added API/runtime tests for naming resolution.
+  Takeaway: no opinionated operator identity remains in runtime/API/UI defaults.
+
+- Prompt/template updates.
+  Date: 2026-02-07.
+  Changes:
+  - Prompt now documents required exec timeout semantics (`wait_seconds` required, `0` for immediate background).
+  - Prompt includes stronger subagent guidance and explicit rule to treat XML system/context updates as non-user text.
+  - Template embed now includes default `MEMORY.md`.
+  - Prompt manager appends `~/.go-agents/MEMORY.md` content into system prompt context (with bounded truncation).
+  Takeaway: prompt guidance now matches runtime semantics and includes durable memory context.
+
+- Validation and environment actions.
+  Date: 2026-02-07.
+  Completed:
+  - `mise run format` passed.
+  - `mise run test` passed.
+  - Force-recreated Docker Compose stack:
+    - `mise exec -- docker compose down --remove-orphans`
+    - `mise exec -- docker compose up --build --force-recreate --remove-orphans -d`
+    - Verified with `mise exec -- docker compose ps` (`agentd` + `execd` up).

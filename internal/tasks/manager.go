@@ -419,6 +419,7 @@ func (m *Manager) Await(ctx context.Context, taskID string, timeout time.Duratio
 		streams := append([]string{}, wakeStreams...)
 		sub = m.bus.Subscribe(ctx, streams)
 	}
+	ignoredWakeEventIDs := IgnoredWakeEventIDsFromContext(ctx)
 
 	for {
 		task, err := m.Get(ctx, taskID)
@@ -447,6 +448,10 @@ func (m *Manager) Await(ctx context.Context, taskID string, timeout time.Duratio
 		if evt, priority, ok, err := m.nextUnreadWakeEvent(ctx, targets, reader, 25); err != nil {
 			return task, err
 		} else if ok {
+			if shouldIgnoreWakeEvent(evt, ignoredWakeEventIDs) {
+				_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, reader)
+				continue
+			}
 			if err := applyWakeGrace(ctx, evt); err != nil {
 				return task, err
 			}
@@ -473,6 +478,10 @@ func (m *Manager) Await(ctx context.Context, taskID string, timeout time.Duratio
 			}
 			if wake, priority := wakeInfo(evt); wake {
 				if !eventMatchesAwaitTargets(evt, targets) {
+					continue
+				}
+				if shouldIgnoreWakeEvent(evt, ignoredWakeEventIDs) {
+					_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, reader)
 					continue
 				}
 				if err := applyWakeGrace(ctx, evt); err != nil {
@@ -515,6 +524,7 @@ func (m *Manager) AwaitAny(ctx context.Context, taskIDs []string, timeout time.D
 		streams := append([]string{}, wakeStreams...)
 		sub = m.bus.Subscribe(ctx, streams)
 	}
+	ignoredWakeEventIDs := IgnoredWakeEventIDsFromContext(ctx)
 
 	for {
 		pending := make([]string, 0, len(taskIDs))
@@ -540,6 +550,10 @@ func (m *Manager) AwaitAny(ctx context.Context, taskIDs []string, timeout time.D
 		if evt, priority, ok, err := m.nextUnreadWakeEvent(ctx, targets, reader, 25); err != nil {
 			return AwaitAnyResult{}, err
 		} else if ok {
+			if shouldIgnoreWakeEvent(evt, ignoredWakeEventIDs) {
+				_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, reader)
+				continue
+			}
 			if err := applyWakeGrace(ctx, evt); err != nil {
 				return AwaitAnyResult{PendingIDs: pending}, err
 			}
@@ -588,6 +602,10 @@ func (m *Manager) AwaitAny(ctx context.Context, taskIDs []string, timeout time.D
 			}
 			if wake, priority := wakeInfo(evt); wake {
 				if !eventMatchesAwaitTargets(evt, targets) {
+					continue
+				}
+				if shouldIgnoreWakeEvent(evt, ignoredWakeEventIDs) {
+					_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, reader)
 					continue
 				}
 				if err := applyWakeGrace(ctx, evt); err != nil {
@@ -1081,6 +1099,14 @@ func wakeInfo(evt eventbus.Event) (bool, string) {
 		return true, "wake"
 	}
 	return false, ""
+}
+
+func shouldIgnoreWakeEvent(evt eventbus.Event, ignoredIDs map[string]struct{}) bool {
+	if len(ignoredIDs) == 0 {
+		return false
+	}
+	_, ok := ignoredIDs[strings.TrimSpace(evt.ID)]
+	return ok
 }
 
 func awaitReaderForTargets(targets map[string]struct{}) string {

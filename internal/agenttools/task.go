@@ -62,15 +62,33 @@ func AwaitTaskTool(manager *tasks.Manager) llmtools.Tool {
 				}
 			}
 			if awaitErr != nil {
-				resp["await_error"] = awaitErr.Error()
 				if tasks.IsAwaitTimeout(awaitErr) {
+					resp["await_error"] = tasks.ErrAwaitTimeout.Error()
 					resp["pending"] = true
-				}
-				if wakeErr, ok := tasks.AsWakeError(awaitErr); ok {
-					resp["wake"] = map[string]any{
-						"priority": wakeErr.Priority,
-						"event":    wakeErr.Event.Subject,
+					resp["background"] = true
+				} else if wakeErr, ok := tasks.AsWakeError(awaitErr); ok {
+					priority := strings.TrimSpace(wakeErr.Priority)
+					if priority == "" {
+						priority = "wake"
 					}
+					wakeEventID := strings.TrimSpace(wakeErr.Event.ID)
+					if wakeEventID != "" {
+						resp["wake_event_id"] = wakeEventID
+					}
+					if wakeStream := strings.TrimSpace(wakeErr.Event.Stream); wakeStream != "" {
+						resp["wake_stream"] = wakeStream
+					}
+					wakeMsg := fmt.Sprintf("awoken by %s event", priority)
+					if wakeEventID != "" {
+						wakeMsg = fmt.Sprintf("%s %s", wakeMsg, wakeEventID)
+					}
+					resp["await_error"] = wakeMsg
+					if awaited.Status == tasks.StatusQueued || awaited.Status == tasks.StatusRunning {
+						resp["pending"] = true
+					}
+					resp["background"] = true
+				} else {
+					resp["await_error"] = awaitErr.Error()
 				}
 			}
 			return llmtools.Success(resp)

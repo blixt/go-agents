@@ -3,11 +3,11 @@ import { createRoot } from "react-dom/client";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import Prism from "prismjs";
+import "prismjs/components/prism-markup";
 import "prismjs/components/prism-javascript";
 import "prismjs/components/prism-typescript";
 
 const API_BASE = "";
-const DEFAULT_AGENT = "operator";
 const STREAMS = ["history", "messages", "task_output", "signals", "errors", "external"];
 const STREAM_LIMIT = 200;
 const TOOL_EVENT_TYPES = new Set(["tool_call", "tool_status", "tool_result"]);
@@ -67,13 +67,14 @@ function cloneHistory(history) {
 function parseHistoryEvent(evt) {
   if (!evt || evt.stream !== "history" || !evt.payload) return null;
   const payload = evt.payload || {};
+  const hasContent = Object.prototype.hasOwnProperty.call(payload, "content");
   const entry = {
     id: evt.id || payload.id || "",
     agent_id: payload.agent_id || evt.scope_id || "",
     generation: Number(payload.generation || evt.metadata?.generation || 1) || 1,
     type: payload.type || evt.metadata?.type || "note",
     role: payload.role || evt.metadata?.role || "system",
-    content: payload.content || evt.body || "",
+    content: hasContent ? String(payload.content ?? "") : evt.body || "",
     task_id: payload.task_id || "",
     tool_call_id: payload.tool_call_id || "",
     tool_name: payload.tool_name || "",
@@ -144,6 +145,7 @@ function normalizeState(data) {
     sessions: data?.sessions || {},
     histories: data?.histories || {},
     tasks: Array.isArray(data?.tasks) ? data.tasks : [],
+    updates: data?.updates || {},
   };
 }
 
@@ -154,13 +156,14 @@ function useRuntimeState() {
     sessions: {},
     histories: {},
     tasks: [],
+    updates: {},
   }));
   const [status, setStatus] = useState({ connected: false, error: "" });
   const refreshTimer = useRef(null);
 
   const refresh = useCallback(async () => {
     try {
-      const data = await fetchJSON(`/api/state?tasks=250&updates=0&streams=${STREAM_LIMIT}&history=1200`);
+      const data = await fetchJSON(`/api/state?tasks=250&updates=400&streams=${STREAM_LIMIT}&history=1200`);
       setState((prev) => ({ ...prev, ...normalizeState(data) }));
       setStatus((prev) => ({ ...prev, error: "" }));
     } catch (err) {
@@ -288,14 +291,63 @@ function JsonBlock({ value }) {
   return React.createElement("pre", { className: "json" }, toJSON(value));
 }
 
-function CodeBlock({ code }) {
-  const language = Prism.languages.typescript || Prism.languages.javascript || Prism.languages.clike;
-  const html = Prism.highlight(String(code || ""), language, "typescript");
+function CodeBlock({ code, language = "typescript", className = "code-block" }) {
+  const lang = String(language || "text").toLowerCase();
+  const prismLanguage = lang === "xml" ? "markup" : lang;
+  const grammar =
+    Prism.languages[prismLanguage] ||
+    Prism.languages.typescript ||
+    Prism.languages.javascript ||
+    Prism.languages.clike;
+  const raw = String(code || "");
+  if (!grammar) {
+    return React.createElement(
+      "pre",
+      { className: `${className} language-${prismLanguage}` },
+      React.createElement("code", null, raw),
+    );
+  }
+  const html = Prism.highlight(raw, grammar, prismLanguage);
   return React.createElement(
     "pre",
-    { className: "code-block language-typescript" },
+    { className: `${className} language-${prismLanguage}` },
     React.createElement("code", { dangerouslySetInnerHTML: { __html: html } }),
   );
+}
+
+function TextBlock({ text, className = "text-block" }) {
+  return React.createElement("pre", { className }, String(text || ""));
+}
+
+function isRuntimeInputEnvelope(text) {
+  if (typeof text !== "string") return false;
+  const value = text.trimStart();
+  return value.startsWith("<user_turn") && value.includes("<system_updates");
+}
+
+function simplifyToolResult(result) {
+  if (!result || typeof result !== "object" || !Array.isArray(result.content)) {
+    return result;
+  }
+  const parsed = result.content.map((item) => {
+    if (!item || typeof item !== "object") return item;
+    if (item.type === "json" && typeof item.data === "string") {
+      const maybe = parseJSONSafe(item.data);
+      return maybe.ok ? maybe.value : item.data;
+    }
+    if (item.type === "text" && typeof item.text === "string") {
+      return item.text;
+    }
+    return item;
+  });
+  if (parsed.length === 1 && (!result.error || result.error === "")) {
+    return parsed[0];
+  }
+  const out = {};
+  if (result.label && result.label !== "Success") out.label = result.label;
+  if (result.error) out.error = result.error;
+  out.content = parsed;
+  return out;
 }
 
 function statusRank(status) {
@@ -330,13 +382,82 @@ function isToolEvent(entry) {
   return TOOL_EVENT_TYPES.has(entry?.type);
 }
 
-function buildDisplayEntries(entries) {
+function deriveLLMTextSegments(updatesByTask, orderedEntries) {
+  if (!updatesByTask || typeof updatesByTask !== "object") return {};
+  const taskIDs = new Set();
+  for (const entry of orderedEntries || []) {
+    if (entry && typeof entry.task_id === "string" && entry.task_id.trim() !== "") {
+      taskIDs.add(entry.task_id.trim());
+    }
+  }
+
+  const out = {};
+  for (const taskID of taskIDs) {
+    const updates = Array.isArray(updatesByTask[taskID]) ? [...updatesByTask[taskID]] : [];
+    if (updates.length === 0) continue;
+    updates.sort((a, b) => new Date(a?.created_at || 0) - new Date(b?.created_at || 0));
+
+    let sawTool = false;
+    let pre = "";
+    let post = "";
+    for (const upd of updates) {
+      const kind = String(upd?.kind || "").trim();
+      if (kind === "llm_tool_start") {
+        sawTool = true;
+        continue;
+      }
+      if (kind !== "llm_text") continue;
+      const chunk = typeof upd?.payload?.text === "string" ? upd.payload.text : "";
+      if (chunk === "") continue;
+      if (!sawTool) {
+        pre += chunk;
+      } else {
+        post += chunk;
+      }
+    }
+
+    if (sawTool && pre.trim() !== "" && post.trim() !== "") {
+      out[taskID] = { pre, post };
+    }
+  }
+  return out;
+}
+
+function buildDisplayEntries(entries, updatesByTask = {}) {
   if (!Array.isArray(entries) || entries.length === 0) return [];
   const ordered = [...entries].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  const llmTextSegmentsByTask = deriveLLMTextSegments(updatesByTask, ordered);
+  const tasksWithToolEvents = new Set(
+    ordered
+      .filter((entry) => isToolEvent(entry) && typeof entry?.task_id === "string" && entry.task_id.trim() !== "")
+      .map((entry) => entry.task_id.trim()),
+  );
   const out = [];
   const toolByCallID = new Map();
+  const emittedPreToolByTask = new Set();
 
   for (const entry of ordered) {
+    if (entry.type === "context_event") {
+      continue;
+    }
+
+    const entryTaskID = typeof entry?.task_id === "string" ? entry.task_id.trim() : "";
+    if (isToolEvent(entry) && entryTaskID) {
+      const seg = llmTextSegmentsByTask[entryTaskID];
+      if (seg && !emittedPreToolByTask.has(entryTaskID)) {
+        out.push({
+          id: `assistant-pretool-${entryTaskID}`,
+          type: "assistant_message",
+          role: "assistant",
+          created_at: entry.created_at,
+          task_id: entryTaskID,
+          content: seg.pre,
+          data: { segment: "pre_tool", synthetic: true },
+        });
+        emittedPreToolByTask.add(entryTaskID);
+      }
+    }
+
     if (isToolEvent(entry) && entry.tool_call_id) {
       const callID = entry.tool_call_id;
       let group = toolByCallID.get(callID);
@@ -389,7 +510,7 @@ function buildDisplayEntries(entries) {
         }
       }
       if (data.result !== undefined) {
-        group.result = data.result;
+        group.result = simplifyToolResult(data.result);
       }
       if (data.metadata !== undefined) {
         group.metadata = data.metadata;
@@ -405,6 +526,18 @@ function buildDisplayEntries(entries) {
         at: entry.created_at,
       });
       continue;
+    }
+
+    if (entry.type === "assistant_message" && entryTaskID) {
+      const seg = llmTextSegmentsByTask[entryTaskID];
+      if (seg && tasksWithToolEvents.has(entryTaskID) && emittedPreToolByTask.has(entryTaskID)) {
+        out.push({
+          ...entry,
+          content: seg.post,
+          data: { ...(entry.data || {}), segment: "post_tool" },
+        });
+        continue;
+      }
     }
 
     if (entry.type === "reasoning") {
@@ -523,6 +656,15 @@ function EntryCard({ entry }) {
   }
 
   if (entry.type === "user_message") {
+    if (isRuntimeInputEnvelope(entry.content || "")) {
+      return React.createElement(
+        "div",
+        { className: "history-card history-user" },
+        React.createElement("div", { className: "history-meta" }, baseMeta),
+        React.createElement("div", { className: "history-title compact" }, "Input Envelope (XML sent to model)"),
+        React.createElement(CodeBlock, { code: entry.content || "", language: "xml", className: "xml-block" }),
+      );
+    }
     return React.createElement(
       "div",
       { className: "history-card history-user" },
@@ -531,11 +673,31 @@ function EntryCard({ entry }) {
     );
   }
 
+  if (entry.type === "llm_input") {
+    const looksXML = isRuntimeInputEnvelope(entry.content || "");
+    return React.createElement(
+      "div",
+      { className: "history-card history-system-update" },
+      React.createElement("div", { className: "history-meta" }, baseMeta),
+      React.createElement("div", { className: "history-title compact" }, "LLM Input"),
+      looksXML
+        ? React.createElement(CodeBlock, { code: entry.content || "", language: "xml", className: "xml-block" })
+        : React.createElement(TextBlock, { text: entry.content || "" }),
+    );
+  }
+
   if (entry.type === "assistant_message") {
+    const segment = entry.data?.segment;
+    const metaLabel =
+      segment === "pre_tool"
+        ? `assistant · pre-tool text · ${when}`
+        : segment === "post_tool"
+          ? `assistant · post-tool text · ${when}`
+          : baseMeta;
     return React.createElement(
       "div",
       { className: "history-card history-assistant" },
-      React.createElement("div", { className: "history-meta" }, baseMeta),
+      React.createElement("div", { className: "history-meta" }, metaLabel),
       React.createElement(Markdown, { text: entry.content || "" }),
     );
   }
@@ -546,7 +708,7 @@ function EntryCard({ entry }) {
       { className: "history-card history-reasoning history-compact" },
       React.createElement("div", { className: "history-meta" }, `assistant · reasoning · ${formatDateTime(entry.updated_at || entry.created_at)}`),
       entry.summary ? React.createElement("div", { className: "muted" }, `summary: ${entry.summary}`) : null,
-      React.createElement(Markdown, { text: entry.content || "_(empty reasoning block)_" }),
+      React.createElement(TextBlock, { text: entry.content || "" }),
     );
   }
 
@@ -617,7 +779,7 @@ function EntryCard({ entry }) {
 
 function App() {
   const { state, status, refresh } = useRuntimeState();
-  const [selectedAgent, setSelectedAgent] = useState(DEFAULT_AGENT);
+  const [selectedAgent, setSelectedAgent] = useState("");
   const [message, setMessage] = useState("");
   const [sendStatus, setSendStatus] = useState("");
   const [compactStatus, setCompactStatus] = useState("");
@@ -625,21 +787,23 @@ function App() {
 
   const agents = useMemo(() => {
     if (Array.isArray(state.agents) && state.agents.length > 0) return state.agents;
-    const ids = new Set([DEFAULT_AGENT]);
+    const ids = new Set();
     Object.keys(state.histories || {}).forEach((id) => ids.add(id));
     Object.keys(state.sessions || {}).forEach((id) => ids.add(id));
-    return Array.from(ids).map((id) => ({
+    return Array.from(ids)
+      .filter((id) => typeof id === "string" && id.trim() !== "")
+      .map((id) => ({
       id,
       status: "idle",
       active_tasks: 0,
       updated_at: "",
       generation: state.histories?.[id]?.generation || 1,
-    }));
+      }));
   }, [state.agents, state.histories, state.sessions]);
 
   useEffect(() => {
     if (!agents.some((agent) => agent.id === selectedAgent)) {
-      setSelectedAgent(agents[0]?.id || DEFAULT_AGENT);
+      setSelectedAgent(agents[0]?.id || "");
     }
   }, [agents, selectedAgent]);
 
@@ -652,8 +816,8 @@ function App() {
     generation: selectedHistory.generation || 1,
   };
   const timelineEntries = useMemo(
-    () => buildDisplayEntries(selectedHistory.entries || []),
-    [selectedHistory.entries],
+    () => buildDisplayEntries(selectedHistory.entries || [], state.updates || {}),
+    [selectedHistory.entries, state.updates],
   );
 
   useEffect(() => {
@@ -667,7 +831,10 @@ function App() {
     if (!trimmed) return;
     setSendStatus("sending");
     try {
-      const res = await fetch(`${API_BASE}/api/agents/${encodeURIComponent(selectedAgent)}/run`, {
+      const endpoint = selectedAgent
+        ? `${API_BASE}/api/agents/${encodeURIComponent(selectedAgent)}/run`
+        : `${API_BASE}/api/agents/run`;
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: trimmed, source: "external", priority: "wake" }),
@@ -677,14 +844,23 @@ function App() {
         setSendStatus(`error ${res.status}: ${text}`);
         return;
       }
+      const data = await res.json().catch(() => null);
+      if (data && typeof data.agent_id === "string" && data.agent_id.trim() !== "") {
+        setSelectedAgent(data.agent_id.trim());
+      }
       setMessage("");
       setSendStatus("sent");
+      refresh();
     } catch (err) {
       setSendStatus(`error: ${err.message || err}`);
     }
-  }, [message, selectedAgent]);
+  }, [message, refresh, selectedAgent]);
 
   const handleCompact = useCallback(async () => {
+    if (!selectedAgent) {
+      setCompactStatus("no agent selected");
+      return;
+    }
     setCompactStatus("compacting");
     try {
       const res = await fetch(`${API_BASE}/api/agents/${encodeURIComponent(selectedAgent)}/compact`, {
@@ -757,7 +933,7 @@ function App() {
             ),
           ),
           agents.length <= 1
-            ? React.createElement("div", { className: "muted" }, "No subagents observed yet.")
+            ? React.createElement("div", { className: "muted" }, "No agents yet. Send a message to create one.")
             : null,
         ),
       ),
@@ -767,7 +943,7 @@ function App() {
         React.createElement(
           "div",
           { className: "detail-head" },
-          React.createElement("h2", null, selectedAgent),
+          React.createElement("h2", null, selectedAgent || "No agent selected"),
           React.createElement(
             "div",
             { className: "detail-meta" },
@@ -791,7 +967,7 @@ function App() {
           React.createElement("textarea", {
             value: message,
             onChange: (event) => setMessage(event.target.value),
-            placeholder: `Message ${selectedAgent}...`,
+            placeholder: selectedAgent ? `Message ${selectedAgent}...` : "Message a new agent...",
           }),
           React.createElement(
             "div",
@@ -803,7 +979,7 @@ function App() {
             ),
             React.createElement(
               "button",
-              { className: "danger", onClick: handleCompact },
+              { className: "danger", onClick: handleCompact, disabled: !selectedAgent },
               "Compact Context",
             ),
             sendStatus ? React.createElement("span", { className: "muted" }, sendStatus) : null,
