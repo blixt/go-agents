@@ -13,6 +13,7 @@ type Config struct {
 	DataDir     string
 	DBPath      string
 	SnapshotDir string
+	LLMDebugDir string
 	WebDir      string
 
 	LLMProvider  string
@@ -36,6 +37,7 @@ type fileConfig struct {
 	DataDir      string `json:"data_dir"`
 	DBPath       string `json:"db_path"`
 	SnapshotDir  string `json:"snapshot_dir"`
+	LLMDebugDir  string `json:"llm_debug_dir"`
 	WebDir       string `json:"web_dir"`
 	LLMProvider  string `json:"llm_provider"`
 	LLMModel     string `json:"llm_model"`
@@ -62,6 +64,9 @@ func applyDefaults(cfg Config) Config {
 	if cfg.SnapshotDir == "" {
 		cfg.SnapshotDir = filepath.Join(cfg.DataDir, "exec-snapshots")
 	}
+	if cfg.LLMDebugDir == "" {
+		cfg.LLMDebugDir = filepath.Join(cfg.DataDir, "llm-debug")
+	}
 	if cfg.WebDir == "" {
 		cfg.WebDir = "web"
 	}
@@ -80,6 +85,9 @@ func mergeConfig(base Config, fileCfg fileConfig) Config {
 	}
 	if fileCfg.SnapshotDir != "" {
 		base.SnapshotDir = fileCfg.SnapshotDir
+	}
+	if fileCfg.LLMDebugDir != "" {
+		base.LLMDebugDir = fileCfg.LLMDebugDir
 	}
 	if fileCfg.WebDir != "" {
 		base.WebDir = fileCfg.WebDir

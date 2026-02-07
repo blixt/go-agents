@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import Prism from "prismjs";
+import ReactJson from "react-json-view";
+import XMLViewer from "react-xml-viewer";
 import "prismjs/components/prism-markup";
 import "prismjs/components/prism-javascript";
 import "prismjs/components/prism-typescript";
@@ -43,6 +45,60 @@ function parseJSONSafe(raw) {
   } catch (err) {
     return { ok: false, value: null, error: err?.message || String(err) };
   }
+}
+
+function usePrefersDark() {
+  const getValue = () =>
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-color-scheme: dark)").matches;
+
+  const [dark, setDark] = useState(getValue);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return undefined;
+    }
+    const query = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = (event) => setDark(event.matches);
+    if (typeof query.addEventListener === "function") {
+      query.addEventListener("change", onChange);
+      return () => query.removeEventListener("change", onChange);
+    }
+    query.addListener(onChange);
+    return () => query.removeListener(onChange);
+  }, []);
+
+  return dark;
+}
+
+function xmlTheme(darkMode) {
+  if (darkMode) {
+    return {
+      tagColor: "#87b5f2",
+      textColor: "#e4ebe7",
+      attributeKeyColor: "#ff9460",
+      attributeValueColor: "#8ce3c0",
+      separatorColor: "#98aaa4",
+      commentColor: "#93a6a0",
+      cdataColor: "#8ce3c0",
+      fontFamily: "IBM Plex Mono, monospace",
+      lineNumberBackground: "transparent",
+      lineNumberColor: "#98aaa4",
+    };
+  }
+  return {
+    tagColor: "#3f689c",
+    textColor: "#1e1c16",
+    attributeKeyColor: "#d2612c",
+    attributeValueColor: "#1f7a58",
+    separatorColor: "#6c6658",
+    commentColor: "#6c6658",
+    cdataColor: "#1f7a58",
+    fontFamily: "IBM Plex Mono, monospace",
+    lineNumberBackground: "transparent",
+    lineNumberColor: "#6c6658",
+  };
 }
 
 async function fetchJSON(path) {
@@ -267,9 +323,14 @@ function renderInlineObject(obj, className = "inline-fields") {
 function renderMaybeCollapsedJSON(title, value, options = {}) {
   if (value === null || value === undefined) return null;
   const collapseAt = typeof options.collapseAt === "number" ? options.collapseAt : 420;
+  const darkMode = Boolean(options.darkMode);
   const json = toJSON(value);
   if (json.trim() === "") return null;
-  const content = React.createElement("pre", { className: "json" }, json);
+  const content = React.createElement(JsonView, {
+    value,
+    darkMode,
+    collapsed: Boolean(options.collapsed),
+  });
   if (json.length <= collapseAt) {
     return React.createElement(
       React.Fragment,
@@ -286,9 +347,35 @@ function renderMaybeCollapsedJSON(title, value, options = {}) {
   );
 }
 
-function JsonBlock({ value }) {
+function JsonView({ value, darkMode, collapsed = false }) {
   if (value === null || value === undefined) return null;
-  return React.createElement("pre", { className: "json" }, toJSON(value));
+  const src =
+    value !== null && typeof value === "object" && !Array.isArray(value)
+      ? value
+      : Array.isArray(value)
+        ? { items: value }
+        : { value };
+  return React.createElement(
+    "div",
+    { className: "json-viewer" },
+    React.createElement(ReactJson, {
+      src,
+      name: false,
+      collapsed: collapsed ? 1 : false,
+      iconStyle: "triangle",
+      displayDataTypes: false,
+      displayObjectSize: false,
+      enableClipboard: false,
+      quotesOnKeys: false,
+      collapseStringsAfterLength: 180,
+      theme: darkMode ? "monokai" : "rjv-default",
+      style: {
+        backgroundColor: "transparent",
+        fontFamily: "IBM Plex Mono, monospace",
+        fontSize: "12px",
+      },
+    }),
+  );
 }
 
 function CodeBlock({ code, language = "typescript", className = "code-block" }) {
@@ -317,6 +404,20 @@ function CodeBlock({ code, language = "typescript", className = "code-block" }) 
 
 function TextBlock({ text, className = "text-block" }) {
   return React.createElement("pre", { className }, String(text || ""));
+}
+
+function XMLBlock({ xml, darkMode }) {
+  return React.createElement(
+    "div",
+    { className: "xml-viewer" },
+    React.createElement(XMLViewer, {
+      xml: String(xml || ""),
+      theme: xmlTheme(darkMode),
+      collapsible: true,
+      indentSize: 2,
+      showLineNumbers: true,
+    }),
+  );
 }
 
 function isRuntimeInputEnvelope(text) {
@@ -387,9 +488,17 @@ function buildDisplayEntries(entries) {
   const ordered = [...entries].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
   const out = [];
   const toolByCallID = new Map();
+  const llmInputTaskIDs = new Set(
+    ordered
+      .filter((entry) => entry && entry.type === "llm_input" && typeof entry.task_id === "string" && entry.task_id !== "")
+      .map((entry) => entry.task_id),
+  );
 
   for (const entry of ordered) {
     if (entry.type === "context_event") {
+      continue;
+    }
+    if (entry.type === "user_message" && entry.task_id && llmInputTaskIDs.has(entry.task_id)) {
       continue;
     }
 
@@ -501,7 +610,7 @@ function buildDisplayEntries(entries) {
   return out;
 }
 
-function renderToolArgs(toolEntry) {
+function renderToolArgs(toolEntry, darkMode) {
   const args = toolEntry.args;
   const raw = String(toolEntry.args_raw || "");
   if (toolEntry.tool_name === "exec" && args && typeof args === "object" && typeof args.code === "string") {
@@ -512,7 +621,8 @@ function renderToolArgs(toolEntry) {
       null,
       React.createElement("div", { className: "history-title compact" }, "Arguments"),
       React.createElement(CodeBlock, { code: args.code }),
-      renderInlineObject(extra) || (Object.keys(extra).length > 0 ? React.createElement(JsonBlock, { value: extra }) : null),
+      renderInlineObject(extra) ||
+        (Object.keys(extra).length > 0 ? React.createElement(JsonView, { value: extra, darkMode }) : null),
     );
   }
 
@@ -521,7 +631,7 @@ function renderToolArgs(toolEntry) {
       React.Fragment,
       null,
       React.createElement("div", { className: "history-title compact" }, "Arguments"),
-      renderInlineObject(args) || React.createElement(JsonBlock, { value: args }),
+      renderInlineObject(args) || React.createElement(JsonView, { value: args, darkMode }),
     );
   }
 
@@ -530,7 +640,7 @@ function renderToolArgs(toolEntry) {
       React.Fragment,
       null,
       React.createElement("div", { className: "history-title compact" }, "Arguments"),
-      renderInlineObject(args) || React.createElement(JsonBlock, { value: args }),
+      renderInlineObject(args) || React.createElement(JsonView, { value: args, darkMode }),
     );
   }
 
@@ -548,7 +658,7 @@ function renderToolArgs(toolEntry) {
   return null;
 }
 
-function EntryCard({ entry }) {
+function EntryCard({ entry, darkMode }) {
   const when = formatDateTime(entry.created_at);
   const baseMeta = `${entry.role} · ${entry.type} · ${when}`;
 
@@ -579,15 +689,6 @@ function EntryCard({ entry }) {
   }
 
   if (entry.type === "user_message") {
-    if (isRuntimeInputEnvelope(entry.content || "")) {
-      return React.createElement(
-        "div",
-        { className: "history-card history-user" },
-        React.createElement("div", { className: "history-meta" }, baseMeta),
-        React.createElement("div", { className: "history-title compact" }, "Input Envelope (XML sent to model)"),
-        React.createElement(CodeBlock, { code: entry.content || "", language: "xml", className: "xml-block" }),
-      );
-    }
     return React.createElement(
       "div",
       { className: "history-card history-user" },
@@ -602,9 +703,8 @@ function EntryCard({ entry }) {
       "div",
       { className: "history-card history-system-update" },
       React.createElement("div", { className: "history-meta" }, baseMeta),
-      React.createElement("div", { className: "history-title compact" }, "LLM Input"),
       looksXML
-        ? React.createElement(CodeBlock, { code: entry.content || "", language: "xml", className: "xml-block" })
+        ? React.createElement(XMLBlock, { xml: entry.content || "", darkMode })
         : React.createElement(TextBlock, { text: entry.content || "" }),
     );
   }
@@ -649,10 +749,10 @@ function EntryCard({ entry }) {
         React.createElement(StatusBadge, { status: entry.tool_status || "running" }),
       ),
       entry.tool_call_id ? React.createElement("div", { className: "muted mono" }, `call: ${entry.tool_call_id}`) : null,
-      renderToolArgs(entry),
-      renderMaybeCollapsedJSON("Result", entry.result, { collapseAt: 600 }),
+      renderToolArgs(entry, darkMode),
+      renderMaybeCollapsedJSON("Result", entry.result, { collapseAt: 600, darkMode }),
       entry.result_error ? React.createElement("div", { className: "error" }, entry.result_error) : null,
-      renderMaybeCollapsedJSON("Metadata", entry.metadata, { collapseAt: 380 }),
+      renderMaybeCollapsedJSON("Metadata", entry.metadata, { collapseAt: 380, darkMode }),
     );
   }
 
@@ -667,7 +767,7 @@ function EntryCard({ entry }) {
         `${entry.data?.stream || "event"}${entry.data?.priority ? ` · ${entry.data.priority}` : ""}`,
       ),
       entry.content ? React.createElement(Markdown, { text: entry.content }) : null,
-      renderMaybeCollapsedJSON("Event payload", entry.data, { collapseAt: 320 }),
+      renderMaybeCollapsedJSON("Event payload", entry.data, { collapseAt: 320, darkMode }),
     );
   }
 
@@ -677,7 +777,7 @@ function EntryCard({ entry }) {
       { className: "history-card history-system-update history-compact" },
       React.createElement("div", { className: "history-meta" }, baseMeta),
       React.createElement("div", { className: "history-title compact" }, entry.content || "system update"),
-      renderMaybeCollapsedJSON("", entry.data, { collapseAt: 340 }),
+      renderMaybeCollapsedJSON("", entry.data, { collapseAt: 340, darkMode }),
     );
   }
 
@@ -687,7 +787,7 @@ function EntryCard({ entry }) {
       { className: "history-card history-compaction history-compact" },
       React.createElement("div", { className: "history-meta" }, baseMeta),
       React.createElement("div", { className: "history-title compact" }, entry.content || "context compacted"),
-      renderMaybeCollapsedJSON("", entry.data, { collapseAt: 420 }),
+      renderMaybeCollapsedJSON("", entry.data, { collapseAt: 420, darkMode }),
     );
   }
 
@@ -697,13 +797,14 @@ function EntryCard({ entry }) {
     React.createElement("div", { className: "history-meta" }, baseMeta),
     entry.content ? React.createElement(Markdown, { text: entry.content }) : null,
     entry.data && Object.keys(entry.data).length > 0
-      ? React.createElement("pre", { className: "json" }, toJSON(entry.data))
+      ? React.createElement(JsonView, { value: entry.data, darkMode })
       : null,
   );
 }
 
 function App() {
   const { state, status, refresh } = useRuntimeState();
+  const darkMode = usePrefersDark();
   const [selectedAgent, setSelectedAgent] = useState("");
   const [message, setMessage] = useState("");
   const [sendStatus, setSendStatus] = useState("");
@@ -884,7 +985,13 @@ function App() {
           { className: "timeline", ref: timelineRef },
           !timelineEntries || timelineEntries.length === 0
             ? React.createElement("div", { className: "muted" }, "No history yet.")
-            : timelineEntries.map((entry) => React.createElement(EntryCard, { key: entry.id || `${entry.type}-${entry.created_at}`, entry })),
+            : timelineEntries.map((entry) =>
+                React.createElement(EntryCard, {
+                  key: entry.id || `${entry.type}-${entry.created_at}`,
+                  entry,
+                  darkMode,
+                }),
+              ),
         ),
         React.createElement(
           "div",

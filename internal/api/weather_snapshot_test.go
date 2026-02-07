@@ -247,8 +247,10 @@ func newSnapshotNormalizer() *snapshotNormalizer {
 }
 
 var (
-	ulidPattern    = regexp.MustCompile(`\b[0-9A-HJKMNP-TV-Z]{26}\b`)
-	rfc3339Pattern = regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b`)
+	ulidPattern                     = regexp.MustCompile(`\b[0-9A-HJKMNP-TV-Z]{26}\b`)
+	rfc3339Pattern                  = regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b`)
+	taskOutputEventPattern          = regexp.MustCompile(`(?s)<event stream="task_output"[^>]*>.*?</event>`)
+	taskOutputEventDuplicatePattern = regexp.MustCompile(`(?:<event stream="task_output">\.\.\.</event>\s*){2,}`)
 )
 
 func (n *snapshotNormalizer) Normalize(v any) any {
@@ -332,7 +334,12 @@ func (n *snapshotNormalizer) normalizeString(s string) string {
 		return "<time>"
 	}
 	s = rfc3339Pattern.ReplaceAllString(s, "<time>")
-	return ulidPattern.ReplaceAllString(s, "<id>")
+	s = ulidPattern.ReplaceAllString(s, "<id>")
+	if strings.Contains(s, "<user_turn") {
+		s = taskOutputEventPattern.ReplaceAllString(s, `<event stream="task_output">...</event>`)
+		s = taskOutputEventDuplicatePattern.ReplaceAllString(s, `<event stream="task_output">...</event>`+"\n")
+	}
+	return s
 }
 
 func assertSnapshot(t *testing.T, relPath string, got []byte) {

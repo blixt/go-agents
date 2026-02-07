@@ -376,6 +376,24 @@ button.danger:hover {
   margin: 6px 0 0;
 }
 
+.json-viewer,
+.xml-viewer {
+  border: 1px solid var(--line);
+  background: var(--code-bg);
+  padding: 8px;
+  overflow: auto;
+  font-size: 12px;
+  margin: 6px 0 0;
+}
+
+.json-viewer .react-json-view {
+  background: transparent !important;
+}
+
+.xml-viewer .rxv-container {
+  background: transparent !important;
+}
+
 .code-block {
   border: 1px solid var(--line);
   background: var(--code-bg);

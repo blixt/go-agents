@@ -24,11 +24,16 @@
     "prismjs/components/prism-markup": "https://ga.jspm.io/npm:prismjs@1.30.0/components/prism-markup.js",
     "prismjs/components/prism-typescript": "https://ga.jspm.io/npm:prismjs@1.30.0/components/prism-typescript.js",
     "react": "https://ga.jspm.io/npm:react@19.2.4/dev.index.js",
-    "react-dom/client": "https://ga.jspm.io/npm:react-dom@19.2.4/dev.client.js"
+    "react-dom/client": "https://ga.jspm.io/npm:react-dom@19.2.4/dev.client.js",
+    "react-json-view": "https://ga.jspm.io/npm:react-json-view@1.21.3/dist/main.js",
+    "react-xml-viewer": "https://ga.jspm.io/npm:react-xml-viewer@3.0.0/dist/index.es.js"
   },
   "scopes": {
     "https://ga.jspm.io/": {
+      "object-assign": "https://ga.jspm.io/npm:object-assign@4.1.1/index.js",
+      "react": "https://ga.jspm.io/npm:react@19.2.4/dev.index.js",
       "react-dom": "https://ga.jspm.io/npm:react-dom@19.2.4/dev.index.js",
+      "react/jsx-runtime": "https://ga.jspm.io/npm:react@19.2.4/dev.jsx-runtime.js",
       "scheduler": "https://ga.jspm.io/npm:scheduler@0.27.0/dev.index.js"
     }
   }

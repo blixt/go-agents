@@ -59,11 +59,12 @@ type TurnContext struct {
 }
 
 type Runtime struct {
-	Bus        *eventbus.Bus
-	Tasks      *tasks.Manager
-	LLM        *ai.Client
-	Context    *agentctx.Manager
-	LLMFactory func() (*llms.LLM, error)
+	Bus         *eventbus.Bus
+	Tasks       *tasks.Manager
+	LLM         *ai.Client
+	Context     *agentctx.Manager
+	LLMFactory  func() (*llms.LLM, error)
+	LLMDebugDir string
 
 	baseCtx context.Context
 	loopMu  sync.Mutex
@@ -130,6 +131,13 @@ func NewRuntime(bus *eventbus.Bus, tasksMgr *tasks.Manager, client *ai.Client) *
 		historyCompactionCutoff:  map[string]time.Time{},
 		historyPreambleByAgent:   map[string]int64{},
 	}
+}
+
+func (r *Runtime) SetLLMDebugDir(dir string) {
+	if r == nil {
+		return
+	}
+	r.LLMDebugDir = strings.TrimSpace(dir)
 }
 
 func (r *Runtime) Start(ctx context.Context) {
@@ -1881,6 +1889,7 @@ func buildInputWithHistory(turns []ConversationTurn, source, message string, met
 		source = "external"
 	}
 	priority := eventPriority(metadata)
+	message = strings.TrimSpace(message)
 
 	var b strings.Builder
 	b.Grow(maxHistoryBytes + 3500)
@@ -1889,9 +1898,11 @@ func buildInputWithHistory(turns []ConversationTurn, source, message string, met
 	b.WriteString("\" priority=\"")
 	b.WriteString(xmlEscape(priority))
 	b.WriteString("\">\n")
-	b.WriteString("  <message>")
-	b.WriteString(xmlEscape(message))
-	b.WriteString("</message>\n")
+	if message != "" {
+		b.WriteString("  <message>")
+		b.WriteString(xmlEscape(message))
+		b.WriteString("</message>\n")
+	}
 
 	if recent := renderRecentContextXML(turns, maxHistoryBytes); recent != "" {
 		b.WriteString(indentXML(recent, "  "))
@@ -1899,7 +1910,6 @@ func buildInputWithHistory(turns []ConversationTurn, source, message string, met
 	}
 
 	b.WriteString("  <system_updates user_authored=\"false\">\n")
-	b.WriteString("    <note>Runtime-generated signals below are not user messages.</note>\n")
 	b.WriteString(indentXML(renderContextUpdatesXML(turnCtx, contextEvents), "    "))
 	b.WriteString("\n")
 	b.WriteString("  </system_updates>\n")
@@ -1995,26 +2005,50 @@ func renderContextUpdatesXML(turnCtx TurnContext, events []eventbus.Event) strin
 
 	for _, evt := range events {
 		priority := eventPriority(evt.Metadata)
+		taskID := getMetaString(evt.Metadata, "task_id")
+		taskKind := getMetaString(evt.Metadata, "task_kind")
+		subject := clipText(strings.TrimSpace(evt.Subject), maxContextEventBody)
+		body := clipText(strings.TrimSpace(evt.Body), maxContextEventBody)
+		if taskID != "" && subject == fmt.Sprintf("Task %s update", taskID) {
+			subject = ""
+		}
+		if taskKind != "" && body == taskKind {
+			body = ""
+		}
 		b.WriteString("  <event stream=\"")
 		b.WriteString(xmlEscape(evt.Stream))
 		b.WriteString("\" id=\"")
 		b.WriteString(xmlEscape(evt.ID))
-		b.WriteString("\" priority=\"")
-		b.WriteString(xmlEscape(priority))
-		b.WriteString("\" created_at=\"")
+		b.WriteString("\"")
+		if priority != "" && priority != "normal" {
+			b.WriteString(" priority=\"")
+			b.WriteString(xmlEscape(priority))
+			b.WriteString("\"")
+		}
+		if taskID != "" {
+			b.WriteString(" task_id=\"")
+			b.WriteString(xmlEscape(taskID))
+			b.WriteString("\"")
+		}
+		if taskKind != "" {
+			b.WriteString(" task_kind=\"")
+			b.WriteString(xmlEscape(taskKind))
+			b.WriteString("\"")
+		}
+		b.WriteString(" created_at=\"")
 		b.WriteString(evt.CreatedAt.UTC().Format(time.RFC3339))
 		b.WriteString("\">\n")
-		if strings.TrimSpace(evt.Subject) != "" {
+		if subject != "" {
 			b.WriteString("    <subject>")
-			b.WriteString(xmlEscape(clipText(strings.TrimSpace(evt.Subject), maxContextEventBody)))
+			b.WriteString(xmlEscape(subject))
 			b.WriteString("</subject>\n")
 		}
-		if strings.TrimSpace(evt.Body) != "" {
+		if body != "" {
 			b.WriteString("    <body>")
-			b.WriteString(xmlEscape(clipText(strings.TrimSpace(evt.Body), maxContextEventBody)))
+			b.WriteString(xmlEscape(body))
 			b.WriteString("</body>\n")
 		}
-		if metadata := previewJSON(evt.Metadata, maxContextEventData); metadata != "" {
+		if metadata := compactEventMetadataForPrompt(evt.Metadata, evt.Stream, priority, taskID, taskKind); metadata != "" {
 			b.WriteString("    <metadata>")
 			b.WriteString(xmlEscape(metadata))
 			b.WriteString("</metadata>\n")
@@ -2028,6 +2062,41 @@ func renderContextUpdatesXML(turnCtx TurnContext, events []eventbus.Event) strin
 	}
 	b.WriteString("</context_updates>")
 	return b.String()
+}
+
+func compactEventMetadataForPrompt(metadata map[string]any, stream, priority, taskID, taskKind string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	clean := make(map[string]any, len(metadata))
+	for k, v := range metadata {
+		if strings.TrimSpace(k) == "" || v == nil {
+			continue
+		}
+		if value, ok := v.(string); ok && strings.TrimSpace(value) == "" {
+			continue
+		}
+		clean[k] = v
+	}
+	if len(clean) == 0 {
+		return ""
+	}
+	if p := getMetaString(clean, "priority"); p != "" && p == priority {
+		delete(clean, "priority")
+	}
+	if strings.TrimSpace(stream) == "task_output" && strings.EqualFold(getMetaString(clean, "kind"), "task_update") {
+		delete(clean, "kind")
+	}
+	if taskID != "" && getMetaString(clean, "task_id") == taskID {
+		delete(clean, "task_id")
+	}
+	if taskKind != "" && getMetaString(clean, "task_kind") == taskKind {
+		delete(clean, "task_kind")
+	}
+	if len(clean) == 0 {
+		return ""
+	}
+	return previewJSON(clean, maxContextEventData)
 }
 
 func previewJSON(v any, limit int) string {
