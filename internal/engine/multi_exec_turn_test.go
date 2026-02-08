@@ -337,7 +337,7 @@ func TestRunOnceMultiExecNextTurnOnExternalWakeWhileWaiting(t *testing.T) {
 	triggerAt := time.Now().UTC()
 	if _, err := bus.Push(context.Background(), eventbus.EventInput{
 		Stream:    "signals",
-		ScopeType: "agent",
+		ScopeType: "task",
 		ScopeID:   "operator",
 		Subject:   "test wake",
 		Body:      "wake now",

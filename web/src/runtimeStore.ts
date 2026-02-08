@@ -27,10 +27,11 @@ function initialState(): RuntimeState {
 
 function cloneHistory(history?: History): History {
   if (!history) {
-    return { agent_id: "", generation: 1, entries: [] };
+    return { generation: 1, entries: [] };
   }
   return {
     agent_id: history.agent_id || "",
+    task_id: history.task_id || history.agent_id || "",
     generation: typeof history.generation === "number" ? history.generation : 1,
     entries: Array.isArray(history.entries) ? [...history.entries] : [],
   };
@@ -40,14 +41,17 @@ function parseHistoryEvent(evt: any): HistoryEntry | null {
   if (!evt || evt.stream !== "history" || !evt.payload) return null;
   const payload = evt.payload || {};
   const hasContent = Object.prototype.hasOwnProperty.call(payload, "content");
+  // agent_id in the payload is the owning agent/task identity
+  // task_id in the payload is the LLM subtask id
+  const ownerID = payload.agent_id || evt.scope_id || "";
   const entry: HistoryEntry = {
     id: evt.id || payload.id || "",
-    agent_id: payload.agent_id || evt.scope_id || "",
+    task_id: ownerID,
     generation: Number(payload.generation || evt.metadata?.generation || 1) || 1,
     type: payload.type || evt.metadata?.type || "note",
     role: payload.role || evt.metadata?.role || "system",
     content: hasContent ? String(payload.content ?? "") : evt.body || "",
-    task_id: payload.task_id || "",
+    llm_task_id: payload.task_id || "",
     tool_call_id: payload.tool_call_id || "",
     tool_name: payload.tool_name || "",
     tool_status: payload.tool_status || "",
@@ -57,12 +61,12 @@ function parseHistoryEvent(evt: any): HistoryEntry | null {
   Object.entries(payload).forEach(([key, value]) => {
     if (
       [
+        "task_id",
         "agent_id",
         "generation",
         "type",
         "role",
         "content",
-        "task_id",
         "tool_call_id",
         "tool_name",
         "tool_status",
@@ -73,14 +77,14 @@ function parseHistoryEvent(evt: any): HistoryEntry | null {
     }
     entry.data[key] = value;
   });
-  return entry.agent_id ? entry : null;
+  return entry.task_id ? entry : null;
 }
 
 function upsertHistory(state: RuntimeState, entry: HistoryEntry): RuntimeState {
-  if (!entry || !entry.agent_id) return state;
+  if (!entry || !entry.task_id) return state;
   const histories = { ...(state.histories || {}) };
-  const current = cloneHistory(histories[entry.agent_id]);
-  current.agent_id = entry.agent_id;
+  const current = cloneHistory(histories[entry.task_id]);
+  current.task_id = entry.task_id;
 
   if (entry.generation > current.generation) {
     current.generation = entry.generation;
@@ -94,16 +98,16 @@ function upsertHistory(state: RuntimeState, entry: HistoryEntry): RuntimeState {
       }
     }
   }
-  histories[entry.agent_id] = current;
+  histories[entry.task_id] = current;
 
   const agentSet = new Set((state.agents || []).map((agent) => agent.id));
-  if (!agentSet.has(entry.agent_id)) {
+  if (!agentSet.has(entry.task_id)) {
     return {
       ...state,
       histories,
       agents: [
         {
-          id: entry.agent_id,
+          id: entry.task_id,
           status: "running",
           active_tasks: 0,
           updated_at: entry.created_at,

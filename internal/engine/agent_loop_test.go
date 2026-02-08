@@ -90,7 +90,7 @@ func TestRuntimeRunLoop(t *testing.T) {
 
 	_, _ = bus.Push(context.Background(), eventbus.EventInput{
 		Stream:    "messages",
-		ScopeType: "agent",
+		ScopeType: "task",
 		ScopeID:   "operator",
 		Body:      "hello",
 		Metadata: map[string]any{
@@ -124,7 +124,7 @@ func TestRuntimeRunLoopReplaysUnreadMessages(t *testing.T) {
 
 	evt, err := bus.Push(context.Background(), eventbus.EventInput{
 		Stream:    "messages",
-		ScopeType: "agent",
+		ScopeType: "task",
 		ScopeID:   "operator",
 		Body:      "queued-before-loop",
 		Metadata: map[string]any{
@@ -203,7 +203,7 @@ func TestRuntimeRunLoopDoesNotDuplicateBufferedMessages(t *testing.T) {
 
 	_, err := bus.Push(context.Background(), eventbus.EventInput{
 		Stream:    "messages",
-		ScopeType: "agent",
+		ScopeType: "task",
 		ScopeID:   "operator",
 		Body:      "first",
 		Metadata: map[string]any{
@@ -216,7 +216,7 @@ func TestRuntimeRunLoopDoesNotDuplicateBufferedMessages(t *testing.T) {
 	}
 	_, err = bus.Push(context.Background(), eventbus.EventInput{
 		Stream:    "messages",
-		ScopeType: "agent",
+		ScopeType: "task",
 		ScopeID:   "operator",
 		Body:      "second",
 		Metadata: map[string]any{
@@ -290,7 +290,7 @@ func TestRuntimeRunLoopKeepsFailedMessageUnread(t *testing.T) {
 
 	evt, err := bus.Push(context.Background(), eventbus.EventInput{
 		Stream:    "messages",
-		ScopeType: "agent",
+		ScopeType: "task",
 		ScopeID:   "operator",
 		Body:      "fail please",
 		Metadata: map[string]any{
@@ -360,7 +360,7 @@ func TestRuntimeRunLoopPrioritizesWakeOverLow(t *testing.T) {
 
 	_, err := bus.Push(context.Background(), eventbus.EventInput{
 		Stream:    "messages",
-		ScopeType: "agent",
+		ScopeType: "task",
 		ScopeID:   "operator",
 		Body:      "low-priority-message",
 		Metadata: map[string]any{
@@ -374,7 +374,7 @@ func TestRuntimeRunLoopPrioritizesWakeOverLow(t *testing.T) {
 	}
 	_, err = bus.Push(context.Background(), eventbus.EventInput{
 		Stream:    "messages",
-		ScopeType: "agent",
+		ScopeType: "task",
 		ScopeID:   "operator",
 		Body:      "wake-priority-message",
 		Metadata: map[string]any{
@@ -433,7 +433,7 @@ func TestRuntimeRunLoopPrioritizesWakeOverLow(t *testing.T) {
 func llmInputsFromHistory(t *testing.T, bus *eventbus.Bus, agentID string) []string {
 	t.Helper()
 	summaries, err := bus.List(context.Background(), "history", eventbus.ListOptions{
-		ScopeType: "agent",
+		ScopeType: "task",
 		ScopeID:   agentID,
 		Limit:     200,
 		Order:     "fifo",

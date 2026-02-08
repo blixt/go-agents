@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/flitsinc/go-agents/internal/agentcontext"
 	"github.com/flitsinc/go-agents/internal/eventbus"
 	"github.com/flitsinc/go-agents/internal/idgen"
 )
@@ -48,7 +49,9 @@ type Update struct {
 }
 
 type Spec struct {
+	ID       string         `json:"id,omitempty"`
 	Type     string         `json:"type"`
+	Name     string         `json:"name,omitempty"`
 	Owner    string         `json:"owner"`
 	ParentID string         `json:"parent_id,omitempty"`
 	Mode     string         `json:"mode,omitempty"`
@@ -68,7 +71,7 @@ type Manager struct {
 	bus *eventbus.Bus
 
 	nowFn   func() time.Time
-	newIDFn func() string
+	newIDFn func(string) string
 }
 
 var ErrAwaitTimeout = errors.New("await timeout")
@@ -133,7 +136,7 @@ func WithClock(nowFn func() time.Time) Option {
 	}
 }
 
-func WithIDGenerator(newIDFn func() string) Option {
+func WithIDGenerator(newIDFn func(string) string) Option {
 	return func(m *Manager) {
 		if newIDFn != nil {
 			m.newIDFn = newIDFn
@@ -146,7 +149,12 @@ func NewManager(db *sql.DB, bus *eventbus.Bus, opts ...Option) *Manager {
 		db:      db,
 		bus:     bus,
 		nowFn:   func() time.Time { return time.Now().UTC() },
-		newIDFn: idgen.New,
+		newIDFn: func(prefix string) string {
+			if prefix != "" {
+				return idgen.TaskID(db, prefix)
+			}
+			return idgen.New()
+		},
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -163,18 +171,30 @@ func (m *Manager) now() time.Time {
 	return m.nowFn().UTC()
 }
 
-func (m *Manager) newID() string {
+func (m *Manager) newID(prefix string) string {
 	if m.newIDFn == nil {
+		if prefix != "" {
+			return idgen.TaskID(m.db, prefix)
+		}
 		return idgen.New()
 	}
-	return m.newIDFn()
+	return m.newIDFn(prefix)
 }
 
 func (m *Manager) Spawn(ctx context.Context, spec Spec) (Task, error) {
 	if strings.TrimSpace(spec.Type) == "" {
 		return Task{}, fmt.Errorf("task type is required")
 	}
-	id := m.newID()
+	var id string
+	if spec.ID != "" {
+		id = spec.ID
+	} else {
+		prefix := spec.Type
+		if spec.Name != "" {
+			prefix = spec.Name
+		}
+		id = m.newID(prefix)
+	}
 	createdAt := m.now()
 	metadata := map[string]any{}
 	for k, v := range spec.Metadata {
@@ -344,7 +364,7 @@ func (m *Manager) RecordUpdate(ctx context.Context, taskID, kind string, payload
 	if kind == "" {
 		return fmt.Errorf("kind is required")
 	}
-	id := m.newID()
+	id := m.newID("")
 	createdAt := m.now()
 	payloadJSON, err := encodeJSON(payload)
 	if err != nil {
@@ -365,6 +385,7 @@ func (m *Manager) RecordUpdate(ctx context.Context, taskID, kind string, payload
 	if m.bus != nil {
 		scopeType, scopeID := scopeForTarget(m.taskTarget(ctx, taskID, "notify_target"))
 		priority := taskUpdatePriority(kind, payload)
+		sourceID := strings.TrimSpace(agentcontext.TaskIDFromContext(ctx))
 		_, _ = m.bus.Push(ctx, eventbus.EventInput{
 			Stream:    "task_output",
 			ScopeType: scopeType,
@@ -377,7 +398,8 @@ func (m *Manager) RecordUpdate(ctx context.Context, taskID, kind string, payload
 				"task_kind": kind,
 				"priority":  priority,
 			},
-			Payload: payload,
+			Payload:  payload,
+			SourceID: sourceID,
 		})
 	}
 	return nil
@@ -447,6 +469,46 @@ func (m *Manager) Send(ctx context.Context, taskID string, input map[string]any)
 		})
 	}
 	return m.RecordUpdate(ctx, taskID, "input", input)
+}
+
+// AckTaskOutput marks all unread task_output events for the given task as read
+// from the perspective of the reader. This prevents collectUnreadContextEvents
+// from re-delivering results that were already returned via tool_result.
+func (m *Manager) AckTaskOutput(ctx context.Context, taskID, readerID string) {
+	if m.bus == nil || taskID == "" || readerID == "" {
+		return
+	}
+	summaries, err := m.bus.List(ctx, "task_output", eventbus.ListOptions{
+		ScopeType: "task",
+		ScopeID:   readerID,
+		Reader:    readerID,
+		Limit:     50,
+	})
+	if err != nil || len(summaries) == 0 {
+		return
+	}
+	var unreadIDs []string
+	for _, s := range summaries {
+		if !s.Read {
+			unreadIDs = append(unreadIDs, s.ID)
+		}
+	}
+	if len(unreadIDs) == 0 {
+		return
+	}
+	events, err := m.bus.Read(ctx, "task_output", unreadIDs, readerID)
+	if err != nil {
+		return
+	}
+	var ackIDs []string
+	for _, evt := range events {
+		if getMetaString(evt.Metadata, "task_id") == taskID {
+			ackIDs = append(ackIDs, evt.ID)
+		}
+	}
+	if len(ackIDs) > 0 {
+		_ = m.bus.Ack(ctx, "task_output", ackIDs, readerID)
+	}
 }
 
 func (m *Manager) Await(ctx context.Context, taskID string, timeout time.Duration) (Task, error) {
@@ -1040,7 +1102,7 @@ func (m *Manager) nextUnreadWakeEvent(ctx context.Context, targets map[string]st
 			continue
 		}
 		scopes = append(scopes, eventbus.ListOptions{
-			ScopeType: "agent",
+			ScopeType: "task",
 			ScopeID:   target,
 			Limit:     limit,
 			Order:     "fifo",
@@ -1137,7 +1199,7 @@ func scopeForTarget(target string) (string, string) {
 	if strings.TrimSpace(target) == "" {
 		return "", ""
 	}
-	return "agent", target
+	return "task", target
 }
 
 func wakeInfo(evt eventbus.Event) (bool, string) {
@@ -1215,7 +1277,7 @@ func awaitTargetsForTask(task Task) map[string]struct{} {
 }
 
 func eventMatchesAwaitTargets(evt eventbus.Event, targets map[string]struct{}) bool {
-	if evt.ScopeType == "agent" {
+	if evt.ScopeType == "task" {
 		if evt.ScopeID == "" {
 			return false
 		}

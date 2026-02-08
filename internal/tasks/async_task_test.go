@@ -373,7 +373,7 @@ func TestAwaitSeesPreexistingWakeEvent(t *testing.T) {
 
 	evt, err := bus.Push(ctx, eventbus.EventInput{
 		Stream:    "signals",
-		ScopeType: "agent",
+		ScopeType: "task",
 		ScopeID:   "agent-a",
 		Subject:   "wake",
 		Body:      "wake",
@@ -525,7 +525,7 @@ func TestAwaitAnySeesPreexistingWakeEvent(t *testing.T) {
 
 	evt, err := bus.Push(ctx, eventbus.EventInput{
 		Stream:    "signals",
-		ScopeType: "agent",
+		ScopeType: "task",
 		ScopeID:   "agent-a",
 		Subject:   "wake",
 		Body:      "wake",
@@ -691,7 +691,7 @@ func TestAwaitIgnoresForeignScopedWake(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	_, err = bus.Push(ctx, eventbus.EventInput{
 		Stream:    "signals",
-		ScopeType: "agent",
+		ScopeType: "task",
 		ScopeID:   "agent-b",
 		Subject:   "wake",
 		Body:      "wake",
@@ -756,7 +756,7 @@ func TestAwaitMaintainsSingleSubscription(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		_, err := bus.Push(ctx, eventbus.EventInput{
 			Stream:    "signals",
-			ScopeType: "agent",
+			ScopeType: "task",
 			ScopeID:   "agent-b",
 			Subject:   "wake",
 			Body:      "wake",
@@ -803,7 +803,7 @@ func TestAwaitIgnoresContextSuppressedWakeEvent(t *testing.T) {
 
 	evt, err := bus.Push(ctx, eventbus.EventInput{
 		Stream:    "messages",
-		ScopeType: "agent",
+		ScopeType: "task",
 		ScopeID:   "agent-a",
 		Subject:   "Message from external",
 		Body:      "wake",

@@ -11,7 +11,7 @@ func TestHistoryEntryFromEventPreservesContentWhitespace(t *testing.T) {
 	evt := eventbus.Event{
 		ID:        "evt-1",
 		Stream:    "history",
-		ScopeType: "agent",
+		ScopeType: "task",
 		ScopeID:   "agent-1",
 		CreatedAt: time.Now().UTC(),
 		Payload: map[string]any{

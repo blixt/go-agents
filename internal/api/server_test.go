@@ -70,15 +70,20 @@ func TestServerStateAndQueue(t *testing.T) {
 		t.Fatalf("expected no queued tasks")
 	}
 
-	// Agent run enqueues work via the event bus.
-	resp = doJSON(t, client, "POST", "/api/agents/run", map[string]any{"message": "hello", "source": "external"})
+	// Create agent task via POST /api/tasks.
+	resp = doJSON(t, client, "POST", "/api/tasks", map[string]any{
+		"type":    "agent",
+		"payload": map[string]any{"message": "hello"},
+		"source":  "external",
+	})
 	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("agent run status: %d body=%s", resp.StatusCode, readBody(t, resp))
+		t.Fatalf("create task status: %d body=%s", resp.StatusCode, readBody(t, resp))
 	}
 	var run map[string]any
 	decodeJSONResponse(t, resp, &run)
-	if run["agent_id"] != "agent-1" {
-		t.Fatalf("expected agent_id agent-1, got %#v", run["agent_id"])
+	taskID, _ := run["task_id"].(string)
+	if taskID == "" {
+		t.Fatalf("expected task_id, got %#v", run)
 	}
 
 	// State snapshot.
@@ -99,7 +104,7 @@ func TestServerStateAndQueue(t *testing.T) {
 	}
 }
 
-func TestServerAgentRunResolvesNamedIDs(t *testing.T) {
+func TestServerCreateTaskWithName(t *testing.T) {
 	db, closeFn := testutil.OpenTestDB(t)
 	defer closeFn()
 
@@ -110,34 +115,32 @@ func TestServerAgentRunResolvesNamedIDs(t *testing.T) {
 	server := &Server{Tasks: mgr, Bus: bus, Runtime: rt}
 	client := testutil.NewInProcessClient(server.Handler())
 
-	resp := doJSON(t, client, "POST", "/api/agents/planner/run", map[string]any{"message": "first"})
+	resp := doJSON(t, client, "POST", "/api/tasks", map[string]any{
+		"type":    "agent",
+		"name":    "planner",
+		"payload": map[string]any{"message": "first"},
+	})
 	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("planner run status: %d body=%s", resp.StatusCode, readBody(t, resp))
+		t.Fatalf("create task status: %d body=%s", resp.StatusCode, readBody(t, resp))
 	}
 	var first map[string]any
 	decodeJSONResponse(t, resp, &first)
-	if first["agent_id"] != "planner-1" {
-		t.Fatalf("expected planner-1, got %#v", first["agent_id"])
+	if first["task_id"] != "planner-1" {
+		t.Fatalf("expected planner-1, got %#v", first["task_id"])
 	}
 
-	resp = doJSON(t, client, "POST", "/api/agents/planner/run", map[string]any{"message": "second"})
+	resp = doJSON(t, client, "POST", "/api/tasks", map[string]any{
+		"type":    "agent",
+		"name":    "planner",
+		"payload": map[string]any{"message": "second"},
+	})
 	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("planner run status: %d body=%s", resp.StatusCode, readBody(t, resp))
+		t.Fatalf("create task status: %d body=%s", resp.StatusCode, readBody(t, resp))
 	}
 	var second map[string]any
 	decodeJSONResponse(t, resp, &second)
-	if second["agent_id"] != "planner-2" {
-		t.Fatalf("expected planner-2, got %#v", second["agent_id"])
-	}
-
-	resp = doJSON(t, client, "POST", "/api/agents/planner-2/run", map[string]any{"message": "continue"})
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("planner-2 run status: %d body=%s", resp.StatusCode, readBody(t, resp))
-	}
-	var existing map[string]any
-	decodeJSONResponse(t, resp, &existing)
-	if existing["agent_id"] != "planner-2" {
-		t.Fatalf("expected planner-2 reuse, got %#v", existing["agent_id"])
+	if second["task_id"] != "planner-2" {
+		t.Fatalf("expected planner-2, got %#v", second["task_id"])
 	}
 }
 
@@ -154,7 +157,7 @@ func TestServerAgentCompact(t *testing.T) {
 	h := server.Handler()
 	client := testutil.NewInProcessClient(h)
 
-	resp := doJSON(t, client, "POST", "/api/agents/operator/compact", map[string]any{
+	resp := doJSON(t, client, "POST", "/api/tasks/operator/compact", map[string]any{
 		"reason": "test compact",
 	})
 	if resp.StatusCode != http.StatusAccepted {
@@ -162,7 +165,7 @@ func TestServerAgentCompact(t *testing.T) {
 	}
 
 	list, err := bus.List(context.Background(), "history", eventbus.ListOptions{
-		ScopeType: "agent",
+		ScopeType: "task",
 		ScopeID:   "operator",
 		Limit:     20,
 		Order:     "lifo",

@@ -125,8 +125,7 @@ function TextBlock({ text, className = "text-block" }: { text: string; className
 
 function isRuntimeInputEnvelope(text: string): boolean {
   if (typeof text !== "string") return false;
-  const value = text.trimStart();
-  return value.startsWith("<user_turn") && value.includes("<system_updates");
+  return text.trimStart().startsWith("<system_updates");
 }
 
 function simplifyToolResult(result: unknown): unknown {
@@ -164,6 +163,7 @@ function statusRank(status: string): number {
     done: 2,
     completed: 2,
     running: 3,
+    waiting: 3,
     streaming: 4,
     start: 5,
     queued: 6,
@@ -194,12 +194,12 @@ export function buildDisplayEntries(entries: HistoryEntry[]): DisplayEntry[] {
   const out: DisplayEntry[] = [];
   const toolByCallID = new Map<string, ToolGroup>();
   const llmInputTaskIDs = new Set(
-    ordered.filter((entry) => entry && entry.type === "llm_input" && entry.task_id !== "").map((entry) => entry.task_id),
+    ordered.filter((entry) => entry && entry.type === "llm_input" && entry.llm_task_id !== "").map((entry) => entry.llm_task_id),
   );
 
   for (const entry of ordered) {
     if (entry.type === "context_event") continue;
-    if (entry.type === "user_message" && entry.task_id && llmInputTaskIDs.has(entry.task_id)) continue;
+    if (entry.type === "user_message" && entry.llm_task_id && llmInputTaskIDs.has(entry.llm_task_id)) continue;
 
     if (isToolEvent(entry) && entry.tool_call_id) {
       const callID = entry.tool_call_id;
@@ -209,7 +209,7 @@ export function buildDisplayEntries(entries: HistoryEntry[]): DisplayEntry[] {
           id: `tool-${callID}`,
           type: "tool_call_group",
           role: "tool",
-          task_id: entry.task_id || "",
+          task_id: entry.task_id || entry.llm_task_id || "",
           tool_call_id: callID,
           tool_name: entry.tool_name || "",
           tool_status: entry.tool_status || (entry.type === "tool_call" ? "start" : ""),
@@ -301,23 +301,15 @@ function renderMaybeCollapsedJSON(
   options: { collapseAt?: number; darkMode: boolean; collapsed?: boolean },
 ): React.ReactElement | null {
   if (value === null || value === undefined) return null;
-  const collapseAt = typeof options.collapseAt === "number" ? options.collapseAt : 420;
   const json = toJSON(value);
   if (json.trim() === "") return null;
-  const content = <JsonView value={value} darkMode={options.darkMode} collapsed={Boolean(options.collapsed)} />;
-  if (json.length <= collapseAt) {
-    return (
-      <>
-        {title ? <div className="history-title compact">{title}</div> : null}
-        {content}
-      </>
-    );
-  }
+  const collapseAt = typeof options.collapseAt === "number" ? options.collapseAt : 420;
+  const shouldCollapse = Boolean(options.collapsed) || json.length > collapseAt;
   return (
-    <details>
-      <summary>{title || "Details"}</summary>
-      {content}
-    </details>
+    <>
+      {title ? <div className="history-title compact">{title}</div> : null}
+      <JsonView value={value} darkMode={options.darkMode} collapsed={shouldCollapse} />
+    </>
   );
 }
 

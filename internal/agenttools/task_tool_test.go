@@ -34,7 +34,7 @@ func TestAwaitTaskToolWakeIncludesWakeEventID(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		evt, err := bus.Push(context.Background(), eventbus.EventInput{
 			Stream:    "messages",
-			ScopeType: "agent",
+			ScopeType: "task",
 			ScopeID:   "agent-a",
 			Subject:   "Message from external",
 			Body:      "wake now",
@@ -47,9 +47,10 @@ func TestAwaitTaskToolWakeIncludesWakeEventID(t *testing.T) {
 		}
 	}()
 
+	waitSec := 2
 	raw, _ := json.Marshal(AwaitTaskParams{
 		TaskID:      task.ID,
-		WaitSeconds: 2,
+		WaitSeconds: &waitSec,
 	})
 	result := tool.Run(llmtools.NopRunner, raw)
 	if result.Error() != nil {

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -23,8 +22,7 @@ import (
 )
 
 type Session struct {
-	AgentID    string    `json:"agent_id"`
-	RootTaskID string    `json:"root_task_id,omitempty"`
+	TaskID     string    `json:"task_id"`
 	LLMTaskID  string    `json:"llm_task_id,omitempty"`
 	Prompt     string    `json:"prompt"`
 	LastInput  string    `json:"last_input"`
@@ -33,21 +31,10 @@ type Session struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
-type AgentState struct {
-	ID         string
-	Prompt     *agentctx.Manager
-	RootTaskID string
-	System     string
-	Model      string
-	mu         sync.Mutex
-}
-
-type ConversationTurn struct {
-	Source    string
-	Input     string
-	Output    string
-	Priority  string
-	CreatedAt time.Time
+type taskConfig struct {
+	System string
+	Model  string
+	mu     sync.Mutex
 }
 
 type TurnContext struct {
@@ -82,9 +69,8 @@ type Runtime struct {
 	mu       sync.RWMutex
 	sessions map[string]Session
 
-	agentMu sync.RWMutex
-	agents  map[string]*AgentState
-	nameMu  sync.Mutex
+	configMu    sync.RWMutex
+	taskConfigs map[string]*taskConfig
 
 	inflightMu sync.Mutex
 	inflight   map[string]context.CancelFunc
@@ -95,26 +81,19 @@ type Runtime struct {
 	turnMu        sync.Mutex
 	lastTurnStart map[string]time.Time
 
-	knownMu     sync.RWMutex
-	knownAgents map[string]struct{}
+	contextCursorMu        sync.Mutex
+	lastContextCursorByTask map[string]string
 
-	contextCursorMu          sync.Mutex
-	lastContextCursorByAgent map[string]string
-
-	historyMu                sync.Mutex
-	historyGenerationByAgent map[string]int64
-	historyCompactionCutoff  map[string]time.Time
-	historyPreambleByAgent   map[string]int64
+	historyMu               sync.Mutex
+	historyGenerationByTask map[string]int64
+	historyCompactionCutoff map[string]time.Time
+	historyPreambleByTask   map[string]int64
 
 	nowFn func() time.Time
 }
 
 const (
-	maxConversationTurns  = 8
-	maxHistoryInputChars  = 400
-	maxHistoryOutputChars = 800
-	maxHistoryBytes       = 8000
-	maxToolContentChars   = 1200
+	maxToolContentChars = 1200
 
 	maxContextEventsPerTurn = 24
 	maxContextEventBodyWake = 500
@@ -141,22 +120,21 @@ func NewRuntime(bus *eventbus.Bus, tasksMgr *tasks.Manager, client *ai.Client, o
 	ctxMgr := &agentctx.Manager{Home: home}
 
 	r := &Runtime{
-		Bus:                      bus,
-		Tasks:                    tasksMgr,
-		LLM:                      client,
-		Context:                  ctxMgr,
-		loops:                    map[string]context.CancelFunc{},
-		sessions:                 map[string]Session{},
-		agents:                   map[string]*AgentState{},
-		inflight:                 map[string]context.CancelFunc{},
-		lastWake:                 map[string]time.Time{},
-		lastTurnStart:            map[string]time.Time{},
-		knownAgents:              map[string]struct{}{},
-		lastContextCursorByAgent: map[string]string{},
-		historyGenerationByAgent: map[string]int64{},
-		historyCompactionCutoff:  map[string]time.Time{},
-		historyPreambleByAgent:   map[string]int64{},
-		nowFn:                    func() time.Time { return time.Now().UTC() },
+		Bus:                     bus,
+		Tasks:                   tasksMgr,
+		LLM:                     client,
+		Context:                 ctxMgr,
+		loops:                   map[string]context.CancelFunc{},
+		sessions:                map[string]Session{},
+		taskConfigs:             map[string]*taskConfig{},
+		inflight:                map[string]context.CancelFunc{},
+		lastWake:                map[string]time.Time{},
+		lastTurnStart:           map[string]time.Time{},
+		lastContextCursorByTask: map[string]string{},
+		historyGenerationByTask: map[string]int64{},
+		historyCompactionCutoff: map[string]time.Time{},
+		historyPreambleByTask:   map[string]int64{},
+		nowFn:                   func() time.Time { return time.Now().UTC() },
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -186,7 +164,7 @@ func (r *Runtime) contextCursor(agentID string) string {
 	}
 	r.contextCursorMu.Lock()
 	defer r.contextCursorMu.Unlock()
-	return strings.TrimSpace(r.lastContextCursorByAgent[agentID])
+	return strings.TrimSpace(r.lastContextCursorByTask[agentID])
 }
 
 func (r *Runtime) advanceContextCursor(agentID string, events []eventbus.Event) {
@@ -208,10 +186,10 @@ func (r *Runtime) advanceContextCursor(agentID string, events []eventbus.Event) 
 	}
 	r.contextCursorMu.Lock()
 	defer r.contextCursorMu.Unlock()
-	if existing := strings.TrimSpace(r.lastContextCursorByAgent[agentID]); existing != "" && existing >= maxID {
+	if existing := strings.TrimSpace(r.lastContextCursorByTask[agentID]); existing != "" && existing >= maxID {
 		return
 	}
-	r.lastContextCursorByAgent[agentID] = maxID
+	r.lastContextCursorByTask[agentID] = maxID
 }
 
 func (r *Runtime) Start(ctx context.Context) {
@@ -286,7 +264,7 @@ func (r *Runtime) emitTaskHealth(ctx context.Context) {
 	}
 
 	for target, list := range byTarget {
-		scopeType := "agent"
+		scopeType := "task"
 		scopeID := target
 		if target == "*" {
 			scopeType = "global"
@@ -331,7 +309,7 @@ func (r *Runtime) emitTaskHealth(ctx context.Context) {
 		body := fmt.Sprintf("task_health: stale tasks detected (%d). See signals/task_health. ids=%s", len(wakeIDs), strings.Join(wakeIDs, ","))
 		_, _ = r.Bus.Push(ctx, eventbus.EventInput{
 			Stream:    "messages",
-			ScopeType: "agent",
+			ScopeType: "task",
 			ScopeID:   target,
 			Subject:   fmt.Sprintf("wake: task_health ids=%s", strings.Join(wakeIDs, ",")),
 			Body:      body,
@@ -357,13 +335,12 @@ func (r *Runtime) shouldWakeTask(taskID string, now time.Time, cooldown time.Dur
 	return true
 }
 
-func (r *Runtime) EnsureAgentLoop(agentID string) {
-	if agentID == "" {
+func (r *Runtime) EnsureAgentLoop(taskID string) {
+	if taskID == "" {
 		return
 	}
-	r.rememberAgent(agentID)
 	r.loopMu.Lock()
-	if _, ok := r.loops[agentID]; ok {
+	if _, ok := r.loops[taskID]; ok {
 		r.loopMu.Unlock()
 		return
 	}
@@ -372,163 +349,38 @@ func (r *Runtime) EnsureAgentLoop(agentID string) {
 		base = context.Background()
 	}
 	loopCtx, cancel := context.WithCancel(base)
-	r.loops[agentID] = cancel
+	r.loops[taskID] = cancel
 	r.loopMu.Unlock()
 
 	go func() {
-		_ = r.Run(loopCtx, agentID)
+		_ = r.Run(loopCtx, taskID)
 		r.loopMu.Lock()
-		delete(r.loops, agentID)
+		delete(r.loops, taskID)
 		r.loopMu.Unlock()
 	}()
 }
 
-var trailingAgentIndexPattern = regexp.MustCompile(`-\d+$`)
-
-func normalizeAgentName(raw string) string {
-	name := strings.ToLower(strings.TrimSpace(raw))
-	if name == "" {
-		return ""
-	}
-	var b strings.Builder
-	b.Grow(len(name))
-	prevDash := false
-	for _, ch := range name {
-		switch {
-		case ch >= 'a' && ch <= 'z':
-			b.WriteRune(ch)
-			prevDash = false
-		case ch >= '0' && ch <= '9':
-			b.WriteRune(ch)
-			prevDash = false
-		case ch == '-' || ch == '_' || ch == ' ':
-			if b.Len() == 0 || prevDash {
-				continue
-			}
-			b.WriteByte('-')
-			prevDash = true
-		default:
-			continue
-		}
-	}
-	return strings.Trim(b.String(), "-")
-}
-
-func agentNameBase(name string) string {
-	base := trailingAgentIndexPattern.ReplaceAllString(name, "")
-	base = strings.Trim(base, "-")
-	if base == "" {
-		return "agent"
-	}
-	return base
-}
-
-func (r *Runtime) agentIDExists(ctx context.Context, agentID string) bool {
-	agentID = normalizeAgentName(agentID)
-	if agentID == "" {
-		return false
-	}
-
-	r.knownMu.RLock()
-	_, known := r.knownAgents[agentID]
-	r.knownMu.RUnlock()
-	if known {
-		return true
-	}
-
-	r.agentMu.RLock()
-	_, hasState := r.agents[agentID]
-	r.agentMu.RUnlock()
-	if hasState {
-		return true
-	}
-
-	r.mu.RLock()
-	_, hasSession := r.sessions[agentID]
-	r.mu.RUnlock()
-	if hasSession {
-		return true
-	}
-
-	if r.Tasks != nil {
-		items, err := r.Tasks.List(ctx, tasks.ListFilter{
-			Owner: agentID,
-			Limit: 1,
-		})
-		if err == nil && len(items) > 0 {
-			return true
-		}
-	}
-
-	if r.Bus != nil {
-		summaries, err := r.Bus.List(ctx, "history", eventbus.ListOptions{
-			ScopeType: "agent",
-			ScopeID:   agentID,
-			Limit:     1,
-			Order:     "lifo",
-		})
-		if err == nil && len(summaries) > 0 {
-			return true
-		}
-	}
-
-	return false
-}
-
-func (r *Runtime) ResolveAgentID(ctx context.Context, requested string) string {
-	requestedName := normalizeAgentName(requested)
-	base := requestedName
-	if base == "" {
-		base = "agent"
-	}
-	base = agentNameBase(base)
-
-	r.nameMu.Lock()
-	defer r.nameMu.Unlock()
-
-	if requestedName != "" && r.agentIDExists(ctx, requestedName) {
-		r.rememberAgent(requestedName)
-		return requestedName
-	}
-
-	for i := 1; ; i++ {
-		candidate := fmt.Sprintf("%s-%d", base, i)
-		if r.agentIDExists(ctx, candidate) {
-			continue
-		}
-		r.rememberAgent(candidate)
-		return candidate
-	}
-}
-
-func (r *Runtime) ensureAgentState(agentID string) *AgentState {
-	if agentID == "" {
+func (r *Runtime) ensureTaskConfig(taskID string) *taskConfig {
+	if taskID == "" {
 		return nil
 	}
-	r.rememberAgent(agentID)
-	r.agentMu.Lock()
-	state, ok := r.agents[agentID]
+	r.configMu.Lock()
+	cfg, ok := r.taskConfigs[taskID]
 	if !ok {
-		state = &AgentState{
-			ID:     agentID,
-			Prompt: clonePromptManager(r.Context),
-		}
-		r.agents[agentID] = state
+		cfg = &taskConfig{}
+		r.taskConfigs[taskID] = cfg
 	}
-	r.agentMu.Unlock()
-	return state
+	r.configMu.Unlock()
+	return cfg
 }
 
-func (r *Runtime) ensureAgentLLM(state *AgentState) (*llms.LLM, error) {
-	if state == nil {
-		return nil, fmt.Errorf("agent state is nil")
-	}
+func (r *Runtime) ensureAgentLLM(cfg *taskConfig) (*llms.LLM, error) {
 	if r.LLMFactory != nil {
 		return r.LLMFactory()
 	}
 	if r.LLM != nil {
-		if state.Model != "" {
-			if llm, err := r.LLM.NewSessionWithModel(state.Model); err == nil {
+		if cfg != nil && cfg.Model != "" {
+			if llm, err := r.LLM.NewSessionWithModel(cfg.Model); err == nil {
 				return llm, nil
 			}
 		}
@@ -543,31 +395,10 @@ func (r *Runtime) ensureAgentLLM(state *AgentState) (*llms.LLM, error) {
 	return nil, fmt.Errorf("LLM not configured")
 }
 
-func clonePromptManager(src *agentctx.Manager) *agentctx.Manager {
-	if src == nil {
-		return nil
-	}
-	toolNames := append([]string{}, src.ToolNames...)
-	return &agentctx.Manager{Home: src.Home, ToolNames: toolNames}
-}
-
 func (r *Runtime) SetPromptTools(toolNames []string) {
 	normalized := normalizePromptToolNames(toolNames)
 	if r.Context != nil {
 		r.Context.ToolNames = append([]string{}, normalized...)
-	}
-
-	r.agentMu.Lock()
-	defer r.agentMu.Unlock()
-	for _, state := range r.agents {
-		if state == nil {
-			continue
-		}
-		if state.Prompt == nil {
-			state.Prompt = clonePromptManager(r.Context)
-			continue
-		}
-		state.Prompt.ToolNames = append([]string{}, normalized...)
 	}
 }
 
@@ -592,76 +423,68 @@ func normalizePromptToolNames(toolNames []string) []string {
 	return out
 }
 
-func (r *Runtime) SetAgentSystem(agentID, system string) {
-	if agentID == "" {
+func (r *Runtime) SetAgentSystem(taskID, system string) {
+	if taskID == "" {
 		return
 	}
-	state := r.ensureAgentState(agentID)
-	if state == nil {
+	cfg := r.ensureTaskConfig(taskID)
+	if cfg == nil {
 		return
 	}
-	state.mu.Lock()
-	state.System = strings.TrimSpace(system)
-	state.mu.Unlock()
+	cfg.mu.Lock()
+	cfg.System = strings.TrimSpace(system)
+	cfg.mu.Unlock()
 }
 
-func (r *Runtime) SetAgentModel(agentID, model string) {
-	if agentID == "" {
+func (r *Runtime) SetAgentModel(taskID, model string) {
+	if taskID == "" {
 		return
 	}
-	state := r.ensureAgentState(agentID)
-	if state == nil {
+	cfg := r.ensureTaskConfig(taskID)
+	if cfg == nil {
 		return
 	}
-	state.mu.Lock()
-	state.Model = strings.TrimSpace(model)
-	state.mu.Unlock()
+	cfg.mu.Lock()
+	cfg.Model = strings.TrimSpace(model)
+	cfg.mu.Unlock()
 }
 
-func (r *Runtime) EnsureRootTask(ctx context.Context, agentID string) (tasks.Task, error) {
+func (r *Runtime) EnsureRootTask(ctx context.Context, taskID string) (tasks.Task, error) {
 	if r.Tasks == nil {
 		return tasks.Task{}, fmt.Errorf("task manager unavailable")
 	}
-	if agentID == "" {
-		return tasks.Task{}, fmt.Errorf("agent_id is required")
+	if taskID == "" {
+		return tasks.Task{}, fmt.Errorf("task_id is required")
 	}
-	state := r.ensureAgentState(agentID)
-	if state == nil {
-		return tasks.Task{}, fmt.Errorf("agent state unavailable")
-	}
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	return r.ensureRootTaskForState(ctx, agentID, state)
+	return r.ensureRootTask(ctx, taskID)
 }
 
-func (r *Runtime) RunOnce(ctx context.Context, agentID, message string) (Session, error) {
-	return r.HandleMessage(ctx, agentID, "", message, nil)
+func (r *Runtime) RunOnce(ctx context.Context, taskID, message string) (Session, error) {
+	return r.HandleMessage(ctx, taskID, "", message, nil)
 }
 
-func (r *Runtime) ensureRootTaskForState(ctx context.Context, agentID string, state *AgentState) (tasks.Task, error) {
+func (r *Runtime) ensureRootTask(ctx context.Context, taskID string) (tasks.Task, error) {
 	if r.Tasks == nil {
 		return tasks.Task{}, fmt.Errorf("task manager unavailable")
 	}
-	if strings.TrimSpace(agentID) == "" {
-		return tasks.Task{}, fmt.Errorf("agent_id is required")
+	if strings.TrimSpace(taskID) == "" {
+		return tasks.Task{}, fmt.Errorf("task_id is required")
 	}
-	if state == nil {
-		return tasks.Task{}, fmt.Errorf("agent state unavailable")
+	// The agent IS the task — look up by ID directly
+	task, err := r.Tasks.Get(ctx, taskID)
+	if err == nil && task.ID != "" {
+		return task, nil
 	}
-	if state.RootTaskID != "" {
-		task, err := r.Tasks.Get(ctx, state.RootTaskID)
-		if err == nil && task.ID != "" {
-			return task, nil
-		}
-	}
+	// Create a root agent task if it doesn't exist yet.
+	// Use the exact taskID as the task ID so agent identity = task identity.
 	metadata := map[string]any{
-		"agent_id":      agentID,
-		"input_target":  agentID,
-		"notify_target": agentID,
+		"input_target":  taskID,
+		"notify_target": taskID,
 	}
 	created, err := r.Tasks.Spawn(ctx, tasks.Spec{
+		ID:       taskID,
 		Type:     "agent",
-		Owner:    agentID,
+		Owner:    taskID,
 		Mode:     "async",
 		Metadata: metadata,
 	})
@@ -669,27 +492,22 @@ func (r *Runtime) ensureRootTaskForState(ctx context.Context, agentID string, st
 		return tasks.Task{}, err
 	}
 	_ = r.Tasks.MarkRunning(ctx, created.ID)
-	state.RootTaskID = created.ID
 	return created, nil
 }
 
 func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message string, messageMeta map[string]any) (Session, error) {
 	if agentID == "" {
-		return Session{}, fmt.Errorf("agent_id is required")
+		return Session{}, fmt.Errorf("task_id is required")
 	}
-	r.rememberAgent(agentID)
-	state := r.ensureAgentState(agentID)
-	if state == nil {
-		return Session{}, fmt.Errorf("agent state unavailable")
-	}
-	state.mu.Lock()
-	defer state.mu.Unlock()
+	ctx = agentcontext.WithTaskID(ctx, agentID)
+	bgCtx := agentcontext.WithTaskID(context.Background(), agentID)
+	cfg := r.ensureTaskConfig(agentID)
 	currentGeneration := r.currentHistoryGeneration(ctx, agentID)
 
 	var promptContent content.Content
 	var promptText string
-	if state.Prompt != nil {
-		prompt, text, err := state.Prompt.BuildSystemPrompt(ctx, r.Bus)
+	if r.Context != nil {
+		prompt, text, err := r.Context.BuildSystemPrompt(ctx, r.Bus)
 		if err != nil {
 			return Session{}, err
 		}
@@ -698,28 +516,37 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 	} else {
 		return Session{}, fmt.Errorf("prompt unavailable")
 	}
-	if state.System != "" {
-		promptText = fmt.Sprintf("%s\n\n%s", promptText, state.System)
+	if cfg != nil && cfg.System != "" {
+		promptText = fmt.Sprintf("%s\n\n%s", promptText, cfg.System)
 		promptContent = content.FromText(promptText)
+	}
+
+	// Load prior conversation messages and the stored system prompt for
+	// this generation. Using the stored prompt across all turns of a
+	// generation keeps the provider's prompt-cache key stable.
+	storedPrompt, priorMessages, _ := r.loadConversationMessages(ctx, agentID, currentGeneration)
+	if storedPrompt != "" {
+		promptText = storedPrompt
+		promptContent = content.FromText(storedPrompt)
 	}
 
 	var rootTask tasks.Task
 	var llmTask tasks.Task
+	taskID := agentID
 	if r.Tasks != nil {
-		rootTask, _ = r.ensureRootTaskForState(ctx, agentID, state)
-		if rootTask.ID == "" {
-			rootTask.ID = state.RootTaskID
+		rootTask, _ = r.ensureRootTask(ctx, agentID)
+		if rootTask.ID != "" {
+			taskID = rootTask.ID
 		}
 
 		llmTask, _ = r.Tasks.Spawn(ctx, tasks.Spec{
 			Type:     "llm",
-			Owner:    agentID,
-			ParentID: state.RootTaskID,
+			Owner:    taskID,
+			ParentID: rootTask.ID,
 			Mode:     "sync",
 			Metadata: map[string]any{
-				"agent_id":           agentID,
-				"input_target":       agentID,
-				"notify_target":      agentID,
+				"input_target":       taskID,
+				"notify_target":      taskID,
 				"source":             source,
 				"priority":           eventPriority(messageMeta),
 				"request_id":         getMetaString(messageMeta, "request_id"),
@@ -732,12 +559,11 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 	}
 
 	session := Session{
-		AgentID:    agentID,
-		RootTaskID: state.RootTaskID,
-		LLMTaskID:  llmTask.ID,
-		Prompt:     promptText,
-		LastInput:  message,
-		UpdatedAt:  r.now(),
+		TaskID:    taskID,
+		LLMTaskID: llmTask.ID,
+		Prompt:    promptText,
+		LastInput: message,
+		UpdatedAt: r.now(),
 	}
 	turnCtx := r.nextTurnContext(agentID, session.UpdatedAt)
 	rawContextEvents, _ := r.collectUnreadContextEvents(ctx, agentID, maxContextEventsPerTurn*2)
@@ -755,8 +581,8 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 		currentContextCursor = initialFrame.ToEventID
 	}
 	toolsSnapshot := []string{}
-	if state.Prompt != nil && len(state.Prompt.ToolNames) > 0 {
-		toolsSnapshot = append(toolsSnapshot, state.Prompt.ToolNames...)
+	if r.Context != nil && len(r.Context.ToolNames) > 0 {
+		toolsSnapshot = append(toolsSnapshot, r.Context.ToolNames...)
 		sort.Strings(toolsSnapshot)
 	}
 	if r.shouldAppendGenerationPreamble(ctx, agentID, currentGeneration) {
@@ -786,15 +612,16 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 			Stream:    "signals",
 			Subject:   "agent_run_start",
 			Body:      "agent run started",
-			ScopeType: "agent",
+			ScopeType: "task",
 			ScopeID:   agentID,
 			Metadata: map[string]any{
 				"agent_id": agentID,
 			},
+			SourceID: agentID,
 		})
 	}
 
-	llmClient, err := r.ensureAgentLLM(state)
+	llmClient, err := r.ensureAgentLLM(cfg)
 	if err != nil || llmClient == nil {
 		session.LastError = "LLM not configured. Set the provider API key (e.g. GO_AGENTS_ANTHROPIC_API_KEY) and configure llm_provider/llm_model in config.json."
 		session.LastOutput = session.LastError
@@ -803,15 +630,14 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 			"error": true,
 		})
 		if r.Tasks != nil {
-			ctx := context.Background()
 			if llmTask.ID != "" {
-				_ = r.Tasks.Fail(ctx, llmTask.ID, session.LastError)
+				_ = r.Tasks.Fail(bgCtx, llmTask.ID, session.LastError)
 			}
 		}
 		if source != "" && source != agentID {
 			_, _ = r.pushMessage(ctx, source, session.LastOutput, agentID, nil)
 		}
-		r.ackContextEvents(context.Background(), agentID, rawContextEvents)
+		r.ackContextEvents(bgCtx, agentID, rawContextEvents)
 		return session, nil
 	}
 	r.attachDebugger(llmClient, agentID, llmTask.ID)
@@ -861,7 +687,6 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 
 	{
 		llmCtx := tasks.WithParentTaskID(ctx, llmTask.ID)
-		llmCtx = agentcontext.WithAgentID(llmCtx, agentID)
 		llmCtx = tasks.WithIgnoredWakeEventIDs(llmCtx, ignoredWakeEventIDsForTurn(messageMeta, rawContextEvents))
 		llmCtx, cancel := context.WithCancel(llmCtx)
 		r.registerInflight(llmTask.ID, cancel)
@@ -883,8 +708,7 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 			llmClient.SystemPrompt = prev
 		}()
 
-		turns := r.loadRecentConversation(llmCtx, agentID, maxConversationTurns)
-		input := buildInputWithHistory(turns, source, message, messageMeta, turnCtx, initialFrame)
+		input := buildInputWithHistory(source, message, messageMeta, turnCtx, initialFrame)
 		runSource := source
 		if strings.TrimSpace(runSource) == "" {
 			runSource = "external"
@@ -925,7 +749,13 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 			}
 			lastLLMTurn = turnNumber
 			if turnNumber > 1 {
-				publishAssistantTurn(turnNumber-1, latestAssistantText(before.Messages()), false)
+				// Skip prior conversation history so we only capture
+				// assistant text from the current HandleMessage call.
+				currentMsgs := before.Messages()
+				if n := len(priorMessages); n > 0 && len(currentMsgs) > n {
+					currentMsgs = currentMsgs[n:]
+				}
+				publishAssistantTurn(turnNumber-1, latestAssistantText(currentMsgs), false)
 			}
 
 			turnInput := ""
@@ -978,7 +808,7 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 				}
 				if len(fresh) > 0 || snapshot.TimePassed || snapshot.DateChanged {
 					r.appendContextUpdateHistory(hookCtx, agentID, llmTask.ID, currentGeneration, snapshot, fresh)
-					turnInput = buildInputWithHistory(nil, "runtime", "", map[string]any{"priority": "normal"}, snapshot, frame)
+					turnInput = buildInputWithHistory("runtime", "", map[string]any{"priority": "normal"}, snapshot, frame)
 					before.Append(llms.Message{Role: "user", Content: content.FromText(turnInput)})
 					turnSource = "runtime"
 					turnPriority = "normal"
@@ -1019,7 +849,13 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 			llmClient.BeforeResponse = prevBeforeResponse
 		}()
 
-		updates := llmClient.ChatWithContext(llmCtx, input)
+		allMessages := make([]llms.Message, 0, len(priorMessages)+1)
+		allMessages = append(allMessages, priorMessages...)
+		allMessages = append(allMessages, llms.Message{
+			Role:    "user",
+			Content: content.FromText(input),
+		})
+		updates := llmClient.ChatUsingMessages(llmCtx, allMessages)
 		toolInputRaw := map[string]string{}
 		toolStreamingMarked := map[string]bool{}
 		for update := range updates {
@@ -1115,14 +951,16 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 			publishAssistantTurn(lastLLMTurn, remainder, true)
 			r.appendHistory(llmCtx, agentID, "error", "system", err.Error(), llmTask.ID, currentGeneration, nil)
 			if r.Tasks != nil {
-				ctx := context.Background()
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 					if llmTask.ID != "" {
-						_ = r.Tasks.Cancel(ctx, llmTask.ID, "interrupted")
+						_ = r.Tasks.Cancel(bgCtx, llmTask.ID, "interrupted")
 					}
 				} else {
 					if llmTask.ID != "" {
-						_ = r.Tasks.Fail(ctx, llmTask.ID, err.Error())
+						_ = r.Tasks.Fail(bgCtx, llmTask.ID, err.Error())
+					}
+					if rootTask.ID != "" {
+						_ = r.Tasks.Fail(bgCtx, rootTask.ID, err.Error())
 					}
 				}
 			}
@@ -1131,11 +969,12 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 					Stream:    "errors",
 					Subject:   "agent_run_error",
 					Body:      session.LastError,
-					ScopeType: "agent",
+					ScopeType: "task",
 					ScopeID:   agentID,
 					Metadata: map[string]any{
 						"agent_id": agentID,
 					},
+					SourceID: agentID,
 				})
 			}
 			if source != "" && source != agentID {
@@ -1158,9 +997,14 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 	session.LastOutput = output
 	r.SetSession(session)
 	if r.Tasks != nil {
-		ctx := context.Background()
 		if llmTask.ID != "" {
-			_ = r.Tasks.Complete(ctx, llmTask.ID, map[string]any{"output": output})
+			_ = r.Tasks.Complete(bgCtx, llmTask.ID, map[string]any{"output": output})
+		}
+		// Complete the root agent task so that await_task callers see
+		// a terminal status and receive the output.  For long-running
+		// agents this is a no-op after the first turn (already completed).
+		if rootTask.ID != "" {
+			_ = r.Tasks.Complete(bgCtx, rootTask.ID, map[string]any{"output": output})
 		}
 	}
 	if r.Bus != nil {
@@ -1168,11 +1012,12 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 			Stream:    "signals",
 			Subject:   "agent_run_complete",
 			Body:      "agent run complete",
-			ScopeType: "agent",
+			ScopeType: "task",
 			ScopeID:   agentID,
 			Metadata: map[string]any{
 				"agent_id": agentID,
 			},
+			SourceID: agentID,
 		})
 	}
 	if source != "" && source != agentID && strings.TrimSpace(output) != "" {
@@ -1375,7 +1220,7 @@ func (r *Runtime) pushMessage(ctx context.Context, target, body, source string, 
 	}
 	return r.Bus.Push(ctx, eventbus.EventInput{
 		Stream:    "messages",
-		ScopeType: "agent",
+		ScopeType: "task",
 		ScopeID:   target,
 		Subject:   fmt.Sprintf("Message from %s", source),
 		Body:      message,
@@ -1396,7 +1241,7 @@ func (r *Runtime) watchInterrupts(ctx context.Context, agentID, taskID string, c
 			if !ok {
 				return
 			}
-			if !eventTargetsAgent(evt, agentID) {
+			if !eventTargetsTask(evt, agentID) {
 				continue
 			}
 			if evt.Metadata != nil {
@@ -1440,11 +1285,11 @@ func (r *Runtime) watchTaskCommands(ctx context.Context, taskID string, cancel c
 	}
 }
 
-func eventTargetsAgent(evt eventbus.Event, agentID string) bool {
+func eventTargetsTask(evt eventbus.Event, agentID string) bool {
 	if agentID == "" {
 		return true
 	}
-	if evt.ScopeType == "agent" {
+	if evt.ScopeType == "task" {
 		return evt.ScopeID == agentID
 	}
 	if evt.ScopeType == "global" || evt.ScopeType == "" {
@@ -1461,12 +1306,11 @@ func (r *Runtime) GetSession(agentID string) (Session, bool) {
 }
 
 func (r *Runtime) SetSession(session Session) {
-	if session.AgentID == "" {
+	if session.TaskID == "" {
 		return
 	}
-	r.rememberAgent(session.AgentID)
 	r.mu.Lock()
-	r.sessions[session.AgentID] = session
+	r.sessions[session.TaskID] = session
 	r.mu.Unlock()
 }
 
@@ -1505,7 +1349,7 @@ func (r *Runtime) Run(ctx context.Context, agentID string) error {
 			if !ok {
 				return ctx.Err()
 			}
-			if !eventTargetsAgent(evt, agentID) {
+			if !eventTargetsTask(evt, agentID) {
 				continue
 			}
 			if _, err := r.replayUnreadWakeEvents(ctx, agentID, maxContextEventsPerTurn*2); err != nil && ctx.Err() != nil {
@@ -1542,10 +1386,6 @@ func (r *Runtime) replayUnreadWakeEvents(ctx context.Context, agentID string, li
 		if priority != "wake" && priority != "interrupt" {
 			continue
 		}
-		if r.isInternalLLMWakeEvent(ctx, agentID, evt) {
-			r.ackContextEvents(context.Background(), agentID, []eventbus.Event{evt})
-			continue
-		}
 		meta := map[string]any{
 			"priority": priority,
 			"stream":   evt.Stream,
@@ -1567,27 +1407,6 @@ func (r *Runtime) replayUnreadWakeEvents(ctx context.Context, agentID string, li
 		return 1, nil
 	}
 	return 0, nil
-}
-
-func (r *Runtime) isInternalLLMWakeEvent(ctx context.Context, agentID string, evt eventbus.Event) bool {
-	if r.Tasks == nil || evt.Stream != "task_output" {
-		return false
-	}
-	taskID := getMetaString(evt.Metadata, "task_id")
-	if taskID == "" {
-		return false
-	}
-	task, err := r.Tasks.Get(ctx, taskID)
-	if err != nil {
-		return false
-	}
-	if task.Type != "llm" {
-		return false
-	}
-	if task.Owner == "" {
-		return true
-	}
-	return task.Owner == agentID
 }
 
 var contextEventStreams = []string{"task_output", "signals", "errors", "external", "messages"}
@@ -1759,15 +1578,7 @@ func (r *Runtime) collectUnreadContextEvents(ctx context.Context, agentID string
 			if evt.Read {
 				continue
 			}
-			if !eventTargetsAgent(evt, agentID) {
-				continue
-			}
-			if isContextNoiseEvent(evt) {
-				_ = r.Bus.Ack(ctx, evt.Stream, []string{evt.ID}, agentID)
-				continue
-			}
-			if r.isInternalLLMWakeEvent(ctx, agentID, evt) {
-				_ = r.Bus.Ack(ctx, evt.Stream, []string{evt.ID}, agentID)
+			if !eventTargetsTask(evt, agentID) {
 				continue
 			}
 			key := evt.Stream + ":" + evt.ID
@@ -1779,21 +1590,6 @@ func (r *Runtime) collectUnreadContextEvents(ctx context.Context, agentID string
 		}
 	}
 	return out, nil
-}
-
-func isContextNoiseEvent(evt eventbus.Event) bool {
-	if evt.Stream != "signals" {
-		return false
-	}
-	kind := strings.ToLower(strings.TrimSpace(getMetaString(evt.Metadata, "kind")))
-	subject := strings.ToLower(strings.TrimSpace(evt.Subject))
-	if kind == "llm_debug" {
-		return true
-	}
-	if strings.HasPrefix(subject, "llm_debug_") {
-		return true
-	}
-	return false
 }
 
 func selectContextEventsForPrompt(events []eventbus.Event, limit int) []eventbus.Event {
@@ -1992,7 +1788,7 @@ func (r *Runtime) ackContextEvents(ctx context.Context, agentID string, events [
 	r.advanceContextCursor(agentID, events)
 }
 
-func buildInputWithHistory(turns []ConversationTurn, source, message string, metadata map[string]any, turnCtx TurnContext, frame ContextUpdateFrame) string {
+func buildInputWithHistory(source, message string, metadata map[string]any, turnCtx TurnContext, frame ContextUpdateFrame) string {
 	if source == "" {
 		source = "external"
 	}
@@ -2003,7 +1799,7 @@ func buildInputWithHistory(turns []ConversationTurn, source, message string, met
 	}
 
 	var b strings.Builder
-	b.Grow(maxHistoryBytes + 3500)
+	b.Grow(3500)
 	b.WriteString("<system_updates source=\"")
 	b.WriteString(xmlEscape(source))
 	b.WriteString("\" priority=\"")
@@ -2015,86 +1811,9 @@ func buildInputWithHistory(turns []ConversationTurn, source, message string, met
 		b.WriteString("</message>\n")
 	}
 
-	if recent := renderRecentContextXML(turns, maxHistoryBytes, message); recent != "" {
-		b.WriteString(indentXML(recent, "  "))
-		b.WriteString("\n")
-	}
-
 	b.WriteString(indentXML(renderContextUpdatesXML(turnCtx, frame), "  "))
 	b.WriteString("\n")
 	b.WriteString("</system_updates>")
-	return b.String()
-}
-
-func renderRecentContextXML(turns []ConversationTurn, limit int, currentMessage string) string {
-	if len(turns) == 0 || limit <= 0 {
-		return ""
-	}
-	seenFacts := map[string]struct{}{}
-	messageFact := strings.TrimSpace(currentMessage)
-	if messageFact != "" {
-		seenFacts["input:"+strings.ToLower(messageFact)] = struct{}{}
-	}
-	var b strings.Builder
-	emitted := 0
-	b.WriteString("<recent_context>\n")
-	used := 0
-	for _, turn := range turns {
-		inputFact := strings.TrimSpace(turn.Input)
-		outputFact := strings.TrimSpace(turn.Output)
-		if inputFact != "" {
-			key := "input:" + strings.ToLower(inputFact)
-			if _, ok := seenFacts[key]; ok {
-				continue
-			}
-			seenFacts[key] = struct{}{}
-		}
-		if outputFact != "" {
-			key := "output:" + strings.ToLower(outputFact)
-			if _, ok := seenFacts[key]; ok {
-				continue
-			}
-			seenFacts[key] = struct{}{}
-		}
-		approx := len(turn.Source) + len(turn.Priority) + len(turn.Input) + len(turn.Output) + 128
-		if used+approx > limit && used > 0 {
-			break
-		}
-		b.WriteString("  <turn")
-		if turn.Source != "" {
-			b.WriteString(" source=\"")
-			b.WriteString(xmlEscape(turn.Source))
-			b.WriteString("\"")
-		}
-		if turn.Priority != "" {
-			b.WriteString(" priority=\"")
-			b.WriteString(xmlEscape(turn.Priority))
-			b.WriteString("\"")
-		}
-		if !turn.CreatedAt.IsZero() {
-			b.WriteString(" created_at=\"")
-			b.WriteString(xmlEscape(turn.CreatedAt.UTC().Format(time.RFC3339)))
-			b.WriteString("\"")
-		}
-		b.WriteString(">\n")
-		if turn.Input != "" {
-			b.WriteString("    <input>")
-			b.WriteString(xmlEscape(turn.Input))
-			b.WriteString("</input>\n")
-		}
-		if turn.Output != "" {
-			b.WriteString("    <output>")
-			b.WriteString(xmlEscape(turn.Output))
-			b.WriteString("</output>\n")
-		}
-		b.WriteString("  </turn>\n")
-		emitted++
-		used += approx
-	}
-	if emitted == 0 {
-		return ""
-	}
-	b.WriteString("</recent_context>")
 	return b.String()
 }
 
@@ -2343,78 +2062,6 @@ func xmlEscape(v string) string {
 		"'", "&apos;",
 	)
 	return replacer.Replace(v)
-}
-
-func (r *Runtime) loadRecentConversation(ctx context.Context, agentID string, limit int) []ConversationTurn {
-	if r.Tasks == nil || strings.TrimSpace(agentID) == "" || limit <= 0 {
-		return nil
-	}
-	cutoff := r.compactionCutoff(agentID)
-	currentGeneration := r.currentHistoryGeneration(ctx, agentID)
-	tasksList, err := r.Tasks.List(ctx, tasks.ListFilter{
-		Type:  "llm",
-		Owner: agentID,
-		Limit: limit * 4,
-	})
-	if err != nil || len(tasksList) == 0 {
-		return nil
-	}
-	sort.Slice(tasksList, func(i, j int) bool {
-		if tasksList[i].CreatedAt.Equal(tasksList[j].CreatedAt) {
-			return tasksList[i].ID < tasksList[j].ID
-		}
-		return tasksList[i].CreatedAt.Before(tasksList[j].CreatedAt)
-	})
-	out := make([]ConversationTurn, 0, limit)
-	for _, task := range tasksList {
-		if !cutoff.IsZero() && task.CreatedAt.Before(cutoff) {
-			continue
-		}
-		if taskGen := anyToInt64(task.Metadata["history_generation"]); taskGen > 0 && taskGen != currentGeneration {
-			continue
-		}
-		source := strings.TrimSpace(getMetaString(task.Metadata, "source"))
-		if source == "" {
-			source = "external"
-		}
-		priority := eventPriority(task.Metadata)
-		if priority == "low" {
-			continue
-		}
-		input := ""
-		updates, err := r.Tasks.ListUpdates(ctx, task.ID, 12)
-		if err == nil {
-			for _, upd := range updates {
-				if upd.Kind != "input" || upd.Payload == nil {
-					continue
-				}
-				if msg, ok := upd.Payload["message"].(string); ok {
-					input = msg
-					break
-				}
-			}
-		}
-		output := ""
-		if task.Result != nil {
-			if msg, ok := task.Result["output"].(string); ok {
-				output = msg
-			}
-		}
-		if strings.TrimSpace(input) == "" && strings.TrimSpace(output) == "" {
-			continue
-		}
-		out = append(out, ConversationTurn{
-			Source:    source,
-			Input:     clipText(strings.TrimSpace(input), maxHistoryInputChars),
-			Output:    clipText(strings.TrimSpace(output), maxHistoryOutputChars),
-			Priority:  priority,
-			CreatedAt: task.CreatedAt,
-		})
-	}
-	if len(out) > limit {
-		out = out[len(out)-limit:]
-	}
-	return out
 }
 
 func clipText(text string, limit int) string {

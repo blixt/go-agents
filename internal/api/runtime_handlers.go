@@ -5,110 +5,119 @@ import (
 	"strings"
 
 	"github.com/flitsinc/go-agents/internal/idgen"
+	"github.com/flitsinc/go-agents/internal/tasks"
 )
 
-func (s *Server) handleAgentItem(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/api/agents/")
-	segments := strings.Split(strings.Trim(path, "/"), "/")
-	if len(segments) == 0 || segments[0] == "" {
-		writeError(w, http.StatusNotFound, errNotFound("agent action"))
+func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
 		return
 	}
-	requestedAgentID := ""
-	action := ""
-	switch len(segments) {
-	case 1:
-		action = strings.TrimSpace(segments[0])
-	case 2:
-		requestedAgentID = strings.TrimSpace(segments[0])
-		action = strings.TrimSpace(segments[1])
-	default:
-		writeError(w, http.StatusNotFound, errNotFound("agent action"))
+	var payload struct {
+		Type     string         `json:"type"`
+		Name     string         `json:"name"`
+		Payload  map[string]any `json:"payload"`
+		Source   string         `json:"source"`
+		Priority string         `json:"priority"`
+	}
+	if err := decodeJSON(r.Body, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if action != "run" && action != "compact" {
-		writeError(w, http.StatusNotFound, errNotFound("agent action"))
+	taskType := strings.TrimSpace(payload.Type)
+	if taskType == "" {
+		taskType = "agent"
+	}
+	source := strings.TrimSpace(payload.Source)
+	if source == "" {
+		source = "external"
+	}
+	priority := normalizePriority(payload.Priority)
+
+	spec := tasks.Spec{
+		Type: taskType,
+		Name: strings.TrimSpace(payload.Name),
+		Mode: "async",
+		Metadata: map[string]any{
+			"source":   source,
+			"priority": priority,
+		},
+	}
+	if payload.Payload != nil {
+		spec.Payload = payload.Payload
+	}
+
+	if s.Tasks == nil {
+		writeError(w, http.StatusInternalServerError, errNotFound("task manager"))
 		return
 	}
-	if action == "compact" && requestedAgentID == "" {
-		writeError(w, http.StatusNotFound, errNotFound("agent"))
+	created, err := s.Tasks.Spawn(r.Context(), spec)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	// For agent tasks, set up the runtime loop
+	if taskType == "agent" && s.Runtime != nil {
+		_ = s.Tasks.MarkRunning(r.Context(), created.ID)
+		// Set task-level config from payload
+		if payload.Payload != nil {
+			if system, ok := payload.Payload["system"].(string); ok && system != "" {
+				s.Runtime.SetAgentSystem(created.ID, system)
+			}
+			if model, ok := payload.Payload["model"].(string); ok && model != "" {
+				s.Runtime.SetAgentModel(created.ID, model)
+			}
+		}
+		// Update metadata with routing targets
+		spec.Metadata["input_target"] = created.ID
+		spec.Metadata["notify_target"] = created.ID
+		spec.Owner = created.ID
+
+		s.Runtime.EnsureAgentLoop(created.ID)
+
+		// Deliver initial message if present
+		if payload.Payload != nil {
+			if message, ok := payload.Payload["message"].(string); ok && strings.TrimSpace(message) != "" {
+				requestID := idgen.New()
+				_, _ = s.Runtime.SendMessageWithMeta(r.Context(), created.ID, message, source, map[string]any{
+					"priority":   priority,
+					"request_id": requestID,
+					"kind":       "message",
+				})
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"task_id": created.ID,
+		"status":  string(created.Status),
+		"type":    created.Type,
+	})
+}
+
+func (s *Server) handleTaskCompact(w http.ResponseWriter, r *http.Request, taskID string) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
 		return
 	}
 	if s.Runtime == nil {
 		writeError(w, http.StatusInternalServerError, errNotFound("runtime"))
 		return
 	}
-	if r.Method != http.MethodPost {
-		writeMethodNotAllowed(w)
-		return
-	}
-
-	if action == "compact" {
-		var payload struct {
-			Reason string `json:"reason"`
-		}
-		_ = decodeJSON(r.Body, &payload)
-		generation, err := s.Runtime.CompactAgentContext(r.Context(), requestedAgentID, payload.Reason)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		writeJSON(w, http.StatusAccepted, map[string]any{
-			"status":     "compacted",
-			"agent_id":   requestedAgentID,
-			"generation": generation,
-		})
-		return
-	}
-
 	var payload struct {
-		Message   string `json:"message"`
-		Source    string `json:"source"`
-		System    string `json:"system"`
-		Model     string `json:"model"`
-		RequestID string `json:"request_id"`
-		Priority  string `json:"priority"`
+		Reason string `json:"reason"`
 	}
-	if err := decodeJSON(r.Body, &payload); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	source := strings.TrimSpace(payload.Source)
-	if source == "" {
-		source = "external"
-	}
-	agentID := s.Runtime.ResolveAgentID(r.Context(), requestedAgentID)
-	requestID := strings.TrimSpace(payload.RequestID)
-	if requestID == "" {
-		requestID = idgen.New()
-	}
-	priority := normalizePriority(payload.Priority)
-	if payload.System != "" {
-		s.Runtime.SetAgentSystem(agentID, payload.System)
-	}
-	if payload.Model != "" {
-		s.Runtime.SetAgentModel(agentID, payload.Model)
-	}
-	s.Runtime.EnsureAgentLoop(agentID)
-	rootTask, _ := s.Runtime.EnsureRootTask(r.Context(), agentID)
-	evt, err := s.Runtime.SendMessageWithMeta(r.Context(), agentID, payload.Message, source, map[string]any{
-		"priority":   priority,
-		"request_id": requestID,
-		"kind":       "message",
-	})
+	_ = decodeJSON(r.Body, &payload)
+	generation, err := s.Runtime.CompactAgentContext(r.Context(), taskID, payload.Reason)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{
-		"status":             "queued",
-		"agent_id":           agentID,
-		"requested_agent_id": requestedAgentID,
-		"event_id":           evt.ID,
-		"recipient":          agentID,
-		"task_id":            rootTask.ID,
-		"request_id":         requestID,
-		"priority":           priority,
+		"status":     "compacted",
+		"task_id":    taskID,
+		"generation": generation,
 	})
 }
 

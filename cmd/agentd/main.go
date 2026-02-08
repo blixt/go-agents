@@ -44,21 +44,20 @@ func main() {
 	rt := engine.NewRuntime(bus, manager, nil)
 	rt.SetLLMDebugDir(cfg.LLMDebugDir)
 	execTool := agenttools.ExecTool(manager)
-	sendMessageTool := agenttools.SendMessageTool(bus, rt.EnsureAgentLoop)
 	awaitTaskTool := agenttools.AwaitTaskTool(manager)
 	sendTaskTool := agenttools.SendTaskTool(manager, bus)
-	cancelTaskTool := agenttools.CancelTaskTool(manager)
+	// TODO: kill_task currently force-cancels immediately (sets status, no grace period).
+	// Add graceful cancellation as the default behavior (signal task, wait for cleanup)
+	// and a force=true parameter to force-kill stuck tasks.
 	killTaskTool := agenttools.KillTaskTool(manager)
 	noopTool := agenttools.NoopTool()
 	viewImageTool := agenttools.ViewImageTool()
 
 	rt.SetPromptTools([]string{
 		"await_task",
-		"cancel_task",
 		"exec",
 		"kill_task",
 		"noop",
-		"send_message",
 		"send_task",
 		"view_image",
 	})
@@ -69,7 +68,7 @@ func main() {
 			Provider: cfg.LLMProvider,
 			Model:    cfg.LLMModel,
 			APIKey:   cfg.LLMAPIKey,
-		}, execTool, sendMessageTool, awaitTaskTool, sendTaskTool, cancelTaskTool, killTaskTool, noopTool, viewImageTool)
+		}, execTool, awaitTaskTool, sendTaskTool, killTaskTool, noopTool, viewImageTool)
 		if err != nil {
 			log.Printf("LLM disabled: %v", err)
 		}

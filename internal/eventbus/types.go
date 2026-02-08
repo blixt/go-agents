@@ -32,6 +32,7 @@ type EventInput struct {
 	Body      string
 	Metadata  map[string]any
 	Payload   map[string]any
+	SourceID  string // if set, event is born "already read" by this ID
 }
 
 type ListOptions struct {

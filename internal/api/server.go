@@ -10,6 +10,7 @@ import (
 
 	"github.com/flitsinc/go-agents/internal/engine"
 	"github.com/flitsinc/go-agents/internal/eventbus"
+	"github.com/flitsinc/go-agents/internal/idgen"
 	"github.com/flitsinc/go-agents/internal/tasks"
 )
 
@@ -32,8 +33,8 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("/api/tasks/queue", s.handleTaskQueue)
 	mux.HandleFunc("/api/tasks/", s.handleTaskItem)
+	mux.HandleFunc("/api/tasks", s.handleCreateTask)
 	mux.HandleFunc("/api/state", s.handleState)
-	mux.HandleFunc("/api/agents/", s.handleAgentItem)
 	mux.HandleFunc("/api/streams/subscribe", s.handleStreamSubscribe)
 
 	return mux
@@ -81,6 +82,8 @@ func (s *Server) handleTaskItem(w http.ResponseWriter, r *http.Request) {
 		s.handleTaskCancel(w, r, taskID)
 	case "kill":
 		s.handleTaskKill(w, r, taskID)
+	case "compact":
+		s.handleTaskCompact(w, r, taskID)
 	default:
 		writeError(w, http.StatusNotFound, errNotFound("task action"))
 	}
@@ -161,12 +164,46 @@ func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request, taskID s
 		return
 	}
 	var payload struct {
+		// Agent message fields
+		Message   string `json:"message"`
+		Source    string `json:"source"`
+		Priority  string `json:"priority"`
+		RequestID string `json:"request_id"`
+		// Generic task input
 		Input map[string]any `json:"input"`
 	}
 	if err := decodeJSON(r.Body, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+
+	// If a message is provided and we have a runtime, deliver it as an agent message.
+	message := strings.TrimSpace(payload.Message)
+	if message != "" && s.Runtime != nil {
+		source := strings.TrimSpace(payload.Source)
+		if source == "" {
+			source = "external"
+		}
+		priority := normalizePriority(payload.Priority)
+		s.Runtime.EnsureAgentLoop(taskID)
+		requestID := strings.TrimSpace(payload.RequestID)
+		if requestID == "" {
+			requestID = idgen.New()
+		}
+		_, err := s.Runtime.SendMessageWithMeta(r.Context(), taskID, message, source, map[string]any{
+			"priority":   priority,
+			"request_id": requestID,
+			"kind":       "message",
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+
+	// Fall back to generic task send.
 	if err := s.Tasks.Send(r.Context(), taskID, payload.Input); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return

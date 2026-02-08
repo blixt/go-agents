@@ -390,28 +390,29 @@ const main = async () => {
     const startedAt = new Date();
     const requestID = requestIDFor(expId, index + 1);
     let request: Record<string, any> = {
-      message: exp.prompt,
+      type: "agent",
+      payload: { message: exp.prompt },
       source: "external",
       priority: "wake",
-      request_id: requestID,
     };
-    let runResp = await postJSONWithRetry(base, "/api/agents/run", request);
+    let runResp = await postJSONWithRetry(base, "/api/tasks", request);
     let correlationRequestID = requestID;
     let correlationEventID =
       typeof runResp?.json?.event_id === "string" ? runResp.json.event_id : "";
     let agentID =
-      typeof runResp?.json?.agent_id === "string" ? runResp.json.agent_id : "";
+      typeof runResp?.json?.task_id === "string" ? runResp.json.task_id : "";
     if (unknownFieldError(runResp)) {
       request = {
-        message: exp.prompt,
+        type: "agent",
+        payload: { message: exp.prompt },
         source: "external",
       };
-      runResp = await postJSONWithRetry(base, "/api/agents/run", request);
+      runResp = await postJSONWithRetry(base, "/api/tasks", request);
       correlationRequestID = "";
       correlationEventID =
         typeof runResp?.json?.event_id === "string" ? runResp.json.event_id : "";
       agentID =
-        typeof runResp?.json?.agent_id === "string" ? runResp.json.agent_id : "";
+        typeof runResp?.json?.task_id === "string" ? runResp.json.task_id : "";
     }
 
     await writeJSON(join(expDir, "request.json"), {

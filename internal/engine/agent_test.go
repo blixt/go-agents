@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/flitsinc/go-agents/internal/agentcontext"
 	"github.com/flitsinc/go-agents/internal/ai"
 	"github.com/flitsinc/go-agents/internal/eventbus"
 	"github.com/flitsinc/go-agents/internal/tasks"
@@ -53,6 +54,52 @@ type blockingProvider struct {
 type captureProvider struct {
 	mu        sync.Mutex
 	lastInput string
+}
+
+// historyCapture records the full messages array for every Generate call.
+type historyCapture struct {
+	mu    sync.Mutex
+	calls [][]llms.Message
+	// systemPrompts records the system prompt content for each call.
+	systemPrompts []content.Content
+}
+
+func (p *historyCapture) Company() string              { return "capture" }
+func (p *historyCapture) Model() string                { return "capture" }
+func (p *historyCapture) SetDebugger(_ llms.Debugger)  {}
+func (p *historyCapture) SetHTTPClient(_ *http.Client) {}
+func (p *historyCapture) Generate(_ context.Context, system content.Content, messages []llms.Message, _ *llmtools.Toolbox, _ *llmtools.ValueSchema) llms.ProviderStream {
+	clone := make([]llms.Message, len(messages))
+	copy(clone, messages)
+	p.mu.Lock()
+	p.calls = append(p.calls, clone)
+	p.systemPrompts = append(p.systemPrompts, system)
+	p.mu.Unlock()
+	return &captureStream{}
+}
+
+func (p *historyCapture) Call(i int) []llms.Message {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if i < 0 || i >= len(p.calls) {
+		return nil
+	}
+	return p.calls[i]
+}
+
+func (p *historyCapture) SystemPrompt(i int) content.Content {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if i < 0 || i >= len(p.systemPrompts) {
+		return nil
+	}
+	return p.systemPrompts[i]
+}
+
+func (p *historyCapture) NumCalls() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.calls)
 }
 
 type captureStream struct{}
@@ -210,10 +257,10 @@ func TestRuntimeInterruptCancelsLLM(t *testing.T) {
 		t.Fatalf("expected session error")
 	}
 
-	if session.RootTaskID == "" || session.LLMTaskID == "" {
+	if session.TaskID == "" || session.LLMTaskID == "" {
 		t.Fatalf("expected task ids")
 	}
-	root, err := mgr.Get(ctx, session.RootTaskID)
+	root, err := mgr.Get(ctx, session.TaskID)
 	if err != nil {
 		t.Fatalf("get root task: %v", err)
 	}
@@ -229,7 +276,7 @@ func TestRuntimeInterruptCancelsLLM(t *testing.T) {
 	}
 }
 
-func TestRuntimeHistoryReconstructionExcludesLowPriority(t *testing.T) {
+func TestRuntimeSelfEventsPreReadBySourceID(t *testing.T) {
 	db, closeFn := testutil.OpenTestDB(t)
 	defer closeFn()
 
@@ -239,9 +286,10 @@ func TestRuntimeHistoryReconstructionExcludesLowPriority(t *testing.T) {
 	client := &ai.Client{LLM: llms.New(cp)}
 	rt := NewRuntime(bus, mgr, client)
 
-	ctx := context.Background()
+	// Seed LLM tasks as if agent-a produced them (context carries agentID).
+	agentCtx := agentcontext.WithTaskID(context.Background(), "agent-a")
 	seedTask := func(priority, input, output string) {
-		task, err := mgr.Spawn(ctx, tasks.Spec{
+		task, err := mgr.Spawn(agentCtx, tasks.Spec{
 			Type:  "llm",
 			Owner: "agent-a",
 			Mode:  "sync",
@@ -256,13 +304,13 @@ func TestRuntimeHistoryReconstructionExcludesLowPriority(t *testing.T) {
 		if err != nil {
 			t.Fatalf("spawn seed task: %v", err)
 		}
-		if err := mgr.MarkRunning(ctx, task.ID); err != nil {
+		if err := mgr.MarkRunning(agentCtx, task.ID); err != nil {
 			t.Fatalf("mark running seed task: %v", err)
 		}
-		if err := mgr.RecordUpdate(ctx, task.ID, "input", map[string]any{"message": input}); err != nil {
+		if err := mgr.RecordUpdate(agentCtx, task.ID, "input", map[string]any{"message": input}); err != nil {
 			t.Fatalf("record input seed task: %v", err)
 		}
-		if err := mgr.Complete(ctx, task.ID, map[string]any{"output": output}); err != nil {
+		if err := mgr.Complete(agentCtx, task.ID, map[string]any{"output": output}); err != nil {
 			t.Fatalf("complete seed task: %v", err)
 		}
 	}
@@ -270,16 +318,18 @@ func TestRuntimeHistoryReconstructionExcludesLowPriority(t *testing.T) {
 	seedTask("low", "low-input", "low-output")
 	seedTask("wake", "wake-input", "wake-output")
 
-	if _, err := rt.RunOnce(ctx, "agent-a", "current-message"); err != nil {
+	// Events pushed by agent-a are born pre-read, so they should NOT
+	// appear in context_updates when agent-a runs.
+	if _, err := rt.RunOnce(context.Background(), "agent-a", "current-message"); err != nil {
 		t.Fatalf("run once: %v", err)
 	}
 
 	last := cp.LastInput()
-	if !strings.Contains(last, "wake-input") || !strings.Contains(last, "wake-output") {
-		t.Fatalf("expected wake-priority history in prompt input, got: %q", last)
-	}
 	if strings.Contains(last, "low-input") || strings.Contains(last, "low-output") {
-		t.Fatalf("did not expect low-priority history in prompt input, got: %q", last)
+		t.Fatalf("did not expect self-generated low-priority events in context_updates, got: %q", last)
+	}
+	if strings.Contains(last, "wake-input") || strings.Contains(last, "wake-output") {
+		t.Fatalf("did not expect self-generated wake-priority events in context_updates, got: %q", last)
 	}
 }
 
@@ -296,7 +346,7 @@ func TestRuntimeInjectsAndAcksContextUpdates(t *testing.T) {
 	ctx := context.Background()
 	evt, err := bus.Push(ctx, eventbus.EventInput{
 		Stream:    "signals",
-		ScopeType: "agent",
+		ScopeType: "task",
 		ScopeID:   "agent-a",
 		Subject:   "task_done",
 		Body:      "task completed",
@@ -328,7 +378,7 @@ func TestRuntimeInjectsAndAcksContextUpdates(t *testing.T) {
 	}
 
 	historySummaries, err := bus.List(ctx, "history", eventbus.ListOptions{
-		ScopeType: "agent",
+		ScopeType: "task",
 		ScopeID:   "agent-a",
 		Limit:     50,
 		Order:     "lifo",
@@ -504,7 +554,7 @@ func TestRuntimeSkipsLLMDebugSignalsInPromptContext(t *testing.T) {
 
 	evt, err := bus.Push(context.Background(), eventbus.EventInput{
 		Stream:    "signals",
-		ScopeType: "agent",
+		ScopeType: "task",
 		ScopeID:   "agent-a",
 		Subject:   "llm_debug_event",
 		Body:      "llm_debug_event",
@@ -563,7 +613,7 @@ func TestRuntimeAppendsAgentHistoryEntries(t *testing.T) {
 	}
 
 	summaries, err := bus.List(context.Background(), "history", eventbus.ListOptions{
-		ScopeType: "agent",
+		ScopeType: "task",
 		ScopeID:   "agent-a",
 		Limit:     100,
 		Order:     "lifo",
@@ -614,7 +664,7 @@ func TestRuntimeWritesSystemPromptAndToolsConfigOncePerGeneration(t *testing.T) 
 	}
 
 	summaries, err := bus.List(context.Background(), "history", eventbus.ListOptions{
-		ScopeType: "agent",
+		ScopeType: "task",
 		ScopeID:   "agent-a",
 		Limit:     200,
 		Order:     "lifo",
@@ -663,28 +713,123 @@ func TestRuntimeWritesSystemPromptAndToolsConfigOncePerGeneration(t *testing.T) 
 	}
 }
 
-func TestRuntimeResolveAgentID(t *testing.T) {
+func TestConversationHistoryPersistsAcrossHandleMessage(t *testing.T) {
 	db, closeFn := testutil.OpenTestDB(t)
 	defer closeFn()
 
 	bus := eventbus.NewBus(db)
 	mgr := tasks.NewManager(db, bus)
-	rt := NewRuntime(bus, mgr, nil)
-	ctx := context.Background()
+	provider := &historyCapture{}
+	client := &ai.Client{LLM: llms.New(provider)}
+	rt := NewRuntime(bus, mgr, client)
 
-	if got := rt.ResolveAgentID(ctx, ""); got != "agent-1" {
-		t.Fatalf("expected agent-1, got %q", got)
+	ctx := context.Background()
+	agentID := "agent-conv"
+
+	// First turn.
+	sess1, err := rt.HandleMessage(ctx, agentID, "user", "hello", nil)
+	if err != nil {
+		t.Fatalf("first HandleMessage: %v", err)
 	}
-	if got := rt.ResolveAgentID(ctx, ""); got != "agent-2" {
-		t.Fatalf("expected agent-2, got %q", got)
+	if sess1.LastOutput != "ok" {
+		t.Fatalf("expected 'ok', got %q", sess1.LastOutput)
 	}
-	if got := rt.ResolveAgentID(ctx, "planner"); got != "planner-1" {
-		t.Fatalf("expected planner-1, got %q", got)
+
+	// Second turn — should include conversation history.
+	_, err = rt.HandleMessage(ctx, agentID, "user", "follow up", nil)
+	if err != nil {
+		t.Fatalf("second HandleMessage: %v", err)
 	}
-	if got := rt.ResolveAgentID(ctx, "planner"); got != "planner-2" {
-		t.Fatalf("expected planner-2, got %q", got)
+
+	if provider.NumCalls() < 2 {
+		t.Fatalf("expected at least 2 provider calls, got %d", provider.NumCalls())
 	}
-	if got := rt.ResolveAgentID(ctx, "planner-2"); got != "planner-2" {
-		t.Fatalf("expected planner-2 reuse, got %q", got)
+
+	call1 := provider.Call(0)
+	call2 := provider.Call(1)
+
+	// First call: only the current user message (no prior history).
+	if len(call1) != 1 {
+		for i, m := range call1 {
+			t.Logf("  call1[%d]: role=%s text=%q", i, m.Role, messageText(m))
+		}
+		t.Fatalf("expected 1 message in first call, got %d", len(call1))
+	}
+	if call1[0].Role != "user" {
+		t.Fatalf("expected call1[0] to be user, got %s", call1[0].Role)
+	}
+
+	// Second call: prior user + prior assistant + current user = 3 messages.
+	if len(call2) != 3 {
+		for i, m := range call2 {
+			t.Logf("  call2[%d]: role=%s text=%q", i, m.Role, messageText(m))
+		}
+		t.Fatalf("expected 3 messages in second call, got %d", len(call2))
+	}
+	if call2[0].Role != "user" {
+		t.Fatalf("expected call2[0] user, got %s", call2[0].Role)
+	}
+	if call2[1].Role != "assistant" {
+		t.Fatalf("expected call2[1] assistant, got %s", call2[1].Role)
+	}
+	if call2[2].Role != "user" {
+		t.Fatalf("expected call2[2] user, got %s", call2[2].Role)
+	}
+
+	// The first user message should be the raw text from turn 1.
+	if !strings.Contains(messageText(call2[0]), "hello") {
+		t.Fatalf("expected call2[0] to contain 'hello', got %q", messageText(call2[0]))
+	}
+	// The assistant response from turn 1.
+	if !strings.Contains(messageText(call2[1]), "ok") {
+		t.Fatalf("expected call2[1] to contain 'ok', got %q", messageText(call2[1]))
+	}
+	// The current user message (XML-formatted input) should contain "follow up".
+	if !strings.Contains(messageText(call2[2]), "follow up") {
+		t.Fatalf("expected call2[2] to contain 'follow up', got %q", messageText(call2[2]))
 	}
 }
+
+func TestConversationHistoryUsesStoredSystemPrompt(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	provider := &historyCapture{}
+	client := &ai.Client{LLM: llms.New(provider)}
+	rt := NewRuntime(bus, mgr, client)
+
+	ctx := context.Background()
+	agentID := "agent-prompt"
+
+	// First turn — stores the system prompt.
+	_, err := rt.HandleMessage(ctx, agentID, "user", "first", nil)
+	if err != nil {
+		t.Fatalf("first HandleMessage: %v", err)
+	}
+
+	// Second turn — should use the stored prompt, not a freshly built one.
+	_, err = rt.HandleMessage(ctx, agentID, "user", "second", nil)
+	if err != nil {
+		t.Fatalf("second HandleMessage: %v", err)
+	}
+
+	if provider.NumCalls() < 2 {
+		t.Fatalf("expected at least 2 provider calls, got %d", provider.NumCalls())
+	}
+
+	sp1 := provider.SystemPrompt(0)
+	sp2 := provider.SystemPrompt(1)
+	if sp1 == nil || sp2 == nil {
+		t.Fatalf("expected system prompts to be recorded")
+	}
+
+	// System prompts must be byte-identical across turns for cache stability.
+	text1 := messageText(llms.Message{Content: sp1})
+	text2 := messageText(llms.Message{Content: sp2})
+	if text1 != text2 {
+		t.Fatalf("system prompt changed between turns:\n  turn 1: %q\n  turn 2: %q", text1[:min(len(text1), 200)], text2[:min(len(text2), 200)])
+	}
+}
+

@@ -35,7 +35,7 @@ func ExecTool(manager *tasks.Manager) llmtools.Tool {
 				metadata["tool_call_id"] = tc.ID
 				metadata["tool_name"] = tc.Name
 			}
-			owner := strings.TrimSpace(agentcontext.AgentIDFromContext(r.Context()))
+			owner := strings.TrimSpace(agentcontext.TaskIDFromContext(r.Context()))
 			if owner == "" {
 				owner = "agent"
 			}
@@ -73,7 +73,11 @@ func ExecTool(manager *tasks.Manager) llmtools.Tool {
 			}
 
 			timeout := time.Duration(waitSeconds) * time.Second
+			r.Report("running")
 			awaited, awaitErr := manager.Await(r.Context(), task.ID, timeout)
+			if isTerminalExecStatus(awaited.Status) {
+				manager.AckTaskOutput(r.Context(), task.ID, owner)
+			}
 			resp := map[string]any{
 				"task_id": task.ID,
 				"status":  awaited.Status,
@@ -120,4 +124,13 @@ func ExecTool(manager *tasks.Manager) llmtools.Tool {
 			return llmtools.Success(resp)
 		},
 	)
+}
+
+func isTerminalExecStatus(status tasks.Status) bool {
+	switch status {
+	case tasks.StatusCompleted, tasks.StatusFailed, tasks.StatusCancelled:
+		return true
+	default:
+		return false
+	}
 }

@@ -144,7 +144,7 @@ func (d *busDebugger) push(subject string, payload map[string]any) {
 	}
 	_, _ = d.bus.Push(context.Background(), eventbus.EventInput{
 		Stream:    "signals",
-		ScopeType: "agent",
+		ScopeType: "task",
 		ScopeID:   d.agentID,
 		Subject:   subject,
 		Body:      subject,
@@ -155,7 +155,8 @@ func (d *busDebugger) push(subject string, payload map[string]any) {
 			"direction": subject,
 			"priority":  "low",
 		},
-		Payload: payload,
+		Payload:  payload,
+		SourceID: d.agentID,
 	})
 }
 

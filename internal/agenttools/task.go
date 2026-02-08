@@ -14,7 +14,7 @@ import (
 
 type AwaitTaskParams struct {
 	TaskID      string `json:"task_id" description:"Task id to wait for"`
-	WaitSeconds int    `json:"wait_seconds,omitempty" description:"Seconds to wait before returning pending"`
+	WaitSeconds *int   `json:"wait_seconds" description:"Required seconds to wait before returning; use 0 for default timeout"`
 }
 
 type SendTaskParams struct {
@@ -46,8 +46,22 @@ func AwaitTaskTool(manager *tasks.Manager) llmtools.Tool {
 			if p.TaskID == "" {
 				return llmtools.Errorf("task_id is required")
 			}
-			timeout := time.Duration(p.WaitSeconds) * time.Second
+			if p.WaitSeconds == nil {
+				return llmtools.Errorf("wait_seconds is required")
+			}
+			waitSeconds := *p.WaitSeconds
+			if waitSeconds < 0 {
+				return llmtools.Errorf("wait_seconds must be >= 0")
+			}
+			timeout := time.Duration(waitSeconds) * time.Second
+			r.Report("waiting")
 			awaited, awaitErr := manager.Await(r.Context(), p.TaskID, timeout)
+			if isTerminalExecStatus(awaited.Status) {
+				owner := strings.TrimSpace(agentcontext.TaskIDFromContext(r.Context()))
+				if owner != "" {
+					manager.AckTaskOutput(r.Context(), p.TaskID, owner)
+				}
+			}
 			resp := map[string]any{
 				"task_id": p.TaskID,
 				"status":  awaited.Status,
@@ -138,13 +152,13 @@ func SendTaskTool(manager *tasks.Manager, bus *eventbus.Bus) llmtools.Tool {
 				if target == "" {
 					return llmtools.Errorf("target agent unavailable")
 				}
-				source := agentcontext.AgentIDFromContext(r.Context())
+				source := agentcontext.TaskIDFromContext(r.Context())
 				if source == "" {
 					source = "system"
 				}
 				evt, err := bus.Push(r.Context(), eventbus.EventInput{
 					Stream:    "messages",
-					ScopeType: "agent",
+					ScopeType: "task",
 					ScopeID:   target,
 					Subject:   fmt.Sprintf("Message from %s", source),
 					Body:      message,

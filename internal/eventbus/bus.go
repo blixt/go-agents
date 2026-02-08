@@ -102,10 +102,19 @@ func (b *Bus) Push(ctx context.Context, input EventInput) (Event, error) {
 		return Event{}, fmt.Errorf("encode payload: %w", err)
 	}
 
+	readByJSON := "[]"
+	var readBy []string
+	if sid := strings.TrimSpace(input.SourceID); sid != "" {
+		readBy = []string{sid}
+		if data, err := json.Marshal(readBy); err == nil {
+			readByJSON = string(data)
+		}
+	}
+
 	if err := execWithRetry(ctx, b.db, `
 		INSERT INTO events (id, stream, scope_type, scope_id, subject, body, metadata, payload, created_at, read_by)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, id, input.Stream, scopeType, scopeID, nullString(input.Subject), input.Body, metadataJSON, payloadJSON, createdAt.Format(time.RFC3339Nano), "[]"); err != nil {
+	`, id, input.Stream, scopeType, scopeID, nullString(input.Subject), input.Body, metadataJSON, payloadJSON, createdAt.Format(time.RFC3339Nano), readByJSON); err != nil {
 		return Event{}, fmt.Errorf("insert event: %w", err)
 	}
 
@@ -120,7 +129,7 @@ func (b *Bus) Push(ctx context.Context, input EventInput) (Event, error) {
 		Payload:   input.Payload,
 		CreatedAt: createdAt,
 		Read:      false,
-		ReadBy:    nil,
+		ReadBy:    readBy,
 	}
 
 	b.broadcast(event)
@@ -370,10 +379,10 @@ func buildScopeWhere(stream string, opts ListOptions) (string, []any) {
 		return where, args
 	}
 
-	// Default: global scope, plus agent scope if reader provided.
+	// Default: global scope, plus task scope if reader provided.
 	where += " AND ((scope_type = 'global' AND scope_id = '*')"
 	if opts.Reader != "" {
-		where += " OR (scope_type = 'agent' AND scope_id = ?)"
+		where += " OR (scope_type = 'task' AND scope_id = ?)"
 		args = append(args, opts.Reader)
 	}
 	where += ")"

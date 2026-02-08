@@ -194,6 +194,7 @@ h2 {
 }
 
 .status-running,
+.status-waiting,
 .status-streaming,
 .status-start,
 .status-wake {

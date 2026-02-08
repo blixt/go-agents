@@ -136,7 +136,7 @@ func NewSnapshotFixture(t *testing.T, opts SnapshotFixtureOptions) *SnapshotFixt
 	)
 	mgr := tasks.NewManager(db, bus,
 		tasks.WithClock(clock.Now),
-		tasks.WithIDGenerator(clock.NewID),
+		tasks.WithIDGenerator(func(string) string { return clock.NewID() }),
 	)
 	tools := make([]llmtools.Tool, 0, len(opts.ToolFactories))
 	for _, factory := range opts.ToolFactories {
@@ -530,24 +530,22 @@ func projectAgents(agents []agentState) []agentSnapshot {
 }
 
 type sessionSnapshot struct {
-	AgentID    string `json:"agent_id"`
-	RootTaskID string `json:"root_task_id,omitempty"`
-	LLMTaskID  string `json:"llm_task_id,omitempty"`
-	Prompt     string `json:"prompt"`
-	LastInput  string `json:"last_input"`
+	TaskID    string `json:"task_id"`
+	LLMTaskID string `json:"llm_task_id,omitempty"`
+	Prompt    string `json:"prompt"`
+	LastInput string `json:"last_input"`
 	LastOutput string `json:"last_output"`
-	LastError  string `json:"last_error,omitempty"`
+	LastError string `json:"last_error,omitempty"`
 }
 
 func projectSession(s engine.Session) sessionSnapshot {
 	return sessionSnapshot{
-		AgentID:    s.AgentID,
-		RootTaskID: s.RootTaskID,
-		LLMTaskID:  s.LLMTaskID,
-		Prompt:     s.Prompt,
-		LastInput:  s.LastInput,
+		TaskID:    s.TaskID,
+		LLMTaskID: s.LLMTaskID,
+		Prompt:    s.Prompt,
+		LastInput: s.LastInput,
 		LastOutput: s.LastOutput,
-		LastError:  s.LastError,
+		LastError: s.LastError,
 	}
 }
 

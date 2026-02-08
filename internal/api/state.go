@@ -71,13 +71,10 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 			if len(updates) > 0 {
 				resp.Updates[task.ID] = updates
 			}
-			if strings.TrimSpace(task.Owner) != "" && (task.Type == "agent" || task.Type == "llm") {
-				agentIDs[strings.TrimSpace(task.Owner)] = struct{}{}
+			if task.Type == "agent" {
+				agentIDs[task.ID] = struct{}{}
 			}
 			if task.Metadata != nil {
-				if val, ok := task.Metadata["agent_id"].(string); ok && strings.TrimSpace(val) != "" {
-					agentIDs[strings.TrimSpace(val)] = struct{}{}
-				}
 				if val, ok := task.Metadata["notify_target"].(string); ok && strings.TrimSpace(val) != "" {
 					agentIDs[strings.TrimSpace(val)] = struct{}{}
 				}
@@ -86,19 +83,13 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.Runtime != nil {
-		for _, agentID := range s.Runtime.KnownAgentIDs() {
-			if strings.TrimSpace(agentID) == "" {
-				continue
-			}
-			agentIDs[strings.TrimSpace(agentID)] = struct{}{}
-		}
 		for id, session := range s.Runtime.SessionsSnapshot() {
 			if strings.TrimSpace(id) == "" {
 				continue
 			}
-			agentID := strings.TrimSpace(id)
-			agentIDs[agentID] = struct{}{}
-			resp.Sessions[agentID] = session
+			taskID := strings.TrimSpace(id)
+			agentIDs[taskID] = struct{}{}
+			resp.Sessions[taskID] = session
 		}
 	}
 
@@ -106,7 +97,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	for agentID := range agentIDs {
 		orderedAgentIDs = append(orderedAgentIDs, agentID)
 		if _, ok := resp.Sessions[agentID]; !ok {
-			resp.Sessions[agentID] = engine.Session{AgentID: agentID}
+			resp.Sessions[agentID] = engine.Session{TaskID: agentID}
 		}
 	}
 	sort.Strings(orderedAgentIDs)
@@ -173,14 +164,20 @@ func buildAgentState(agentIDs []string, allTasks []tasks.Task, sessions map[stri
 		active := 0
 		lastTaskUpdate := time.Time{}
 		for _, task := range allTasks {
-			if task.Owner != agentID && getTaskAgentID(task.Metadata) != agentID && getNotifyTarget(task.Metadata) != agentID {
+			if task.Owner != agentID && getNotifyTarget(task.Metadata) != agentID {
+				continue
+			}
+			if task.UpdatedAt.After(lastTaskUpdate) {
+				lastTaskUpdate = task.UpdatedAt
+			}
+			// The root agent task stays "running" for the lifetime of the
+			// agent loop — skip it so only child tasks (llm, exec, etc.)
+			// contribute to the active count.
+			if task.ID == agentID {
 				continue
 			}
 			if task.Status == tasks.StatusQueued || task.Status == tasks.StatusRunning {
 				active++
-			}
-			if task.UpdatedAt.After(lastTaskUpdate) {
-				lastTaskUpdate = task.UpdatedAt
 			}
 		}
 
@@ -224,7 +221,7 @@ func readAgentHistory(ctx context.Context, bus *eventbus.Bus, agentID string, li
 	}
 	readLimit := limit * 4
 	summaries, err := bus.List(ctx, "history", eventbus.ListOptions{
-		ScopeType: "agent",
+		ScopeType: "task",
 		ScopeID:   agentID,
 		Limit:     readLimit,
 		Order:     "lifo",
@@ -286,17 +283,6 @@ func readAgentHistory(ctx context.Context, bus *eventbus.Bus, agentID string, li
 	}, nil
 }
 
-func getTaskAgentID(meta map[string]any) string {
-	if meta == nil {
-		return ""
-	}
-	val, ok := meta["agent_id"].(string)
-	if !ok {
-		return ""
-	}
-	return strings.TrimSpace(val)
-}
-
 func getNotifyTarget(meta map[string]any) string {
 	if meta == nil {
 		return ""
@@ -333,8 +319,7 @@ func filterVisibleAgentIDs(
 		history := histories[agentID]
 		hasHistory := len(history.Entries) > 0
 		session := sessions[agentID]
-		hasSession := strings.TrimSpace(session.RootTaskID) != "" ||
-			strings.TrimSpace(session.LLMTaskID) != "" ||
+		hasSession := strings.TrimSpace(session.LLMTaskID) != "" ||
 			strings.TrimSpace(session.LastInput) != "" ||
 			strings.TrimSpace(session.LastOutput) != "" ||
 			strings.TrimSpace(session.LastError) != ""
@@ -344,7 +329,7 @@ func filterVisibleAgentIDs(
 			if task.Type != "agent" && task.Type != "llm" {
 				continue
 			}
-			if task.Owner == agentID || getTaskAgentID(task.Metadata) == agentID || getNotifyTarget(task.Metadata) == agentID {
+			if task.Owner == agentID || task.ID == agentID || getNotifyTarget(task.Metadata) == agentID {
 				hasAgentTasks = true
 				break
 			}

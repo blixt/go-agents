@@ -16,19 +16,19 @@ export type Agent = {
 };
 
 export type Session = {
-  agent_id: string;
+  task_id: string;
   updated_at: string;
   [key: string]: unknown;
 };
 
 export type HistoryEntry = {
   id: string;
-  agent_id: string;
+  task_id: string;
   generation: number;
   type: string;
   role: string;
   content: string;
-  task_id: string;
+  llm_task_id: string;
   tool_call_id: string;
   tool_name: string;
   tool_status: string;
@@ -37,7 +37,8 @@ export type HistoryEntry = {
 };
 
 export type History = {
-  agent_id: string;
+  agent_id?: string;
+  task_id?: string;
   generation: number;
   entries: HistoryEntry[];
 };

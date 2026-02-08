@@ -3,12 +3,13 @@ package engine
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/flitsinc/go-agents/internal/eventbus"
+	"github.com/flitsinc/go-llms/content"
+	"github.com/flitsinc/go-llms/llms"
 )
 
 type AgentHistoryEntry struct {
@@ -32,12 +33,12 @@ type AgentHistory struct {
 	Entries    []AgentHistoryEntry `json:"entries"`
 }
 
-func (r *Runtime) appendHistory(ctx context.Context, agentID, entryType, role, content, taskID string, generation int64, data map[string]any) {
+func (r *Runtime) appendHistory(ctx context.Context, taskID, entryType, role, content, llmTaskID string, generation int64, data map[string]any) {
 	if r.Bus == nil {
 		return
 	}
-	agentID = strings.TrimSpace(agentID)
-	if agentID == "" {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
 		return
 	}
 	entryType = strings.TrimSpace(entryType)
@@ -49,21 +50,20 @@ func (r *Runtime) appendHistory(ctx context.Context, agentID, entryType, role, c
 		role = "system"
 	}
 	if generation <= 0 {
-		generation = r.historyGeneration(ctx, agentID)
+		generation = r.historyGeneration(ctx, taskID)
 	}
-	r.rememberAgent(agentID)
 
 	body := strings.TrimSpace(content)
 	if body == "" {
 		body = entryType
 	}
 	payload := map[string]any{
-		"agent_id":   agentID,
+		"agent_id":   taskID,
 		"generation": generation,
 		"type":       entryType,
 		"role":       role,
 		"content":    content,
-		"task_id":    strings.TrimSpace(taskID),
+		"task_id":    strings.TrimSpace(llmTaskID),
 		"created_at": r.now().Format(time.RFC3339Nano),
 	}
 	for k, v := range data {
@@ -74,13 +74,13 @@ func (r *Runtime) appendHistory(ctx context.Context, agentID, entryType, role, c
 	}
 	_, _ = r.Bus.Push(ctx, eventbus.EventInput{
 		Stream:    "history",
-		ScopeType: "agent",
-		ScopeID:   agentID,
+		ScopeType: "task",
+		ScopeID:   taskID,
 		Subject:   fmt.Sprintf("%s:%s", role, entryType),
 		Body:      body,
 		Metadata: map[string]any{
 			"kind":       "history_entry",
-			"agent_id":   agentID,
+			"agent_id":   taskID,
 			"generation": generation,
 			"type":       entryType,
 			"role":       role,
@@ -90,7 +90,7 @@ func (r *Runtime) appendHistory(ctx context.Context, agentID, entryType, role, c
 	})
 }
 
-func (r *Runtime) appendToolHistory(ctx context.Context, agentID, taskID, entryType, toolCallID, toolName, toolStatus, content string, data map[string]any) {
+func (r *Runtime) appendToolHistory(ctx context.Context, taskID, llmTaskID, entryType, toolCallID, toolName, toolStatus, content string, data map[string]any) {
 	if data == nil {
 		data = map[string]any{}
 	}
@@ -103,54 +103,7 @@ func (r *Runtime) appendToolHistory(ctx context.Context, agentID, taskID, entryT
 	if strings.TrimSpace(toolStatus) != "" {
 		data["tool_status"] = strings.TrimSpace(toolStatus)
 	}
-	r.appendHistory(ctx, agentID, entryType, "tool", content, taskID, 0, data)
-}
-
-func (r *Runtime) rememberAgent(agentID string) {
-	agentID = strings.TrimSpace(agentID)
-	if agentID == "" {
-		return
-	}
-	r.knownMu.Lock()
-	r.knownAgents[agentID] = struct{}{}
-	r.knownMu.Unlock()
-}
-
-func (r *Runtime) KnownAgentIDs() []string {
-	seen := map[string]struct{}{}
-	r.knownMu.RLock()
-	for id := range r.knownAgents {
-		if strings.TrimSpace(id) == "" {
-			continue
-		}
-		seen[id] = struct{}{}
-	}
-	r.knownMu.RUnlock()
-
-	r.agentMu.RLock()
-	for id := range r.agents {
-		if strings.TrimSpace(id) == "" {
-			continue
-		}
-		seen[id] = struct{}{}
-	}
-	r.agentMu.RUnlock()
-
-	r.mu.RLock()
-	for id := range r.sessions {
-		if strings.TrimSpace(id) == "" {
-			continue
-		}
-		seen[id] = struct{}{}
-	}
-	r.mu.RUnlock()
-
-	out := make([]string, 0, len(seen))
-	for id := range seen {
-		out = append(out, id)
-	}
-	sort.Strings(out)
-	return out
+	r.appendHistory(ctx, taskID, entryType, "tool", content, llmTaskID, 0, data)
 }
 
 func (r *Runtime) SessionsSnapshot() map[string]Session {
@@ -163,13 +116,13 @@ func (r *Runtime) SessionsSnapshot() map[string]Session {
 	return out
 }
 
-func (r *Runtime) historyGeneration(ctx context.Context, agentID string) int64 {
-	agentID = strings.TrimSpace(agentID)
-	if agentID == "" {
+func (r *Runtime) historyGeneration(ctx context.Context, taskID string) int64 {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
 		return 1
 	}
 	r.historyMu.Lock()
-	if gen, ok := r.historyGenerationByAgent[agentID]; ok && gen > 0 {
+	if gen, ok := r.historyGenerationByTask[taskID]; ok && gen > 0 {
 		r.historyMu.Unlock()
 		return gen
 	}
@@ -179,8 +132,8 @@ func (r *Runtime) historyGeneration(ctx context.Context, agentID string) int64 {
 	cutoff := time.Time{}
 	if r.Bus != nil {
 		summaries, err := r.Bus.List(ctx, "history", eventbus.ListOptions{
-			ScopeType: "agent",
-			ScopeID:   agentID,
+			ScopeType: "task",
+			ScopeID:   taskID,
 			Limit:     300,
 			Order:     "lifo",
 		})
@@ -209,34 +162,34 @@ func (r *Runtime) historyGeneration(ctx context.Context, agentID string) int64 {
 	}
 
 	r.historyMu.Lock()
-	if existing, ok := r.historyGenerationByAgent[agentID]; ok && existing > gen {
+	if existing, ok := r.historyGenerationByTask[taskID]; ok && existing > gen {
 		gen = existing
 	}
-	r.historyGenerationByAgent[agentID] = gen
+	r.historyGenerationByTask[taskID] = gen
 	if !cutoff.IsZero() {
-		if prev, ok := r.historyCompactionCutoff[agentID]; !ok || cutoff.After(prev) {
-			r.historyCompactionCutoff[agentID] = cutoff
+		if prev, ok := r.historyCompactionCutoff[taskID]; !ok || cutoff.After(prev) {
+			r.historyCompactionCutoff[taskID] = cutoff
 		}
 	}
 	r.historyMu.Unlock()
 	return gen
 }
 
-func (r *Runtime) currentHistoryGeneration(ctx context.Context, agentID string) int64 {
-	return r.historyGeneration(ctx, agentID)
+func (r *Runtime) currentHistoryGeneration(ctx context.Context, taskID string) int64 {
+	return r.historyGeneration(ctx, taskID)
 }
 
-func (r *Runtime) shouldAppendGenerationPreamble(ctx context.Context, agentID string, generation int64) bool {
-	agentID = strings.TrimSpace(agentID)
-	if agentID == "" {
+func (r *Runtime) shouldAppendGenerationPreamble(ctx context.Context, taskID string, generation int64) bool {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
 		return false
 	}
 	if generation <= 0 {
-		generation = r.historyGeneration(ctx, agentID)
+		generation = r.historyGeneration(ctx, taskID)
 	}
 
 	r.historyMu.Lock()
-	if existing, ok := r.historyPreambleByAgent[agentID]; ok && existing == generation {
+	if existing, ok := r.historyPreambleByTask[taskID]; ok && existing == generation {
 		r.historyMu.Unlock()
 		return false
 	}
@@ -245,8 +198,8 @@ func (r *Runtime) shouldAppendGenerationPreamble(ctx context.Context, agentID st
 	alreadyExists := false
 	if r.Bus != nil {
 		summaries, err := r.Bus.List(ctx, "history", eventbus.ListOptions{
-			ScopeType: "agent",
-			ScopeID:   agentID,
+			ScopeType: "task",
+			ScopeID:   taskID,
 			Limit:     200,
 			Order:     "lifo",
 		})
@@ -272,49 +225,131 @@ func (r *Runtime) shouldAppendGenerationPreamble(ctx context.Context, agentID st
 	}
 
 	r.historyMu.Lock()
-	r.historyPreambleByAgent[agentID] = generation
+	r.historyPreambleByTask[taskID] = generation
 	r.historyMu.Unlock()
 	return !alreadyExists
 }
 
-func (r *Runtime) compactionCutoff(agentID string) time.Time {
+func (r *Runtime) compactionCutoff(taskID string) time.Time {
 	r.historyMu.Lock()
 	defer r.historyMu.Unlock()
-	return r.historyCompactionCutoff[agentID]
+	return r.historyCompactionCutoff[taskID]
 }
 
-func (r *Runtime) CompactAgentContext(ctx context.Context, agentID, reason string) (int64, error) {
-	agentID = strings.TrimSpace(agentID)
-	if agentID == "" {
-		return 0, fmt.Errorf("agent_id is required")
+func (r *Runtime) CompactAgentContext(ctx context.Context, taskID, reason string) (int64, error) {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return 0, fmt.Errorf("task_id is required")
 	}
 	now := r.now()
-	current := r.historyGeneration(ctx, agentID)
+	current := r.historyGeneration(ctx, taskID)
 	next := current + 1
 
 	r.historyMu.Lock()
-	r.historyGenerationByAgent[agentID] = next
-	r.historyCompactionCutoff[agentID] = now
+	r.historyGenerationByTask[taskID] = next
+	r.historyCompactionCutoff[taskID] = now
 	r.historyMu.Unlock()
-
-	state := r.ensureAgentState(agentID)
-	if state != nil {
-		state.mu.Lock()
-		state.RootTaskID = ""
-		state.mu.Unlock()
-	}
-	r.rememberAgent(agentID)
 
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		reason = "context compaction requested"
 	}
-	r.appendHistory(ctx, agentID, "context_compaction", "system", reason, "", next, map[string]any{
+	r.appendHistory(ctx, taskID, "context_compaction", "system", reason, "", next, map[string]any{
 		"compacted_at": now.Format(time.RFC3339Nano),
 		"previous_gen": current,
 		"next_gen":     next,
 	})
 	return next, nil
+}
+
+// loadConversationMessages reads history entries for the given agent and
+// generation, returning the stored system prompt text and a reconstructed
+// []llms.Message conversation suitable for passing to ChatUsingMessages.
+// Consecutive messages with the same role are merged.
+func (r *Runtime) loadConversationMessages(ctx context.Context, agentID string, generation int64) (storedPrompt string, messages []llms.Message, err error) {
+	if r.Bus == nil {
+		return "", nil, nil
+	}
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return "", nil, nil
+	}
+
+	summaries, err := r.Bus.List(ctx, "history", eventbus.ListOptions{
+		ScopeType: "task",
+		ScopeID:   agentID,
+		Limit:     2000,
+		Order:     "fifo",
+	})
+	if err != nil || len(summaries) == 0 {
+		return "", nil, err
+	}
+
+	ids := make([]string, len(summaries))
+	for i, s := range summaries {
+		ids[i] = s.ID
+	}
+	events, err := r.Bus.Read(ctx, "history", ids, "")
+	if err != nil {
+		return "", nil, err
+	}
+
+	// Accumulate user/assistant messages, merging consecutive same-role entries.
+	var lastRole string
+	var lastText string
+	flush := func() {
+		if lastRole == "" || strings.TrimSpace(lastText) == "" {
+			return
+		}
+		messages = append(messages, llms.Message{
+			Role:    lastRole,
+			Content: content.FromText(lastText),
+		})
+	}
+	for _, evt := range events {
+		entry, ok := HistoryEntryFromEvent(evt)
+		if !ok || entry.Generation != generation {
+			continue
+		}
+		switch entry.Type {
+		case "system_prompt":
+			if storedPrompt == "" {
+				storedPrompt = entry.Content
+			}
+		case "user_message":
+			text := strings.TrimSpace(entry.Content)
+			if text == "" {
+				continue
+			}
+			if lastRole == "user" {
+				lastText += "\n\n" + text
+			} else {
+				flush()
+				lastRole = "user"
+				lastText = text
+			}
+		case "assistant_message":
+			text := strings.TrimSpace(entry.Content)
+			if text == "" {
+				continue
+			}
+			if lastRole == "assistant" {
+				lastText += "\n\n" + text
+			} else {
+				flush()
+				lastRole = "assistant"
+				lastText = text
+			}
+		}
+	}
+	flush()
+
+	// Drop trailing user message (indicates a failed turn with no response).
+	if len(messages) > 0 && messages[len(messages)-1].Role == "user" {
+		messages = messages[:len(messages)-1]
+	}
+
+	return storedPrompt, messages, nil
 }
 
 func HistoryEntryFromEvent(evt eventbus.Event) (AgentHistoryEntry, bool) {

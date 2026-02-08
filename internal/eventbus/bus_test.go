@@ -69,7 +69,7 @@ func TestBusScopesAndSubscribe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("push global: %v", err)
 	}
-	_, err = bus.Push(ctx, EventInput{Stream: "signals", ScopeType: "agent", ScopeID: "agent-1", Body: "agent"})
+	_, err = bus.Push(ctx, EventInput{Stream: "signals", ScopeType: "task", ScopeID: "agent-1", Body: "agent"})
 	if err != nil {
 		t.Fatalf("push agent: %v", err)
 	}
@@ -97,5 +97,73 @@ func TestBusScopesAndSubscribe(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timeout waiting for subscription event")
+	}
+}
+
+func TestBusPushWithSourceIDPreReads(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := NewBus(db)
+	ctx := context.Background()
+
+	evt, err := bus.Push(ctx, EventInput{
+		Stream:   "signals",
+		Body:     "self-event",
+		SourceID: "agent-1",
+	})
+	if err != nil {
+		t.Fatalf("push with source_id: %v", err)
+	}
+	if len(evt.ReadBy) != 1 || evt.ReadBy[0] != "agent-1" {
+		t.Fatalf("expected returned event ReadBy=[agent-1], got %v", evt.ReadBy)
+	}
+
+	// List as agent-1 — should be pre-read.
+	summaries, err := bus.List(ctx, "signals", ListOptions{Reader: "agent-1"})
+	if err != nil {
+		t.Fatalf("list as agent-1: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("expected 1 summary, got %d", len(summaries))
+	}
+	if !summaries[0].Read {
+		t.Fatalf("expected summary.Read=true for agent-1")
+	}
+
+	// List as agent-2 — should be unread.
+	summaries2, err := bus.List(ctx, "signals", ListOptions{Reader: "agent-2"})
+	if err != nil {
+		t.Fatalf("list as agent-2: %v", err)
+	}
+	if len(summaries2) != 1 {
+		t.Fatalf("expected 1 summary, got %d", len(summaries2))
+	}
+	if summaries2[0].Read {
+		t.Fatalf("expected summary.Read=false for agent-2")
+	}
+
+	// Read as agent-1 — should be pre-read.
+	events, err := bus.Read(ctx, "signals", []string{evt.ID}, "agent-1")
+	if err != nil {
+		t.Fatalf("read as agent-1: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if !events[0].Read {
+		t.Fatalf("expected evt.Read=true for agent-1")
+	}
+
+	// Read as agent-2 — should be unread.
+	events2, err := bus.Read(ctx, "signals", []string{evt.ID}, "agent-2")
+	if err != nil {
+		t.Fatalf("read as agent-2: %v", err)
+	}
+	if len(events2) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events2))
+	}
+	if events2[0].Read {
+		t.Fatalf("expected evt.Read=false for agent-2")
 	}
 }

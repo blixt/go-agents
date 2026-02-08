@@ -98,20 +98,28 @@ export function App(): React.ReactElement {
     if (!trimmed) return;
     setSendStatus("sending");
     try {
-      const endpoint = selectedAgent ? `/api/agents/${encodeURIComponent(selectedAgent)}/run` : "/api/agents/run";
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: trimmed, source: "external", priority: "wake" }),
-      });
+      let res: Response;
+      if (selectedAgent) {
+        res = await fetch(`/api/tasks/${encodeURIComponent(selectedAgent)}/send`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: trimmed, source: "external", priority: "wake" }),
+        });
+      } else {
+        res = await fetch("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "agent", payload: { message: trimmed }, source: "external", priority: "wake" }),
+        });
+      }
       if (!res.ok) {
         const text = await res.text();
         setSendStatus(`error ${res.status}: ${text}`);
         return;
       }
       const data = await res.json().catch(() => null);
-      if (data && typeof data.agent_id === "string" && data.agent_id.trim() !== "") {
-        setSelectedAgent(data.agent_id.trim());
+      if (data && typeof data.task_id === "string" && data.task_id.trim() !== "") {
+        setSelectedAgent(data.task_id.trim());
       }
       setMessage("");
       setSendStatus("sent");
@@ -129,7 +137,7 @@ export function App(): React.ReactElement {
     }
     setCompactStatus("compacting");
     try {
-      const res = await fetch(`/api/agents/${encodeURIComponent(selectedAgent)}/compact`, {
+      const res = await fetch(`/api/tasks/${encodeURIComponent(selectedAgent)}/compact`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reason: "manual compact from UI" }),
