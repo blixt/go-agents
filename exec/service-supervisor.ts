@@ -105,9 +105,8 @@ function scan(): void {
       const currentRunMtime = fileMtime(runFile)
       const currentEnvMtime = fileMtime(dotEnvPath())
       if (
-        existing.proc &&
-        (currentRunMtime !== existing.runTsMtime ||
-          currentEnvMtime !== existing.dotEnvMtime)
+        currentRunMtime !== existing.runTsMtime ||
+        currentEnvMtime !== existing.dotEnvMtime
       ) {
         console.error(
           `[supervisor] file change detected for service ${name}, restarting`,
@@ -167,6 +166,14 @@ function installAndStart(svc: ServiceState): void {
 function spawnService(svc: ServiceState): void {
   const dotEnvVars = dotEnvLoader ? dotEnvLoader() : {}
   const runFile = join(svc.dir, "run.ts")
+  const envFile = dotEnvPath()
+
+  const envKeys = Object.keys(dotEnvVars)
+  if (envKeys.length > 0) {
+    console.error(
+      `[supervisor] loading ${envKeys.length} env var(s) for service ${svc.name}: ${envKeys.join(", ")}`,
+    )
+  }
 
   // Ensure node_modules symlinks for core/ and tools/
   const nodeModulesDir = join(svc.dir, "node_modules")
@@ -190,10 +197,16 @@ function spawnService(svc: ServiceState): void {
 
   // Record mtimes so we can detect changes on next scan
   svc.runTsMtime = fileMtime(runFile)
-  svc.dotEnvMtime = fileMtime(dotEnvPath())
+  svc.dotEnvMtime = fileMtime(envFile)
   svc.lastStart = Date.now()
 
-  const proc = Bun.spawn(["bun", runFile], {
+  // Use --env-file so Bun natively loads .env vars into the service process,
+  // in addition to passing them via the env option (belt and suspenders).
+  const cmd = existsSync(envFile)
+    ? ["bun", "--env-file=" + envFile, runFile]
+    : ["bun", runFile]
+
+  const proc = Bun.spawn(cmd, {
     cwd: svc.dir,
     stdout: "pipe",
     stderr: "pipe",

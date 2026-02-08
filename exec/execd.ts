@@ -2,7 +2,7 @@
 
 import { join, resolve } from "path"
 import { homedir, tmpdir } from "os"
-import { existsSync, readdirSync } from "fs"
+import { existsSync, readdirSync, readFileSync } from "fs"
 import { mkdir, readdir, stat, symlink, copyFile } from "fs/promises"
 import { startSupervisor, stopSupervisor } from "./service-supervisor.ts"
 
@@ -162,8 +162,9 @@ function ensureToolDeps() {
 
 function loadDotEnv(path: string): Record<string, string> {
   const vars: Record<string, string> = {}
+  if (!existsSync(path)) return vars
   try {
-    const text = Bun.file(path).textSync()
+    const text = readFileSync(path, "utf-8")
     for (const line of text.split("\n")) {
       const trimmed = line.trim()
       if (!trimmed || trimmed.startsWith("#")) continue
@@ -181,7 +182,7 @@ function loadDotEnv(path: string): Record<string, string> {
       if (key) vars[key] = value
     }
   } catch {
-    // File doesn't exist — that's fine
+    // read error — that's fine
   }
   return vars
 }
