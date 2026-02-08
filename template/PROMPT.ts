@@ -256,6 +256,7 @@ function utilitiesBlock() {
 ## Bun built-ins
 
 These are available in all exec code without imports:
+- fetch(url, opts?) — HTTP requests (GET, POST, etc.). Use this for API calls instead of shelling out to curl.
 - Bun.$ — shell execution (tagged template)
 - Bun.spawn() / Bun.spawnSync() — subprocess management
 - Bun.file(path) — file handle (use .text(), .json(), .exists(), etc.)
