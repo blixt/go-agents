@@ -805,7 +805,7 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 				if frame.ToEventID != "" {
 					currentContextCursor = frame.ToEventID
 				}
-				if len(fresh) > 0 || snapshot.TimePassed || snapshot.DateChanged {
+				if len(fresh) > 0 || snapshot.DateChanged {
 					r.appendContextUpdateHistory(hookCtx, agentID, llmTask.ID, currentGeneration, snapshot, fresh)
 					turnInput = buildInputWithHistory("runtime", "", map[string]any{"priority": "normal"}, snapshot, frame)
 					before.Append(llms.Message{Role: "user", Content: content.FromText(turnInput)})
@@ -971,7 +971,7 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 					ScopeType: "task",
 					ScopeID:   agentID,
 					Metadata: map[string]any{
-						"agent_id": agentID,
+						"kind": "error",
 					},
 					SourceID: agentID,
 				})
@@ -1780,13 +1780,7 @@ func indentXML(raw, prefix string) string {
 
 func renderContextUpdatesXML(turnCtx TurnContext, frame ContextUpdateFrame) string {
 	var b strings.Builder
-	b.WriteString("<context_updates")
-	if strings.TrimSpace(frame.ToEventID) != "" {
-		b.WriteString(" to_event_id=\"")
-		b.WriteString(xmlEscape(frame.ToEventID))
-		b.WriteString("\"")
-	}
-	b.WriteString(">\n")
+	b.WriteString("<context_updates>\n")
 
 	if !turnCtx.Previous.IsZero() && turnCtx.TimePassed {
 		b.WriteString("  <system_update kind=\"time_passed\" previous=\"")
@@ -1820,8 +1814,6 @@ func renderContextUpdatesXML(turnCtx TurnContext, frame ContextUpdateFrame) stri
 		}
 		b.WriteString("  <event stream=\"")
 		b.WriteString(xmlEscape(evt.Stream))
-		b.WriteString("\" id=\"")
-		b.WriteString(xmlEscape(evt.ID))
 		b.WriteString("\"")
 		if priority != "" && priority != "normal" {
 			b.WriteString(" priority=\"")
@@ -1945,11 +1937,9 @@ func compactEventMetadataForPrompt(metadata map[string]any, stream, priority, ta
 	if len(clean) == 0 {
 		return ""
 	}
+	// Remove fields that duplicate event XML attributes.
 	if p := schema.GetMetaString(clean, "priority"); p != "" && p == priority {
 		delete(clean, "priority")
-	}
-	if strings.TrimSpace(stream) == "task_output" && strings.EqualFold(schema.GetMetaString(clean, "kind"), "task_update") {
-		delete(clean, "kind")
 	}
 	if taskID != "" && schema.GetMetaString(clean, "task_id") == taskID {
 		delete(clean, "task_id")
@@ -1957,6 +1947,20 @@ func compactEventMetadataForPrompt(metadata map[string]any, stream, priority, ta
 	if taskKind != "" && schema.GetMetaString(clean, "task_kind") == taskKind {
 		delete(clean, "task_kind")
 	}
+	// Remove kind when it's implied by the stream or other attributes.
+	kind := strings.ToLower(strings.TrimSpace(schema.GetMetaString(clean, "kind")))
+	switch {
+	case kind == "task_update" || kind == "task_update_summary":
+		delete(clean, "kind")
+	case kind == "command" && schema.GetMetaString(clean, "action") != "":
+		// action is more specific than kind="command"
+		delete(clean, "kind")
+	}
+	// Remove internal/redundant fields.
+	delete(clean, "target")
+	delete(clean, "agent_id")
+	delete(clean, "task_type")
+	delete(clean, "supersedes_count")
 	if len(clean) == 0 {
 		return ""
 	}

@@ -255,7 +255,8 @@ func (m *Manager) Spawn(ctx context.Context, spec Spec) (Task, error) {
 				"task_id":   id,
 				"task_type": spec.Type,
 			},
-			Payload: spec.Payload,
+			Payload:  spec.Payload,
+			SourceID: strings.TrimSpace(agentcontext.TaskIDFromContext(ctx)),
 		})
 	}
 
@@ -466,7 +467,8 @@ func (m *Manager) Send(ctx context.Context, taskID string, input map[string]any)
 				"action":  "send",
 				"task_id": taskID,
 			},
-			Payload: input,
+			Payload:  input,
+			SourceID: strings.TrimSpace(agentcontext.TaskIDFromContext(ctx)),
 		})
 	}
 	return m.RecordUpdate(ctx, taskID, "input", input)
@@ -1003,7 +1005,8 @@ func (m *Manager) cancelWithChildren(ctx context.Context, taskID string, reason 
 				"action":  action,
 				"task_id": taskID,
 			},
-			Payload: payload,
+			Payload:  payload,
+			SourceID: strings.TrimSpace(agentcontext.TaskIDFromContext(ctx)),
 		})
 	}
 	if err := m.updateStatus(ctx, taskID, StatusCancelled, payload, kind); err != nil {
