@@ -2,6 +2,7 @@
 
 import { join, resolve } from "path"
 import { homedir, tmpdir } from "os"
+import { existsSync, readdirSync } from "fs"
 import { mkdir, readdir, stat, symlink, copyFile } from "fs/promises"
 
 type Task = {
@@ -137,6 +138,25 @@ async function ensureGoAgentsHome() {
     if (err?.code !== "ENOENT") throw err
   }
   await copyDir(TEMPLATE_ROOT, GO_AGENTS_HOME)
+}
+
+function ensureToolDeps() {
+  const toolsDir = join(GO_AGENTS_HOME, "tools")
+  if (!existsSync(toolsDir)) return
+  for (const entry of readdirSync(toolsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    const dir = join(toolsDir, entry.name)
+    if (!existsSync(join(dir, "package.json"))) continue
+    if (existsSync(join(dir, "node_modules"))) continue
+    const result = Bun.spawnSync(["bun", "install"], {
+      cwd: dir,
+      stdout: "inherit",
+      stderr: "inherit",
+    })
+    if (result.exitCode !== 0) {
+      console.error(`[execd] bun install failed in ${dir}`)
+    }
+  }
 }
 
 async function claimTasks(limit: number): Promise<Task[]> {
@@ -369,6 +389,7 @@ async function runTask(task: Task) {
 
 async function main() {
   await ensureGoAgentsHome()
+  ensureToolDeps()
   startWebhookServer()
   const running = new Set<Promise<void>>()
   while (true) {

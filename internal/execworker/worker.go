@@ -81,6 +81,9 @@ func (w *Worker) RunTask(ctx context.Context, task Task) error {
 	if err != nil {
 		return err
 	}
+	if err := goagents.EnsureToolDeps(home); err != nil {
+		return err
+	}
 
 	nodeModules := filepath.Join(tmpDir, "node_modules")
 	if err := os.MkdirAll(nodeModules, 0o755); err != nil {

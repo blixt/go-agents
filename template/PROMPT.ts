@@ -219,10 +219,10 @@ function browseBlock() {
   return `\
 # Web search & browsing
 
-## tools/browse.ts
+## tools/browse
 
 \`\`\`ts
-import { search, browse, read, interact, screenshot, close } from "tools/browse.ts"
+import { search, browse, read, interact, screenshot, close } from "tools/browse"
 \`\`\`
 
 - search(query, opts?) — Search the web via DuckDuckGo. Returns [{title, url, snippet}]. No browser needed.
@@ -261,7 +261,7 @@ These are available in all exec code without imports:
 - Bun.Glob — glob pattern matching
 - Bun.JSONL.parse() — parse JSON Lines
 
-## tools/edit.ts — File editing
+## tools/edit — File editing
 
 \`\`\`ts
 import {
@@ -270,7 +270,7 @@ import {
   replaceTextFuzzy,
   applyUnifiedDiff,
   generateUnifiedDiff,
-} from "tools/edit.ts"
+} from "tools/edit"
 \`\`\`
 
 - replaceText(path, oldText, newText) — Single exact string replacement. Fails if not found or if multiple matches exist. Returns { replaced: number }.
@@ -279,10 +279,10 @@ import {
 - applyUnifiedDiff(path, diff) — Apply a unified diff to a file. Validates context lines. Returns { appliedHunks, added, removed }.
 - generateUnifiedDiff(oldText, newText, options?) — Generate a unified diff between two strings. Options: { context?: number, path?: string }. Returns { diff: string, firstChangedLine?: number }.
 
-## tools/browse.ts — Web search & browsing
+## tools/browse — Web search & browsing
 
 \`\`\`ts
-import { search, browse, read, interact, screenshot, close } from "tools/browse.ts"
+import { search, browse, read, interact, screenshot, close } from "tools/browse"
 \`\`\`
 
 See the "Web search & browsing" section above for full API details.
@@ -297,7 +297,9 @@ const subagent = await agent({ message: "..." })
 
 ## Creating new tools
 
-You may create reusable helpers in tools/ when you notice repeated work. Future exec calls can import from them directly.`
+Create a directory under tools/ with an index.ts that exports your functions.
+If your tool needs npm packages, add a package.json — dependencies are installed automatically on first use.
+Future exec calls can import from them directly: import { myFn } from "tools/mytool"`
 }
 
 // ---------------------------------------------------------------------------

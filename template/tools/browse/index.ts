@@ -1,5 +1,4 @@
 import { join } from "path"
-import { homedir } from "os"
 import { existsSync } from "fs"
 
 // ---------------------------------------------------------------------------
@@ -135,7 +134,7 @@ function decodeEntities(s: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Browser client — thin HTTP wrappers to browse-server.ts
+// Browser client — thin HTTP wrappers to server.ts
 // ---------------------------------------------------------------------------
 
 const BROWSE_PORT = 3211
@@ -148,43 +147,30 @@ async function ensureBrowser(): Promise<void> {
     if (r.ok) return
   } catch {}
 
-  const goAgentsHome = join(homedir(), ".go-agents")
+  const toolDir = import.meta.dir  // resolves through symlinks to ~/.go-agents/tools/browse/
 
-  // 2. Install deps if needed
-  if (!existsSync(join(goAgentsHome, "node_modules", "rebrowser-playwright"))) {
-    console.error("[browse] Installing browser dependencies (one-time)...")
-    const install = Bun.spawnSync(
-      ["bun", "add", "rebrowser-playwright", "jsdom", "turndown", "@mozilla/readability"],
-      { cwd: goAgentsHome, stdout: "inherit", stderr: "inherit" },
-    )
-    if (install.exitCode !== 0) throw new Error("Failed to install browser dependencies")
-
-    console.error("[browse] Installing Chromium...")
-    const installBrowser = Bun.spawnSync(
+  // 2. Ensure Chromium is installed (lazy, idempotent via marker file)
+  const chromiumMarker = join(toolDir, ".chromium-installed")
+  if (!existsSync(chromiumMarker)) {
+    console.error("[browse] Installing Chromium (one-time)...")
+    const result = Bun.spawnSync(
       ["bunx", "rebrowser-playwright", "install", "chromium"],
-      { cwd: goAgentsHome, stdout: "inherit", stderr: "inherit" },
+      { cwd: toolDir, stdout: "inherit", stderr: "inherit" },
     )
-    if (installBrowser.exitCode !== 0) throw new Error("Failed to install Chromium")
+    if (result.exitCode !== 0) throw new Error("Failed to install Chromium")
+    await Bun.write(chromiumMarker, new Date().toISOString())
   }
 
-  // 3. Find the server script — check both symlinked node_modules and go-agents home
-  let serverScript = join(goAgentsHome, "tools", "browse-server.ts")
-  if (!existsSync(serverScript)) {
-    // Fallback: check if we're running from template during development
-    serverScript = join(import.meta.dir, "browse-server.ts")
-  }
-
-  // 4. Spawn server as detached background process
+  // 3. Spawn server with CWD = tool directory (so it finds node_modules/)
   console.error("[browse] Starting browser server...")
-  const proc = Bun.spawn(["bun", "run", serverScript], {
-    cwd: goAgentsHome,
+  const proc = Bun.spawn(["bun", "run", join(toolDir, "server.ts")], {
+    cwd: toolDir,
     stdout: "ignore",
     stderr: "ignore",
-    env: { ...process.env, NODE_PATH: join(goAgentsHome, "node_modules") },
   })
   proc.unref()
 
-  // 5. Wait for server to be ready (up to 15s)
+  // 4. Wait for server to be ready (up to 15s)
   const deadline = Date.now() + 15_000
   while (Date.now() < deadline) {
     await Bun.sleep(500)

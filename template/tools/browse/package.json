@@ -1,0 +1,10 @@
+{
+  "name": "browse",
+  "private": true,
+  "dependencies": {
+    "rebrowser-playwright": "^1",
+    "jsdom": "^28",
+    "turndown": "^7",
+    "@mozilla/readability": "^0.6"
+  }
+}
