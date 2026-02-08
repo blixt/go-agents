@@ -145,7 +145,8 @@ Agents are tasks. For longer, parallel, or specialized work, spawn a subagent vi
 import { agent } from "core/agent.ts"
 
 const subagent = await agent({
-  message: "Analyze the error logs",  // required
+  id: "log-analyst",                   // optional: custom task ID
+  message: "Analyze the error logs",   // required
   system: "You are a log analyst",     // optional system prompt override
   model: "fast",                       // optional: "fast" | "balanced" | "smart"
 })

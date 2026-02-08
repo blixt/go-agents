@@ -3,6 +3,7 @@ import { createTask, sendMessage } from "./api.ts"
 type AgentModel = "fast" | "balanced" | "smart"
 
 type AgentOptions = {
+  id?: string
   task_id?: string
   message: string
   system?: string
@@ -32,6 +33,7 @@ export async function agent(options: AgentOptions): Promise<AgentResult> {
     return { task_id: targetTaskID }
   }
   const result = await createTask({
+    id: options.id,
     type: "agent",
     payload: {
       message: options.message,
