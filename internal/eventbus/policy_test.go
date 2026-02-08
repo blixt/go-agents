@@ -3,8 +3,8 @@ package eventbus
 import "testing"
 
 func TestDefaultOrder(t *testing.T) {
-	if DefaultOrder("messages") != "fifo" {
-		t.Fatalf("expected fifo for messages")
+	if DefaultOrder("task_input") != "fifo" {
+		t.Fatalf("expected fifo for task_input")
 	}
 	if DefaultOrder("errors") != "lifo" {
 		t.Fatalf("expected lifo for errors")

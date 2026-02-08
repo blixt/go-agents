@@ -802,7 +802,7 @@ func TestAwaitIgnoresContextSuppressedWakeEvent(t *testing.T) {
 	}
 
 	evt, err := bus.Push(ctx, eventbus.EventInput{
-		Stream:    "messages",
+		Stream:    "task_input",
 		ScopeType: "task",
 		ScopeID:   "agent-a",
 		Subject:   "Message from external",
@@ -821,7 +821,7 @@ func TestAwaitIgnoresContextSuppressedWakeEvent(t *testing.T) {
 		t.Fatalf("expected await timeout when wake event is suppressed, got %v", err)
 	}
 
-	events, readErr := bus.Read(ctx, "messages", []string{evt.ID}, "agent-a")
+	events, readErr := bus.Read(ctx, "task_input", []string{evt.ID}, "agent-a")
 	if readErr != nil || len(events) == 0 {
 		t.Fatalf("read wake event: %v", readErr)
 	}

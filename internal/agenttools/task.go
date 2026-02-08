@@ -7,6 +7,7 @@ import (
 
 	"github.com/flitsinc/go-agents/internal/agentcontext"
 	"github.com/flitsinc/go-agents/internal/eventbus"
+	"github.com/flitsinc/go-agents/internal/schema"
 	"github.com/flitsinc/go-agents/internal/tasks"
 	llmtools "github.com/flitsinc/go-llms/tools"
 )
@@ -19,11 +20,6 @@ type AwaitTaskParams struct {
 type SendTaskParams struct {
 	TaskID string `json:"task_id" description:"Task id to send input to"`
 	Body   string `json:"body" description:"Content to send to the task"`
-}
-
-type CancelTaskParams struct {
-	TaskID string `json:"task_id" description:"Task id to cancel"`
-	Reason string `json:"reason,omitempty" description:"Optional reason for cancellation"`
 }
 
 type KillTaskParams struct {
@@ -53,7 +49,7 @@ func AwaitTaskTool(manager *tasks.Manager) llmtools.Tool {
 			timeout := time.Duration(waitSeconds) * time.Second
 			r.Report("waiting")
 			awaited, awaitErr := manager.Await(r.Context(), p.TaskID, timeout)
-			if isTerminalExecStatus(awaited.Status) {
+			if tasks.IsTerminalStatus(awaited.Status) {
 				owner := strings.TrimSpace(agentcontext.TaskIDFromContext(r.Context()))
 				if owner != "" {
 					manager.AckTaskOutput(r.Context(), p.TaskID, owner)
@@ -132,15 +128,7 @@ func SendTaskTool(manager *tasks.Manager, bus *eventbus.Bus) llmtools.Tool {
 				if bus == nil {
 					return llmtools.Errorf("event bus unavailable")
 				}
-				target := ""
-				if task.Metadata != nil {
-					if val, ok := task.Metadata["agent_id"].(string); ok {
-						target = val
-					}
-				}
-				if target == "" {
-					target = task.Owner
-				}
+				target := task.Owner
 				if target == "" {
 					return llmtools.Errorf("target agent unavailable")
 				}
@@ -149,7 +137,7 @@ func SendTaskTool(manager *tasks.Manager, bus *eventbus.Bus) llmtools.Tool {
 					source = "system"
 				}
 				evt, err := bus.Push(r.Context(), eventbus.EventInput{
-					Stream:    "messages",
+					Stream:    schema.StreamTaskInput,
 					ScopeType: "task",
 					ScopeID:   target,
 					Subject:   fmt.Sprintf("Message from %s", source),
@@ -164,32 +152,12 @@ func SendTaskTool(manager *tasks.Manager, bus *eventbus.Bus) llmtools.Tool {
 				if err != nil {
 					return llmtools.ErrorWithLabel("send_task failed", err)
 				}
-				return llmtools.Success(map[string]any{"ok": true, "event_id": evt.ID, "agent_id": target})
+				return llmtools.Success(map[string]any{"ok": true, "event_id": evt.ID})
 			}
 
 			input := map[string]any{"text": body}
 			if err := manager.Send(r.Context(), p.TaskID, input); err != nil {
 				return llmtools.ErrorWithLabel("send_task failed", err)
-			}
-			return llmtools.Success(map[string]any{"ok": true})
-		},
-	)
-}
-
-func CancelTaskTool(manager *tasks.Manager) llmtools.Tool {
-	return llmtools.Func(
-		"CancelTask",
-		"Cancel a task (and its children)",
-		"cancel_task",
-		func(r llmtools.Runner, p CancelTaskParams) llmtools.Result {
-			if manager == nil {
-				return llmtools.Errorf("task manager unavailable")
-			}
-			if p.TaskID == "" {
-				return llmtools.Errorf("task_id is required")
-			}
-			if err := manager.Cancel(r.Context(), p.TaskID, p.Reason); err != nil {
-				return llmtools.ErrorWithLabel("cancel_task failed", err)
 			}
 			return llmtools.Success(map[string]any{"ok": true})
 		},
@@ -215,4 +183,3 @@ func KillTaskTool(manager *tasks.Manager) llmtools.Tool {
 		},
 	)
 }
-

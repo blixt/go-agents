@@ -221,13 +221,14 @@ func TestExecToolWakeIncludesWakeEventID(t *testing.T) {
 				continue
 			}
 			evt, err := bus.Push(context.Background(), eventbus.EventInput{
-				Stream:    "messages",
+				Stream:    "task_input",
 				ScopeType: "task",
 				ScopeID:   "agent",
 				Subject:   "Message from external",
 				Body:      "wake now",
 				Metadata: map[string]any{
 					"priority": "wake",
+					"kind":     "message",
 				},
 			})
 			if err == nil {
@@ -286,13 +287,14 @@ func TestExecToolCanSuppressKnownWakeEvent(t *testing.T) {
 	tool := ExecTool(mgr)
 
 	evt, err := bus.Push(context.Background(), eventbus.EventInput{
-		Stream:    "messages",
+		Stream:    "task_input",
 		ScopeType: "task",
 		ScopeID:   "agent",
 		Subject:   "Message from external",
 		Body:      "wake now",
 		Metadata: map[string]any{
 			"priority": "wake",
+			"kind":     "message",
 		},
 	})
 	if err != nil {

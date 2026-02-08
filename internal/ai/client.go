@@ -91,19 +91,37 @@ func newLLM(cfg Config, tools ...llmtools.Tool) (*llms.LLM, error) {
 	return llms.New(provider), nil
 }
 
+var modelAliases = map[string]map[string]string{
+	"anthropic": {
+		"fast":     "claude-3-5-haiku-latest",
+		"balanced": "claude-3-5-sonnet-latest",
+		"smart":    "claude-3-opus-latest",
+	},
+	"openai-chat": {
+		"fast":     "gpt-4o-mini",
+		"balanced": "gpt-4o",
+		"smart":    "o1",
+	},
+	"openai-responses": {
+		"fast":     "gpt-4o-mini",
+		"balanced": "gpt-4o",
+		"smart":    "o1",
+	},
+	"google": {
+		"fast":     "gemini-2.0-flash",
+		"balanced": "gemini-2.0-flash",
+		"smart":    "gemini-2.5-pro-preview-05-06",
+	},
+}
+
 func resolveModelAlias(provider, model string) string {
 	alias := strings.ToLower(strings.TrimSpace(model))
 	if alias == "" {
 		return model
 	}
-	if provider == "anthropic" {
-		switch alias {
-		case "fast":
-			return "claude-3-5-haiku-latest"
-		case "balanced":
-			return "claude-3-5-sonnet-latest"
-		case "smart":
-			return "claude-3-opus-latest"
+	if providerAliases, ok := modelAliases[provider]; ok {
+		if resolved, ok := providerAliases[alias]; ok {
+			return resolved
 		}
 	}
 	return model

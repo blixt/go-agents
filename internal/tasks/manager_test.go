@@ -19,7 +19,7 @@ func TestManagerLifecycleAndEvents(t *testing.T) {
 	mgr := NewManager(db, bus)
 	ctx := context.Background()
 
-	sub := bus.Subscribe(ctx, []string{"task_input", "task_output"})
+	sub := bus.Subscribe(ctx, []string{"signals", "task_input", "task_output"})
 
 	task, err := mgr.Spawn(ctx, Spec{
 		Type:  "exec",
@@ -35,14 +35,14 @@ func TestManagerLifecycleAndEvents(t *testing.T) {
 		t.Fatalf("expected queued status")
 	}
 
-	// Expect a task_input event for spawn.
+	// Expect a signals event for spawn.
 	select {
 	case evt := <-sub:
-		if evt.Stream != "task_input" {
-			t.Fatalf("expected task_input event")
+		if evt.Stream != "signals" {
+			t.Fatalf("expected signals event, got %s", evt.Stream)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatalf("timeout waiting for task_input event")
+		t.Fatalf("timeout waiting for signals event")
 	}
 
 	if err := mgr.Send(ctx, task.ID, map[string]any{"hello": "world"}); err != nil {

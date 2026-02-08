@@ -75,7 +75,7 @@ func ExecTool(manager *tasks.Manager) llmtools.Tool {
 			timeout := time.Duration(waitSeconds) * time.Second
 			r.Report("running")
 			awaited, awaitErr := manager.Await(r.Context(), task.ID, timeout)
-			if isTerminalExecStatus(awaited.Status) {
+			if tasks.IsTerminalStatus(awaited.Status) {
 				manager.AckTaskOutput(r.Context(), task.ID, owner)
 			}
 			resp := map[string]any{
@@ -124,13 +124,4 @@ func ExecTool(manager *tasks.Manager) llmtools.Tool {
 			return llmtools.Success(resp)
 		},
 	)
-}
-
-func isTerminalExecStatus(status tasks.Status) bool {
-	switch status {
-	case tasks.StatusCompleted, tasks.StatusFailed, tasks.StatusCancelled:
-		return true
-	default:
-		return false
-	}
 }

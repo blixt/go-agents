@@ -15,6 +15,7 @@ import (
 	"github.com/flitsinc/go-agents/internal/eventbus"
 	"github.com/flitsinc/go-agents/internal/goagents"
 	agentctx "github.com/flitsinc/go-agents/internal/prompt"
+	"github.com/flitsinc/go-agents/internal/schema"
 	"github.com/flitsinc/go-agents/internal/tasks"
 	"github.com/flitsinc/go-llms/content"
 	"github.com/flitsinc/go-llms/llms"
@@ -86,7 +87,6 @@ type Runtime struct {
 
 	historyMu               sync.Mutex
 	historyGenerationByTask map[string]int64
-	historyCompactionCutoff map[string]time.Time
 	historyPreambleByTask   map[string]int64
 
 	nowFn func() time.Time
@@ -132,7 +132,6 @@ func NewRuntime(bus *eventbus.Bus, tasksMgr *tasks.Manager, client *ai.Client, o
 		lastTurnStart:           map[string]time.Time{},
 		lastContextCursorByTask: map[string]string{},
 		historyGenerationByTask: map[string]int64{},
-		historyCompactionCutoff: map[string]time.Time{},
 		historyPreambleByTask:   map[string]int64{},
 		nowFn:                   func() time.Time { return time.Now().UTC() },
 	}
@@ -308,7 +307,7 @@ func (r *Runtime) emitTaskHealth(ctx context.Context) {
 		}
 		body := fmt.Sprintf("task_health: stale tasks detected (%d). See signals/task_health. ids=%s", len(wakeIDs), strings.Join(wakeIDs, ","))
 		_, _ = r.Bus.Push(ctx, eventbus.EventInput{
-			Stream:    "messages",
+			Stream:    schema.StreamTaskInput,
 			ScopeType: "task",
 			ScopeID:   target,
 			Subject:   fmt.Sprintf("wake: task_health ids=%s", strings.Join(wakeIDs, ",")),
@@ -502,7 +501,7 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 	ctx = agentcontext.WithTaskID(ctx, agentID)
 	bgCtx := agentcontext.WithTaskID(context.Background(), agentID)
 	cfg := r.ensureTaskConfig(agentID)
-	currentGeneration := r.currentHistoryGeneration(ctx, agentID)
+	currentGeneration := r.historyGeneration(ctx, agentID)
 
 	var promptContent content.Content
 	var promptText string
@@ -549,8 +548,8 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 				"notify_target":      taskID,
 				"source":             source,
 				"priority":           eventPriority(messageMeta),
-				"request_id":         getMetaString(messageMeta, "request_id"),
-				"event_id":           getMetaString(messageMeta, "event_id"),
+				"request_id":         schema.GetMetaString(messageMeta, "request_id"),
+				"event_id":           schema.GetMetaString(messageMeta, "event_id"),
 				"history_generation": currentGeneration,
 			},
 		})
@@ -595,13 +594,13 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 		r.appendHistory(ctx, agentID, "user_message", "user", message, llmTask.ID, currentGeneration, map[string]any{
 			"source":     source,
 			"priority":   eventPriority(messageMeta),
-			"request_id": getMetaString(messageMeta, "request_id"),
-			"event_id":   getMetaString(messageMeta, "event_id"),
+			"request_id": schema.GetMetaString(messageMeta, "request_id"),
+			"event_id":   schema.GetMetaString(messageMeta, "event_id"),
 		})
-	} else if strings.EqualFold(getMetaString(messageMeta, "kind"), "wake") {
+	} else if strings.EqualFold(schema.GetMetaString(messageMeta, "kind"), "wake") {
 		r.appendHistory(ctx, agentID, "wake", "system", "wake turn", llmTask.ID, currentGeneration, map[string]any{
-			"stream":   getMetaString(messageMeta, "stream"),
-			"event_id": getMetaString(messageMeta, "event_id"),
+			"stream":   schema.GetMetaString(messageMeta, "stream"),
+			"event_id": schema.GetMetaString(messageMeta, "event_id"),
 			"priority": eventPriority(messageMeta),
 		})
 	}
@@ -635,7 +634,7 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 			}
 		}
 		if source != "" && source != agentID {
-			_, _ = r.pushMessage(ctx, source, session.LastOutput, agentID, nil)
+			_, _ = r.SendMessageWithMeta(ctx, source, session.LastOutput, agentID, nil)
 		}
 		r.ackContextEvents(bgCtx, agentID, rawContextEvents)
 		return session, nil
@@ -984,7 +983,7 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 				} else {
 					reply = fmt.Sprintf("%s\n\n[error] %s", reply, session.LastError)
 				}
-				_, _ = r.pushMessage(ctx, source, reply, agentID, nil)
+				_, _ = r.SendMessageWithMeta(ctx, source, reply, agentID, nil)
 			}
 			return session, err
 		}
@@ -1021,7 +1020,7 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 		})
 	}
 	if source != "" && source != agentID && strings.TrimSpace(output) != "" {
-		_, _ = r.pushMessage(ctx, source, output, agentID, nil)
+		_, _ = r.SendMessageWithMeta(ctx, source, output, agentID, nil)
 	}
 	return session, nil
 }
@@ -1184,15 +1183,7 @@ func (r *Runtime) clearInflight(taskID string) {
 	r.inflightMu.Unlock()
 }
 
-func (r *Runtime) SendMessage(ctx context.Context, target, body, source string) (eventbus.Event, error) {
-	return r.SendMessageWithMeta(ctx, target, body, source, nil)
-}
-
 func (r *Runtime) SendMessageWithMeta(ctx context.Context, target, body, source string, metadata map[string]any) (eventbus.Event, error) {
-	return r.pushMessage(ctx, target, body, source, metadata)
-}
-
-func (r *Runtime) pushMessage(ctx context.Context, target, body, source string, metadata map[string]any) (eventbus.Event, error) {
 	if r.Bus == nil {
 		return eventbus.Event{}, fmt.Errorf("event bus unavailable")
 	}
@@ -1219,7 +1210,7 @@ func (r *Runtime) pushMessage(ctx context.Context, target, body, source string, 
 		meta["priority"] = "wake"
 	}
 	return r.Bus.Push(ctx, eventbus.EventInput{
-		Stream:    "messages",
+		Stream:    schema.StreamTaskInput,
 		ScopeType: "task",
 		ScopeID:   target,
 		Subject:   fmt.Sprintf("Message from %s", source),
@@ -1232,7 +1223,7 @@ func (r *Runtime) watchInterrupts(ctx context.Context, agentID, taskID string, c
 	if r.Bus == nil {
 		return
 	}
-	sub := r.Bus.Subscribe(ctx, []string{"signals", "errors", "external", "messages", "task_output"})
+	sub := r.Bus.Subscribe(ctx, schema.AgentStreams)
 	for {
 		select {
 		case <-ctx.Done():
@@ -1261,7 +1252,7 @@ func (r *Runtime) watchTaskCommands(ctx context.Context, taskID string, cancel c
 	if r.Bus == nil || taskID == "" {
 		return
 	}
-	sub := r.Bus.Subscribe(ctx, []string{"task_input"})
+	sub := r.Bus.Subscribe(ctx, []string{schema.StreamSignals})
 	for {
 		select {
 		case <-ctx.Done():
@@ -1327,7 +1318,7 @@ func (r *Runtime) Run(ctx context.Context, agentID string) error {
 	if agentID == "" {
 		return fmt.Errorf("agent_id is required")
 	}
-	sub := r.Bus.Subscribe(ctx, contextEventStreams)
+	sub := r.Bus.Subscribe(ctx, schema.AgentStreams)
 	replayTicker := time.NewTicker(500 * time.Millisecond)
 	defer replayTicker.Stop()
 
@@ -1373,8 +1364,8 @@ func (r *Runtime) replayUnreadWakeEvents(ctx context.Context, agentID string, li
 	sort.SliceStable(events, func(i, j int) bool {
 		pi := eventPriorityForEvent(events[i])
 		pj := eventPriorityForEvent(events[j])
-		if priorityRank(pi) != priorityRank(pj) {
-			return priorityRank(pi) < priorityRank(pj)
+		if schema.ParsePriority(pi).Rank() != schema.ParsePriority(pj).Rank() {
+			return schema.ParsePriority(pi).Rank() < schema.ParsePriority(pj).Rank()
 		}
 		if events[i].CreatedAt.Equal(events[j].CreatedAt) {
 			return events[i].ID < events[j].ID
@@ -1397,7 +1388,7 @@ func (r *Runtime) replayUnreadWakeEvents(ctx context.Context, agentID string, li
 		if _, ok := meta["kind"]; !ok {
 			meta["kind"] = "event"
 		}
-		source := getMetaString(evt.Metadata, "source")
+		source := schema.GetMetaString(evt.Metadata, "source")
 		if source == "" {
 			source = "runtime"
 		}
@@ -1409,59 +1400,18 @@ func (r *Runtime) replayUnreadWakeEvents(ctx context.Context, agentID string, li
 	return 0, nil
 }
 
-var contextEventStreams = []string{"task_output", "signals", "errors", "external", "messages"}
-
 func eventPriority(metadata map[string]any) string {
-	if metadata == nil {
-		return "normal"
-	}
-	if val, ok := metadata["priority"].(string); ok {
-		switch strings.ToLower(strings.TrimSpace(val)) {
-		case "interrupt", "wake", "normal", "low":
-			return strings.ToLower(strings.TrimSpace(val))
-		}
-	}
-	return "normal"
+	return string(schema.ParsePriority(schema.GetMetaString(metadata, "priority")))
 }
 
 func eventPriorityForEvent(evt eventbus.Event) string {
 	priority := eventPriority(evt.Metadata)
-	if priority == "normal" && evt.Stream == "messages" {
-		if getMetaString(evt.Metadata, "priority") == "" {
+	if priority == "normal" && schema.GetMetaString(evt.Metadata, "kind") == "message" {
+		if schema.GetMetaString(evt.Metadata, "priority") == "" {
 			return "wake"
 		}
 	}
 	return priority
-}
-
-func priorityRank(priority string) int {
-	switch priority {
-	case "interrupt":
-		return 0
-	case "wake":
-		return 1
-	case "normal":
-		return 2
-	case "low":
-		return 3
-	default:
-		return 2
-	}
-}
-
-func getMetaString(meta map[string]any, key string) string {
-	if meta == nil {
-		return ""
-	}
-	val, ok := meta[key]
-	if !ok {
-		return ""
-	}
-	str, ok := val.(string)
-	if !ok {
-		return ""
-	}
-	return strings.TrimSpace(str)
 }
 
 func (r *Runtime) nextTurnContext(agentID string, now time.Time) TurnContext {
@@ -1550,7 +1500,7 @@ func (r *Runtime) collectUnreadContextEvents(ctx context.Context, agentID string
 	}
 
 	idsByStream := map[string][]string{}
-	for _, stream := range contextEventStreams {
+	for _, stream := range schema.AgentStreams {
 		summaries, err := r.Bus.List(ctx, stream, eventbus.ListOptions{
 			Reader: agentID,
 			Limit:  limit,
@@ -1599,8 +1549,8 @@ func selectContextEventsForPrompt(events []eventbus.Event, limit int) []eventbus
 	orderForPrompt := func(a, b eventbus.Event) bool {
 		pa := eventPriorityForEvent(a)
 		pb := eventPriorityForEvent(b)
-		if priorityRank(pa) != priorityRank(pb) {
-			return priorityRank(pa) < priorityRank(pb)
+		if schema.ParsePriority(pa).Rank() != schema.ParsePriority(pb).Rank() {
+			return schema.ParsePriority(pa).Rank() < schema.ParsePriority(pb).Rank()
 		}
 		if a.CreatedAt.Equal(b.CreatedAt) {
 			return a.ID < b.ID
@@ -1610,8 +1560,8 @@ func selectContextEventsForPrompt(events []eventbus.Event, limit int) []eventbus
 	orderForSelection := func(a, b eventbus.Event) bool {
 		pa := eventPriorityForEvent(a)
 		pb := eventPriorityForEvent(b)
-		if priorityRank(pa) != priorityRank(pb) {
-			return priorityRank(pa) < priorityRank(pb)
+		if schema.ParsePriority(pa).Rank() != schema.ParsePriority(pb).Rank() {
+			return schema.ParsePriority(pa).Rank() < schema.ParsePriority(pb).Rank()
 		}
 		if a.CreatedAt.Equal(b.CreatedAt) {
 			return a.ID < b.ID
@@ -1661,11 +1611,11 @@ func isActionablePromptEvent(evt eventbus.Event) bool {
 	if priority == "wake" || priority == "interrupt" {
 		return true
 	}
-	if evt.Stream == "errors" || evt.Stream == "messages" {
+	if evt.Stream == "errors" || schema.GetMetaString(evt.Metadata, "kind") == "message" {
 		return true
 	}
 	if evt.Stream == "task_output" {
-		switch strings.ToLower(strings.TrimSpace(getMetaString(evt.Metadata, "task_kind"))) {
+		switch strings.ToLower(strings.TrimSpace(schema.GetMetaString(evt.Metadata, "task_kind"))) {
 		case "completed", "failed", "cancelled", "killed":
 			return true
 		}
@@ -1681,11 +1631,11 @@ func aggregateTaskOutputEvents(events []eventbus.Event) (eventbus.Event, int) {
 		return events[0], 0
 	}
 	latest := events[len(events)-1]
-	taskID := getMetaString(latest.Metadata, "task_id")
+	taskID := schema.GetMetaString(latest.Metadata, "task_id")
 	kinds := make([]string, 0, len(events))
 	seen := map[string]struct{}{}
 	for _, evt := range events {
-		kind := strings.ToLower(strings.TrimSpace(getMetaString(evt.Metadata, "task_kind")))
+		kind := strings.ToLower(strings.TrimSpace(schema.GetMetaString(evt.Metadata, "task_kind")))
 		if kind == "" {
 			kind = strings.ToLower(strings.TrimSpace(evt.Body))
 		}
@@ -1708,7 +1658,7 @@ func aggregateTaskOutputEvents(events []eventbus.Event) (eventbus.Event, int) {
 	payload := map[string]any{
 		"count":       len(events),
 		"kinds":       kinds,
-		"latest_kind": strings.ToLower(strings.TrimSpace(getMetaString(latest.Metadata, "task_kind"))),
+		"latest_kind": strings.ToLower(strings.TrimSpace(schema.GetMetaString(latest.Metadata, "task_kind"))),
 	}
 	if latest.Payload != nil {
 		payload["latest"] = latest.Payload
@@ -1749,7 +1699,7 @@ func projectContextEventsForPrompt(events []eventbus.Event, limit int) ([]eventb
 			continue
 		}
 		if evt.Stream == "task_output" {
-			taskID := getMetaString(evt.Metadata, "task_id")
+			taskID := schema.GetMetaString(evt.Metadata, "task_id")
 			if taskID != "" {
 				if _, ok := grouped[taskID]; !ok {
 					groupOrder = append(groupOrder, taskID)
@@ -1857,8 +1807,8 @@ func renderContextUpdatesXML(turnCtx TurnContext, frame ContextUpdateFrame) stri
 
 	for _, evt := range frame.Events {
 		priority := eventPriorityForEvent(evt)
-		taskID := getMetaString(evt.Metadata, "task_id")
-		taskKind := getMetaString(evt.Metadata, "task_kind")
+		taskID := schema.GetMetaString(evt.Metadata, "task_id")
+		taskKind := schema.GetMetaString(evt.Metadata, "task_kind")
 		subject := clipText(strings.TrimSpace(evt.Subject), contextEventBodyLimit(priority))
 		body, bodyTruncated := buildContextEventBody(evt, priority)
 		if taskID != "" && subject == fmt.Sprintf("Task %s update", taskID) {
@@ -1922,7 +1872,7 @@ func hasMessageEvent(events []eventbus.Event, message string) bool {
 		return false
 	}
 	for _, evt := range events {
-		if strings.TrimSpace(evt.Stream) != "messages" {
+		if schema.GetMetaString(evt.Metadata, "kind") != "message" {
 			continue
 		}
 		if strings.TrimSpace(evt.Body) == msg {
@@ -1965,7 +1915,7 @@ func shouldAppendPayloadToContextBody(evt eventbus.Event, priority, body string)
 	if strings.TrimSpace(evt.Stream) == "errors" {
 		return true
 	}
-	taskKind := strings.ToLower(strings.TrimSpace(getMetaString(evt.Metadata, "task_kind")))
+	taskKind := strings.ToLower(strings.TrimSpace(schema.GetMetaString(evt.Metadata, "task_kind")))
 	switch taskKind {
 	case "completed", "failed", "cancelled", "killed":
 		return true
@@ -1995,16 +1945,16 @@ func compactEventMetadataForPrompt(metadata map[string]any, stream, priority, ta
 	if len(clean) == 0 {
 		return ""
 	}
-	if p := getMetaString(clean, "priority"); p != "" && p == priority {
+	if p := schema.GetMetaString(clean, "priority"); p != "" && p == priority {
 		delete(clean, "priority")
 	}
-	if strings.TrimSpace(stream) == "task_output" && strings.EqualFold(getMetaString(clean, "kind"), "task_update") {
+	if strings.TrimSpace(stream) == "task_output" && strings.EqualFold(schema.GetMetaString(clean, "kind"), "task_update") {
 		delete(clean, "kind")
 	}
-	if taskID != "" && getMetaString(clean, "task_id") == taskID {
+	if taskID != "" && schema.GetMetaString(clean, "task_id") == taskID {
 		delete(clean, "task_id")
 	}
-	if taskKind != "" && getMetaString(clean, "task_kind") == taskKind {
+	if taskKind != "" && schema.GetMetaString(clean, "task_kind") == taskKind {
 		delete(clean, "task_kind")
 	}
 	if len(clean) == 0 {
@@ -2078,7 +2028,7 @@ func clipTextWithMeta(text string, limit int) (string, bool) {
 
 func ignoredWakeEventIDsForTurn(messageMeta map[string]any, contextEvents []eventbus.Event) []string {
 	var ids []string
-	if id := getMetaString(messageMeta, "event_id"); id != "" {
+	if id := schema.GetMetaString(messageMeta, "event_id"); id != "" {
 		ids = append(ids, id)
 	}
 	for _, evt := range contextEvents {

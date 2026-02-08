@@ -11,6 +11,7 @@ import (
 	"github.com/flitsinc/go-agents/internal/engine"
 	"github.com/flitsinc/go-agents/internal/eventbus"
 	"github.com/flitsinc/go-agents/internal/idgen"
+	"github.com/flitsinc/go-agents/internal/schema"
 	"github.com/flitsinc/go-agents/internal/tasks"
 )
 
@@ -250,7 +251,7 @@ func (s *Server) handleStreamSubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 	streamsParam := r.URL.Query().Get("streams")
 	if streamsParam == "" {
-		streamsParam = "history,task_output,errors"
+		streamsParam = schema.StreamHistory + "," + schema.StreamTaskOutput + "," + schema.StreamErrors
 	}
 	streamList := splitComma(streamsParam)
 

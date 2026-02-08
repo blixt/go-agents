@@ -1,23 +1,15 @@
 package eventbus
 
-import "strings"
+import (
+	"strings"
 
-var defaultOrder = map[string]string{
-	"errors":      "lifo",
-	"messages":    "fifo",
-	"task_input":  "fifo",
-	"task_output": "lifo",
-	"signals":     "lifo",
-	"external":    "lifo",
-}
+	"github.com/flitsinc/go-agents/internal/schema"
+)
 
 func DefaultOrder(stream string) string {
 	stream = strings.TrimSpace(stream)
 	if stream == "" {
 		return "lifo"
 	}
-	if order, ok := defaultOrder[stream]; ok {
-		return order
-	}
-	return "lifo"
+	return schema.StreamOrdering(stream)
 }

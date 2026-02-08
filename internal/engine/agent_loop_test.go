@@ -89,13 +89,14 @@ func TestRuntimeRunLoop(t *testing.T) {
 	}()
 
 	_, _ = bus.Push(context.Background(), eventbus.EventInput{
-		Stream:    "messages",
+		Stream:    "task_input",
 		ScopeType: "task",
 		ScopeID:   "operator",
 		Body:      "hello",
 		Metadata: map[string]any{
 			"source": "external",
 			"target": "operator",
+			"kind":   "message",
 		},
 	})
 
@@ -123,13 +124,14 @@ func TestRuntimeRunLoopReplaysUnreadMessages(t *testing.T) {
 	rt := NewRuntime(bus, mgr, client)
 
 	evt, err := bus.Push(context.Background(), eventbus.EventInput{
-		Stream:    "messages",
+		Stream:    "task_input",
 		ScopeType: "task",
 		ScopeID:   "operator",
 		Body:      "queued-before-loop",
 		Metadata: map[string]any{
 			"source": "external",
 			"target": "operator",
+			"kind":   "message",
 		},
 	})
 	if err != nil {
@@ -165,13 +167,13 @@ func TestRuntimeRunLoopReplaysUnreadMessages(t *testing.T) {
 				if !foundMessage {
 					t.Fatalf("expected replayed message in llm_input history, inputs=%v", inputs)
 				}
-				summaries, err := bus.List(context.Background(), "messages", eventbus.ListOptions{
+				summaries, err := bus.List(context.Background(), "task_input", eventbus.ListOptions{
 					Reader: "operator",
 					Limit:  10,
 					Order:  "fifo",
 				})
 				if err != nil {
-					t.Fatalf("list messages: %v", err)
+					t.Fatalf("list task_input: %v", err)
 				}
 				for _, summary := range summaries {
 					if summary.ID == evt.ID && !summary.Read {
@@ -202,26 +204,28 @@ func TestRuntimeRunLoopDoesNotDuplicateBufferedMessages(t *testing.T) {
 	}()
 
 	_, err := bus.Push(context.Background(), eventbus.EventInput{
-		Stream:    "messages",
+		Stream:    "task_input",
 		ScopeType: "task",
 		ScopeID:   "operator",
 		Body:      "first",
 		Metadata: map[string]any{
 			"source": "external",
 			"target": "operator",
+			"kind":   "message",
 		},
 	})
 	if err != nil {
 		t.Fatalf("push first message: %v", err)
 	}
 	_, err = bus.Push(context.Background(), eventbus.EventInput{
-		Stream:    "messages",
+		Stream:    "task_input",
 		ScopeType: "task",
 		ScopeID:   "operator",
 		Body:      "second",
 		Metadata: map[string]any{
 			"source": "external",
 			"target": "operator",
+			"kind":   "message",
 		},
 	})
 	if err != nil {
@@ -234,13 +238,13 @@ func TestRuntimeRunLoopDoesNotDuplicateBufferedMessages(t *testing.T) {
 		case <-deadline:
 			t.Fatalf("timeout waiting for buffered messages to be acked")
 		default:
-			summaries, err := bus.List(context.Background(), "messages", eventbus.ListOptions{
+			summaries, err := bus.List(context.Background(), "task_input", eventbus.ListOptions{
 				Reader: "operator",
 				Limit:  10,
 				Order:  "fifo",
 			})
 			if err != nil {
-				t.Fatalf("list messages: %v", err)
+				t.Fatalf("list task_input: %v", err)
 			}
 			readCount := 0
 			for _, summary := range summaries {
@@ -289,13 +293,14 @@ func TestRuntimeRunLoopKeepsFailedMessageUnread(t *testing.T) {
 	}()
 
 	evt, err := bus.Push(context.Background(), eventbus.EventInput{
-		Stream:    "messages",
+		Stream:    "task_input",
 		ScopeType: "task",
 		ScopeID:   "operator",
 		Body:      "fail please",
 		Metadata: map[string]any{
 			"source": "external",
 			"target": "operator",
+			"kind":   "message",
 		},
 	})
 	if err != nil {
@@ -328,13 +333,13 @@ func TestRuntimeRunLoopKeepsFailedMessageUnread(t *testing.T) {
 				continue
 			}
 
-			summaries, err := bus.List(context.Background(), "messages", eventbus.ListOptions{
+			summaries, err := bus.List(context.Background(), "task_input", eventbus.ListOptions{
 				Reader: "operator",
 				Limit:  10,
 				Order:  "fifo",
 			})
 			if err != nil {
-				t.Fatalf("list messages: %v", err)
+				t.Fatalf("list task_input: %v", err)
 			}
 			for _, summary := range summaries {
 				if summary.ID == evt.ID {
@@ -359,7 +364,7 @@ func TestRuntimeRunLoopPrioritizesWakeOverLow(t *testing.T) {
 	rt := NewRuntime(bus, mgr, client)
 
 	_, err := bus.Push(context.Background(), eventbus.EventInput{
-		Stream:    "messages",
+		Stream:    "task_input",
 		ScopeType: "task",
 		ScopeID:   "operator",
 		Body:      "low-priority-message",
@@ -367,13 +372,14 @@ func TestRuntimeRunLoopPrioritizesWakeOverLow(t *testing.T) {
 			"source":   "external",
 			"target":   "operator",
 			"priority": "low",
+			"kind":     "message",
 		},
 	})
 	if err != nil {
 		t.Fatalf("push low message: %v", err)
 	}
 	_, err = bus.Push(context.Background(), eventbus.EventInput{
-		Stream:    "messages",
+		Stream:    "task_input",
 		ScopeType: "task",
 		ScopeID:   "operator",
 		Body:      "wake-priority-message",
@@ -381,6 +387,7 @@ func TestRuntimeRunLoopPrioritizesWakeOverLow(t *testing.T) {
 			"source":   "external",
 			"target":   "operator",
 			"priority": "wake",
+			"kind":     "message",
 		},
 	})
 	if err != nil {

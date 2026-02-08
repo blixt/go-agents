@@ -13,6 +13,7 @@ import (
 	"github.com/flitsinc/go-agents/internal/agentcontext"
 	"github.com/flitsinc/go-agents/internal/eventbus"
 	"github.com/flitsinc/go-agents/internal/idgen"
+	"github.com/flitsinc/go-agents/internal/schema"
 )
 
 type Status string
@@ -124,7 +125,7 @@ func IsInterrupt(err error) bool {
 	return false
 }
 
-var wakeStreams = []string{"task_output", "signals", "errors", "external", "messages"}
+var wakeStreams = schema.AgentStreams
 
 type Option func(*Manager)
 
@@ -241,9 +242,9 @@ func (m *Manager) Spawn(ctx context.Context, spec Spec) (Task, error) {
 	}
 
 	if m.bus != nil {
-		scopeType, scopeID := scopeForTarget(getMetaString(metadata, "input_target"))
+		scopeType, scopeID := scopeForTarget(schema.GetMetaString(metadata, "input_target"))
 		_, _ = m.bus.Push(ctx, eventbus.EventInput{
-			Stream:    "task_input",
+			Stream:    schema.StreamSignals,
 			ScopeType: scopeType,
 			ScopeID:   scopeID,
 			Subject:   fmt.Sprintf("Task request %s", id),
@@ -282,8 +283,8 @@ func (m *Manager) Get(ctx context.Context, taskID string) (Task, error) {
 	task.Metadata = decodeJSONMap(metadataStr.String)
 	task.Payload = decodeJSONMap(payloadStr.String)
 	task.Result = decodeJSONMap(resultStr.String)
-	task.ParentID = getMetaString(task.Metadata, "parent_id")
-	task.Mode = getMetaString(task.Metadata, "mode")
+	task.ParentID = schema.GetMetaString(task.Metadata, "parent_id")
+	task.Mode = schema.GetMetaString(task.Metadata, "mode")
 	if ownerStr.Valid {
 		task.Owner = ownerStr.String
 	}
@@ -341,8 +342,8 @@ func (m *Manager) List(ctx context.Context, filter ListFilter) ([]Task, error) {
 		task.Metadata = decodeJSONMap(metadataStr.String)
 		task.Payload = decodeJSONMap(payloadStr.String)
 		task.Result = decodeJSONMap(resultStr.String)
-		task.ParentID = getMetaString(task.Metadata, "parent_id")
-		task.Mode = getMetaString(task.Metadata, "mode")
+		task.ParentID = schema.GetMetaString(task.Metadata, "parent_id")
+		task.Mode = schema.GetMetaString(task.Metadata, "mode")
 		if ownerStr.Valid {
 			task.Owner = ownerStr.String
 		}
@@ -387,7 +388,7 @@ func (m *Manager) RecordUpdate(ctx context.Context, taskID, kind string, payload
 		priority := taskUpdatePriority(kind, payload)
 		sourceID := strings.TrimSpace(agentcontext.TaskIDFromContext(ctx))
 		_, _ = m.bus.Push(ctx, eventbus.EventInput{
-			Stream:    "task_output",
+			Stream:    schema.StreamTaskOutput,
 			ScopeType: scopeType,
 			ScopeID:   scopeID,
 			Subject:   fmt.Sprintf("Task %s update", taskID),
@@ -455,7 +456,7 @@ func (m *Manager) Send(ctx context.Context, taskID string, input map[string]any)
 	if m.bus != nil {
 		scopeType, scopeID := scopeForTarget(m.taskTarget(ctx, taskID, "input_target"))
 		_, _ = m.bus.Push(ctx, eventbus.EventInput{
-			Stream:    "task_input",
+			Stream:    schema.StreamTaskInput,
 			ScopeType: scopeType,
 			ScopeID:   scopeID,
 			Subject:   fmt.Sprintf("Task input %s", taskID),
@@ -502,7 +503,7 @@ func (m *Manager) AckTaskOutput(ctx context.Context, taskID, readerID string) {
 	}
 	var ackIDs []string
 	for _, evt := range events {
-		if getMetaString(evt.Metadata, "task_id") == taskID {
+		if schema.GetMetaString(evt.Metadata, "task_id") == taskID {
 			ackIDs = append(ackIDs, evt.ID)
 		}
 	}
@@ -533,7 +534,7 @@ func (m *Manager) Await(ctx context.Context, taskID string, timeout time.Duratio
 		if err != nil {
 			return Task{}, err
 		}
-		if isTerminalStatus(task.Status) {
+		if IsTerminalStatus(task.Status) {
 			return task, nil
 		}
 
@@ -563,7 +564,7 @@ func (m *Manager) Await(ctx context.Context, taskID string, timeout time.Duratio
 				return task, err
 			}
 			current, _ := m.Get(ctx, taskID)
-			if isTerminalStatus(current.Status) {
+			if IsTerminalStatus(current.Status) {
 				if !preserveTerminalTaskWakeEvent(evt, taskID) {
 					_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, reader)
 				}
@@ -598,7 +599,7 @@ func (m *Manager) Await(ctx context.Context, taskID string, timeout time.Duratio
 					return task, err
 				}
 				current, _ := m.Get(ctx, taskID)
-				if isTerminalStatus(current.Status) {
+				if IsTerminalStatus(current.Status) {
 					if !preserveTerminalTaskWakeEvent(evt, taskID) {
 						_ = m.bus.Ack(ctx, evt.Stream, []string{evt.ID}, reader)
 					}
@@ -647,7 +648,7 @@ func (m *Manager) AwaitAny(ctx context.Context, taskIDs []string, timeout time.D
 			if err != nil {
 				return AwaitAnyResult{}, err
 			}
-			if isTerminalStatus(task.Status) {
+			if IsTerminalStatus(task.Status) {
 				return AwaitAnyResult{
 					TaskID:     id,
 					Task:       task,
@@ -872,8 +873,8 @@ func (m *Manager) ClaimQueued(ctx context.Context, taskType string, limit int) (
 		task.Metadata = decodeJSONMap(metadataStr.String)
 		task.Payload = decodeJSONMap(payloadStr.String)
 		task.Result = decodeJSONMap(resultStr.String)
-		task.ParentID = getMetaString(task.Metadata, "parent_id")
-		task.Mode = getMetaString(task.Metadata, "mode")
+		task.ParentID = schema.GetMetaString(task.Metadata, "parent_id")
+		task.Mode = schema.GetMetaString(task.Metadata, "mode")
 		if ownerStr.Valid {
 			task.Owner = ownerStr.String
 		}
@@ -992,7 +993,7 @@ func (m *Manager) cancelWithChildren(ctx context.Context, taskID string, reason 
 			verb = strings.ToUpper(verb[:1]) + verb[1:]
 		}
 		_, _ = m.bus.Push(ctx, eventbus.EventInput{
-			Stream:    "task_input",
+			Stream:    schema.StreamSignals,
 			ScopeType: scopeType,
 			ScopeID:   scopeID,
 			Subject:   fmt.Sprintf("Task %s %s", action, taskID),
@@ -1034,7 +1035,7 @@ func (m *Manager) childTaskIDs(ctx context.Context, parentID string) ([]string, 
 			return nil, fmt.Errorf("scan child task: %w", err)
 		}
 		meta := decodeJSONMap(metadataStr)
-		if getMetaString(meta, "parent_id") == parentID {
+		if schema.GetMetaString(meta, "parent_id") == parentID {
 			out = append(out, id)
 		}
 	}
@@ -1160,24 +1161,12 @@ func (m *Manager) nextUnreadWakeEvent(ctx context.Context, targets map[string]st
 	return eventbus.Event{}, "", false, nil
 }
 
-func getMetaString(meta map[string]any, key string) string {
-	if meta == nil {
-		return ""
-	}
-	if val, ok := meta[key]; ok {
-		if str, ok := val.(string); ok {
-			return str
-		}
-	}
-	return ""
-}
-
 func (m *Manager) taskTarget(ctx context.Context, taskID, key string) string {
 	meta, err := m.taskMetadata(ctx, taskID)
 	if err != nil {
 		return ""
 	}
-	return getMetaString(meta, key)
+	return schema.GetMetaString(meta, key)
 }
 
 func (m *Manager) taskMetadata(ctx context.Context, taskID string) (map[string]any, error) {
@@ -1207,15 +1196,10 @@ func wakeInfo(evt eventbus.Event) (bool, string) {
 		return false, ""
 	}
 	if val, ok := evt.Metadata["priority"].(string); ok {
-		switch strings.ToLower(val) {
-		case "wake", "interrupt":
-			return true, strings.ToLower(val)
-		case "normal", "low":
-			return false, strings.ToLower(val)
+		p := schema.ParsePriority(val)
+		if p != schema.PriorityNormal {
+			return p.Wakes(), string(p)
 		}
-	}
-	if val, ok := evt.Metadata["wake"].(bool); ok && val {
-		return true, "wake"
 	}
 	return false, ""
 }
@@ -1235,10 +1219,10 @@ func preserveTerminalTaskWakeEvent(evt eventbus.Event, taskID string) bool {
 	if strings.TrimSpace(evt.Stream) != "task_output" {
 		return false
 	}
-	if strings.TrimSpace(getMetaString(evt.Metadata, "task_id")) != strings.TrimSpace(taskID) {
+	if strings.TrimSpace(schema.GetMetaString(evt.Metadata, "task_id")) != strings.TrimSpace(taskID) {
 		return false
 	}
-	switch strings.ToLower(strings.TrimSpace(getMetaString(evt.Metadata, "task_kind"))) {
+	switch strings.ToLower(strings.TrimSpace(schema.GetMetaString(evt.Metadata, "task_kind"))) {
 	case "completed", "failed", "cancelled", "killed":
 		return true
 	default:
@@ -1267,7 +1251,7 @@ func awaitReaderForTargets(targets map[string]struct{}) string {
 
 func awaitTargetsForTask(task Task) map[string]struct{} {
 	out := map[string]struct{}{}
-	if target := getMetaString(task.Metadata, "notify_target"); target != "" {
+	if target := schema.GetMetaString(task.Metadata, "notify_target"); target != "" {
 		out[target] = struct{}{}
 	}
 	if task.Owner != "" {
@@ -1309,7 +1293,7 @@ func removeID(list []string, id string) []string {
 	return out
 }
 
-func isTerminalStatus(status Status) bool {
+func IsTerminalStatus(status Status) bool {
 	switch status {
 	case StatusCompleted, StatusFailed, StatusCancelled:
 		return true
@@ -1321,17 +1305,15 @@ func isTerminalStatus(status Status) bool {
 func taskUpdatePriority(kind string, payload map[string]any) string {
 	if payload != nil {
 		if raw, ok := payload["priority"].(string); ok {
-			switch strings.ToLower(strings.TrimSpace(raw)) {
-			case "interrupt", "wake", "normal", "low":
-				return strings.ToLower(strings.TrimSpace(raw))
-			}
+			p := schema.ParsePriority(raw)
+			return string(p)
 		}
 	}
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "completed", "failed", "cancelled", "killed":
-		return "wake"
+		return string(schema.PriorityWake)
 	default:
-		return "normal"
+		return string(schema.PriorityNormal)
 	}
 }
 
@@ -1341,7 +1323,7 @@ func (m *Manager) firstCompletedTask(ctx context.Context, taskIDs []string) (Tas
 		if err != nil {
 			return Task{}, false, nil, err
 		}
-		if isTerminalStatus(task.Status) {
+		if IsTerminalStatus(task.Status) {
 			return task, true, removeID(taskIDs, id), nil
 		}
 	}

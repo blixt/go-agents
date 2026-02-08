@@ -129,7 +129,6 @@ func (r *Runtime) historyGeneration(ctx context.Context, taskID string) int64 {
 	r.historyMu.Unlock()
 
 	gen := int64(1)
-	cutoff := time.Time{}
 	if r.Bus != nil {
 		summaries, err := r.Bus.List(ctx, "history", eventbus.ListOptions{
 			ScopeType: "task",
@@ -151,10 +150,6 @@ func (r *Runtime) historyGeneration(ctx context.Context, taskID string) int64 {
 					}
 					if entry.Generation > gen {
 						gen = entry.Generation
-						cutoff = time.Time{}
-					}
-					if entry.Type == "context_compaction" && entry.Generation == gen && entry.CreatedAt.After(cutoff) {
-						cutoff = entry.CreatedAt
 					}
 				}
 			}
@@ -166,18 +161,10 @@ func (r *Runtime) historyGeneration(ctx context.Context, taskID string) int64 {
 		gen = existing
 	}
 	r.historyGenerationByTask[taskID] = gen
-	if !cutoff.IsZero() {
-		if prev, ok := r.historyCompactionCutoff[taskID]; !ok || cutoff.After(prev) {
-			r.historyCompactionCutoff[taskID] = cutoff
-		}
-	}
 	r.historyMu.Unlock()
 	return gen
 }
 
-func (r *Runtime) currentHistoryGeneration(ctx context.Context, taskID string) int64 {
-	return r.historyGeneration(ctx, taskID)
-}
 
 func (r *Runtime) shouldAppendGenerationPreamble(ctx context.Context, taskID string, generation int64) bool {
 	taskID = strings.TrimSpace(taskID)
@@ -230,11 +217,6 @@ func (r *Runtime) shouldAppendGenerationPreamble(ctx context.Context, taskID str
 	return !alreadyExists
 }
 
-func (r *Runtime) compactionCutoff(taskID string) time.Time {
-	r.historyMu.Lock()
-	defer r.historyMu.Unlock()
-	return r.historyCompactionCutoff[taskID]
-}
 
 func (r *Runtime) CompactAgentContext(ctx context.Context, taskID, reason string) (int64, error) {
 	taskID = strings.TrimSpace(taskID)
@@ -247,7 +229,6 @@ func (r *Runtime) CompactAgentContext(ctx context.Context, taskID, reason string
 
 	r.historyMu.Lock()
 	r.historyGenerationByTask[taskID] = next
-	r.historyCompactionCutoff[taskID] = now
 	r.historyMu.Unlock()
 
 	reason = strings.TrimSpace(reason)

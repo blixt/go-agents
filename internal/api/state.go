@@ -9,6 +9,7 @@ import (
 
 	"github.com/flitsinc/go-agents/internal/engine"
 	"github.com/flitsinc/go-agents/internal/eventbus"
+	"github.com/flitsinc/go-agents/internal/schema"
 	"github.com/flitsinc/go-agents/internal/tasks"
 )
 
@@ -43,7 +44,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	historyLimit := parseInt(r.URL.Query().Get("history"), 800)
 	streamList := splitComma(r.URL.Query().Get("stream_names"))
 	if len(streamList) == 0 {
-		streamList = []string{"messages", "signals", "errors", "external", "task_output", "history"}
+		streamList = append(schema.AgentStreams, schema.StreamHistory)
 	}
 
 	resp := stateResponse{
@@ -164,7 +165,7 @@ func buildAgentState(agentIDs []string, allTasks []tasks.Task, sessions map[stri
 		active := 0
 		lastTaskUpdate := time.Time{}
 		for _, task := range allTasks {
-			if task.Owner != agentID && getNotifyTarget(task.Metadata) != agentID {
+			if task.Owner != agentID && schema.GetMetaString(task.Metadata, schema.MetaNotifyTarget) != agentID {
 				continue
 			}
 			if task.UpdatedAt.After(lastTaskUpdate) {
@@ -283,16 +284,6 @@ func readAgentHistory(ctx context.Context, bus *eventbus.Bus, agentID string, li
 	}, nil
 }
 
-func getNotifyTarget(meta map[string]any) string {
-	if meta == nil {
-		return ""
-	}
-	val, ok := meta["notify_target"].(string)
-	if !ok {
-		return ""
-	}
-	return strings.TrimSpace(val)
-}
 
 func maxTime(a, b time.Time) time.Time {
 	if a.After(b) {
@@ -329,7 +320,7 @@ func filterVisibleAgentIDs(
 			if task.Type != "agent" && task.Type != "llm" {
 				continue
 			}
-			if task.Owner == agentID || task.ID == agentID || getNotifyTarget(task.Metadata) == agentID {
+			if task.Owner == agentID || task.ID == agentID || schema.GetMetaString(task.Metadata, schema.MetaNotifyTarget) == agentID {
 				hasAgentTasks = true
 				break
 			}

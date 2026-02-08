@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/flitsinc/go-agents/internal/idgen"
+	"github.com/flitsinc/go-agents/internal/schema"
 	"github.com/flitsinc/go-agents/internal/tasks"
 )
 
@@ -122,10 +123,8 @@ func (s *Server) handleTaskCompact(w http.ResponseWriter, r *http.Request, taskI
 }
 
 func normalizePriority(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "interrupt", "wake", "normal", "low":
-		return strings.ToLower(strings.TrimSpace(raw))
-	default:
-		return "wake"
+	if strings.TrimSpace(raw) == "" {
+		return string(schema.PriorityWake)
 	}
+	return string(schema.ParsePriority(raw))
 }

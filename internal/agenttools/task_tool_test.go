@@ -33,13 +33,14 @@ func TestAwaitTaskToolWakeIncludesWakeEventID(t *testing.T) {
 	go func() {
 		time.Sleep(50 * time.Millisecond)
 		evt, err := bus.Push(context.Background(), eventbus.EventInput{
-			Stream:    "messages",
+			Stream:    "task_input",
 			ScopeType: "task",
 			ScopeID:   "agent-a",
 			Subject:   "Message from external",
 			Body:      "wake now",
 			Metadata: map[string]any{
 				"priority": "wake",
+				"kind":     "message",
 			},
 		})
 		if err == nil {
