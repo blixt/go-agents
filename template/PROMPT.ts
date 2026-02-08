@@ -260,6 +260,7 @@ Services inherit all environment variables plus:
 
 - Services are restarted on crash with exponential backoff (1s to 60s).
 - Backoff resets after 60s of stable uptime.
+- Editing run.ts or ~/.go-agents/.env automatically restarts the service within seconds.
 - Services can import from core/ and tools/ (same as exec code).
 - To stop: write a .disabled file. To remove: delete the directory.
 - Services persist across sessions — they keep running until explicitly stopped.`
@@ -284,6 +285,8 @@ await Bun.write(envPath, existing + "\\nTELEGRAM_BOT_TOKEN=abc123")
 
 All variables in .env are automatically available as environment variables in exec tasks and services.
 Read secrets with \`Bun.env.VARIABLE_NAME\`.
+
+When .env is modified, running services are automatically restarted with the updated variables within a few seconds. Exec tasks always read the latest .env on each run.
 
 Standard .env format: KEY=value, one per line. Lines starting with # are comments.`
 }

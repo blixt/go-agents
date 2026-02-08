@@ -1,6 +1,6 @@
 import { join } from "path"
-import { existsSync, readdirSync, mkdirSync } from "fs"
-import { stat, writeFile, readFile, unlink } from "fs/promises"
+import { existsSync, readdirSync, mkdirSync, statSync } from "fs"
+import { writeFile, readFile } from "fs/promises"
 
 type ServiceState = {
   name: string
@@ -11,6 +11,10 @@ type ServiceState = {
   backoffMs: number
   restartTimer: ReturnType<typeof setTimeout> | null
   logFile: string
+  /** mtime of run.ts when service was last spawned */
+  runTsMtime: number
+  /** mtime of ~/.go-agents/.env when service was last spawned */
+  dotEnvMtime: number
 }
 
 const MIN_BACKOFF = 1000
@@ -50,6 +54,18 @@ export function stopSupervisor(): void {
   services.clear()
 }
 
+function fileMtime(path: string): number {
+  try {
+    return statSync(path).mtimeMs
+  } catch {
+    return 0
+  }
+}
+
+function dotEnvPath(): string {
+  return join(goAgentsHome, ".env")
+}
+
 function scan(): void {
   const servicesDir = join(goAgentsHome, "services")
   if (!existsSync(servicesDir)) return
@@ -84,20 +100,40 @@ function scan(): void {
       continue
     }
 
-    if (!existing) {
-      const svc: ServiceState = {
-        name,
-        dir,
-        proc: null,
-        restartCount: 0,
-        lastStart: 0,
-        backoffMs: MIN_BACKOFF,
-        restartTimer: null,
-        logFile: join(dir, "output.log"),
+    if (existing) {
+      // Check if run.ts or .env changed since last spawn — if so, restart
+      const currentRunMtime = fileMtime(runFile)
+      const currentEnvMtime = fileMtime(dotEnvPath())
+      if (
+        existing.proc &&
+        (currentRunMtime !== existing.runTsMtime ||
+          currentEnvMtime !== existing.dotEnvMtime)
+      ) {
+        console.error(
+          `[supervisor] file change detected for service ${name}, restarting`,
+        )
+        stopService(existing)
+        existing.backoffMs = MIN_BACKOFF
+        existing.restartCount = 0
+        installAndStart(existing)
       }
-      services.set(name, svc)
-      installAndStart(svc)
+      continue
     }
+
+    const svc: ServiceState = {
+      name,
+      dir,
+      proc: null,
+      restartCount: 0,
+      lastStart: 0,
+      backoffMs: MIN_BACKOFF,
+      restartTimer: null,
+      logFile: join(dir, "output.log"),
+      runTsMtime: 0,
+      dotEnvMtime: 0,
+    }
+    services.set(name, svc)
+    installAndStart(svc)
   }
 
   // Stop services whose directories were removed
@@ -152,6 +188,9 @@ function spawnService(svc: ServiceState): void {
     }
   } catch { /* ignore */ }
 
+  // Record mtimes so we can detect changes on next scan
+  svc.runTsMtime = fileMtime(runFile)
+  svc.dotEnvMtime = fileMtime(dotEnvPath())
   svc.lastStart = Date.now()
 
   const proc = Bun.spawn(["bun", runFile], {
