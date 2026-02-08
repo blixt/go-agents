@@ -213,6 +213,12 @@ export function App(): React.ReactElement {
             <textarea
               value={message}
               onChange={(event) => setMessage(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  void handleSend();
+                }
+              }}
               placeholder={selectedAgent ? `Message ${selectedAgent}...` : "Message a new agent..."}
             />
             <div className="composer-actions">

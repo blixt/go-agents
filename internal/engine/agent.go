@@ -196,8 +196,30 @@ func (r *Runtime) Start(ctx context.Context) {
 		ctx = context.Background()
 	}
 	r.baseCtx = ctx
+	if r.Tasks != nil {
+		r.recoverStaleTasks(ctx)
+	}
 	if r.Tasks != nil && r.Bus != nil {
 		go r.monitorTaskHealth(ctx)
+	}
+}
+
+// recoverStaleTasks fails any tasks left in "running" state from a previous
+// process. After a restart, no goroutine owns these tasks, so they would
+// remain stuck forever.
+func (r *Runtime) recoverStaleTasks(ctx context.Context) {
+	for _, taskType := range []string{"llm", "exec"} {
+		stale, err := r.Tasks.List(ctx, tasks.ListFilter{
+			Status: tasks.StatusRunning,
+			Type:   taskType,
+			Limit:  500,
+		})
+		if err != nil {
+			continue
+		}
+		for _, t := range stale {
+			_ = r.Tasks.Fail(ctx, t.ID, "recovered: task was still running when the runtime restarted")
+		}
 	}
 }
 
@@ -1392,7 +1414,7 @@ func (r *Runtime) replayUnreadWakeEvents(ctx context.Context, agentID string, li
 		if source == "" {
 			source = "runtime"
 		}
-		if _, err := r.HandleMessage(ctx, agentID, source, "", meta); err != nil {
+		if _, err := r.HandleMessage(ctx, agentID, source, evt.Body, meta); err != nil {
 			return 0, nil
 		}
 		return 1, nil
