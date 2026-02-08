@@ -2,6 +2,7 @@ package idgen_test
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 
 	"github.com/flitsinc/go-agents/internal/idgen"
@@ -85,5 +86,39 @@ func TestTaskID_CustomName(t *testing.T) {
 	got = idgen.TaskID(db, "planner")
 	if got != "planner-2" {
 		t.Fatalf("expected planner-2, got %s", got)
+	}
+}
+
+func TestValidateCustomID(t *testing.T) {
+	valid := []string{
+		"a",
+		"fetch-weather",
+		"setup-telegram",
+		"my-task-123",
+		"a1",
+		"abc",
+		"a-b-c",
+	}
+	for _, id := range valid {
+		if err := idgen.ValidateCustomID(id); err != nil {
+			t.Errorf("expected %q to be valid, got error: %v", id, err)
+		}
+	}
+
+	invalid := []string{
+		"",
+		"-start-dash",
+		"end-dash-",
+		"1starts-with-digit",
+		"UPPERCASE",
+		"has spaces",
+		"has_underscore",
+		"has.dot",
+		strings.Repeat("a", 65),
+	}
+	for _, id := range invalid {
+		if err := idgen.ValidateCustomID(id); err == nil {
+			t.Errorf("expected %q to be invalid, got nil error", id)
+		}
 	}
 }

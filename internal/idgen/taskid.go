@@ -3,7 +3,23 @@ package idgen
 import (
 	"database/sql"
 	"fmt"
+	"regexp"
 )
+
+var customIDPattern = regexp.MustCompile(`^[a-z]([a-z0-9-]*[a-z0-9])?$`)
+
+// ValidateCustomID checks that id is a valid user-provided task ID.
+// Rules: lowercase letters, digits, and dashes; must start with a letter and
+// end with a letter or digit; max 64 characters.
+func ValidateCustomID(id string) error {
+	if len(id) > 64 {
+		return fmt.Errorf("custom id too long (max 64 characters)")
+	}
+	if !customIDPattern.MatchString(id) {
+		return fmt.Errorf("custom id %q is invalid: must match %s", id, customIDPattern.String())
+	}
+	return nil
+}
 
 // TaskID generates a human-readable task ID like "agent-1", "planner-2".
 // It queries the database for the highest existing sequence number with the

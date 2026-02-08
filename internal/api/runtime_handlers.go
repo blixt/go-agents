@@ -15,6 +15,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var payload struct {
+		ID       string         `json:"id"`
 		Type     string         `json:"type"`
 		Name     string         `json:"name"`
 		Payload  map[string]any `json:"payload"`
@@ -24,6 +25,13 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSON(r.Body, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
+	}
+	customID := strings.TrimSpace(payload.ID)
+	if customID != "" {
+		if err := idgen.ValidateCustomID(customID); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 	}
 	taskType := strings.TrimSpace(payload.Type)
 	if taskType == "" {
@@ -36,6 +44,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	priority := normalizePriority(payload.Priority)
 
 	spec := tasks.Spec{
+		ID:   customID,
 		Type: taskType,
 		Name: strings.TrimSpace(payload.Name),
 		Mode: "async",

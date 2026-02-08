@@ -37,6 +37,7 @@ function execBlock() {
 Run TypeScript code in an isolated Bun runtime and return a task id.
 
 Parameters:
+- id (string, optional): Custom task ID. Lowercase letters, digits, and dashes; must start with a letter and end with a letter or digit; max 64 chars. If omitted, an auto-generated ID is used.
 - code (string, required): TypeScript code to run in Bun.
 - wait_seconds (number, required): Seconds to wait for the task to complete before returning.
   - Use 0 to return immediately and let the task continue in the background.

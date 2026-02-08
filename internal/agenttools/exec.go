@@ -9,10 +9,12 @@ import (
 	llmtools "github.com/flitsinc/go-llms/tools"
 
 	"github.com/flitsinc/go-agents/internal/agentcontext"
+	"github.com/flitsinc/go-agents/internal/idgen"
 	"github.com/flitsinc/go-agents/internal/tasks"
 )
 
 type ExecParams struct {
+	ID          string `json:"id,omitempty" description:"Optional custom task ID (lowercase letters, digits, dashes; max 64 chars)"`
 	Code        string `json:"code" description:"TypeScript code to run in Bun"`
 	WaitSeconds *int   `json:"wait_seconds" description:"Required seconds to wait before returning; use 0 to return immediately"`
 }
@@ -25,6 +27,12 @@ func ExecTool(manager *tasks.Manager) llmtools.Tool {
 		func(r llmtools.Runner, p ExecParams) llmtools.Result {
 			if manager == nil {
 				return llmtools.Errorf("task manager unavailable")
+			}
+			customID := strings.TrimSpace(p.ID)
+			if customID != "" {
+				if err := idgen.ValidateCustomID(customID); err != nil {
+					return llmtools.Errorf("%s", err)
+				}
 			}
 			code := strings.TrimSpace(p.Code)
 			if code == "" {
@@ -43,6 +51,7 @@ func ExecTool(manager *tasks.Manager) llmtools.Tool {
 
 			parentID := tasks.ParentTaskIDFromContext(r.Context())
 			spec := tasks.Spec{
+				ID:       customID,
 				Type:     "exec",
 				Owner:    owner,
 				ParentID: parentID,

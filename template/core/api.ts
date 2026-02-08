@@ -21,6 +21,7 @@ async function request(method: string, path: string, body?: unknown): Promise<Re
 
 /** Create a task (agent or exec). Returns { task_id, status, type }. */
 export async function createTask(opts: {
+  id?: string
   type?: "agent" | "exec"
   name?: string
   payload?: Record<string, unknown>
@@ -28,6 +29,7 @@ export async function createTask(opts: {
   priority?: "interrupt" | "wake" | "normal" | "low"
 }): Promise<{ task_id: string; status: string; type: string }> {
   const res = await request("POST", "/api/tasks", {
+    id: opts.id,
     type: opts.type || "exec",
     name: opts.name,
     payload: opts.payload,
