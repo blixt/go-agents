@@ -153,8 +153,11 @@ async function ensureBrowser(): Promise<void> {
   const chromiumMarker = join(toolDir, ".chromium-installed")
   if (!existsSync(chromiumMarker)) {
     console.error("[browse] Installing Chromium (one-time)...")
+    // Use the local playwright-core CLI (installed as rebrowser-playwright-core).
+    // bunx would create a temp install missing peer deps, so we run the local binary directly.
+    const cli = join(toolDir, "node_modules", "playwright-core", "cli.js")
     const result = Bun.spawnSync(
-      ["bunx", "rebrowser-playwright", "install", "chromium"],
+      ["bun", cli, "install", "chromium"],
       { cwd: toolDir, stdout: "inherit", stderr: "inherit" },
     )
     if (result.exitCode !== 0) throw new Error("Failed to install Chromium")
