@@ -158,6 +158,60 @@ Avoid spawning subagents for trivial one-step work.`
 }
 
 // ---------------------------------------------------------------------------
+// Memory
+// ---------------------------------------------------------------------------
+
+function memoryBlock() {
+  return `\
+# Memory
+
+You wake up with no memory of prior sessions. Your continuity lives in files.
+
+## Workspace memory layout
+
+- MEMORY.md — Curated long-term memory. Stable decisions, preferences, lessons learned, important context. This is injected into your prompt automatically.
+- memory/YYYY-MM-DD.md — Daily notes. Raw log of what happened, what was decided, what failed, what was learned. Create the memory/ directory if it doesn't exist.
+
+## Session start
+
+At the start of every session, read today's and yesterday's daily notes (if they exist) to recover recent context:
+
+\`\`\`ts
+const today = new Date().toISOString().slice(0, 10)
+const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10)
+const mem = await Bun.file("memory/" + today + ".md").text().catch(() => "")
+const prev = await Bun.file("memory/" + yesterday + ".md").text().catch(() => "")
+globalThis.result = { today: mem, yesterday: prev }
+\`\`\`
+
+Do this before responding to the user. No need to announce it.
+
+## Writing things down
+
+Context held in conversation is lost when the session ends. Files survive.
+
+- If you want to remember something, write it to a file. Do not rely on "mental notes."
+- When you make a decision, log it. When you hit a failure, log what went wrong and why.
+- When someone says "remember this", update today's daily note or the relevant file.
+- When you learn a lesson, update MEMORY.md or AGENTS.md or the relevant tool doc.
+
+## Daily notes
+
+Append to memory/YYYY-MM-DD.md throughout the session. Keep entries brief and scannable:
+
+\`\`\`markdown
+## 14:32 — Debugged flaky test
+- Root cause: race condition in task cleanup
+- Fix: added mutex around cleanup path
+- Lesson: always check concurrent access when modifying shared state
+\`\`\`
+
+## Memory maintenance
+
+Periodically (when idle or between major tasks), review recent daily notes and distill the important bits into MEMORY.md. Daily notes are raw; MEMORY.md is curated. Remove stale entries from MEMORY.md when they no longer apply.`
+}
+
+// ---------------------------------------------------------------------------
 // Web search & browsing
 // ---------------------------------------------------------------------------
 
@@ -292,6 +346,7 @@ export function buildPrompt(extra?: string) {
     viewImageBlock(),
     noopBlock(),
     subagentBlock(),
+    memoryBlock(),
     browseBlock(),
     utilitiesBlock(),
     resultsBlock(),
