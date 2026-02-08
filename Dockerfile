@@ -1,7 +1,7 @@
 FROM golang:1.25.7-bookworm
 
 ARG TARGETARCH
-ARG BUN_VERSION=1.3.8
+ARG BUN_VERSION=1.3.9
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends curl ca-certificates git xz-utils unzip jq silversearcher-ag \
