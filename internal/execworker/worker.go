@@ -122,7 +122,13 @@ func (w *Worker) RunTask(ctx context.Context, task Task) error {
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.Dir = home
-	cmd.Env = append(os.Environ(), fmt.Sprintf("GO_AGENTS_HOME=%s", home))
+	env := os.Environ()
+	dotEnvVars, _ := goagents.LoadDotEnv(filepath.Join(home, ".env"))
+	for k, v := range dotEnvVars {
+		env = append(env, fmt.Sprintf("%s=%s", k, v))
+	}
+	env = append(env, fmt.Sprintf("GO_AGENTS_HOME=%s", home))
+	cmd.Env = env
 	if err := cmd.Run(); err != nil {
 		_ = w.sendUpdate(ctx, task.ID, "exit", map[string]any{"exit_code": 1})
 		return w.sendFail(ctx, task.ID, err.Error())

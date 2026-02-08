@@ -1,10 +1,12 @@
 package goagents
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 func HomeDir() (string, error) {
@@ -39,6 +41,48 @@ func EnsureHome() (string, error) {
 		return "", err
 	}
 	return home, nil
+}
+
+// LoadDotEnv parses a .env file at the given path and returns all key-value pairs.
+// Unlike config.loadDotEnv, this loads all variables (not just *_API_KEY).
+// Returns an empty map if the file does not exist.
+func LoadDotEnv(path string) (map[string]string, error) {
+	vars := make(map[string]string)
+	file, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return vars, nil
+		}
+		return nil, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "export ") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if len(value) >= 2 &&
+			((value[0] == '"' && value[len(value)-1] == '"') ||
+				(value[0] == '\'' && value[len(value)-1] == '\'')) {
+			value = value[1 : len(value)-1]
+		}
+		vars[key] = value
+	}
+	return vars, scanner.Err()
 }
 
 // EnsureToolDeps scans ~/.go-agents/tools/*/package.json and runs `bun install`

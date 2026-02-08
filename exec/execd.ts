@@ -4,6 +4,7 @@ import { join, resolve } from "path"
 import { homedir, tmpdir } from "os"
 import { existsSync, readdirSync } from "fs"
 import { mkdir, readdir, stat, symlink, copyFile } from "fs/promises"
+import { startSupervisor, stopSupervisor } from "./service-supervisor.ts"
 
 type Task = {
   id: string
@@ -159,6 +160,32 @@ function ensureToolDeps() {
   }
 }
 
+function loadDotEnv(path: string): Record<string, string> {
+  const vars: Record<string, string> = {}
+  try {
+    const text = Bun.file(path).textSync()
+    for (const line of text.split("\n")) {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed.startsWith("#")) continue
+      const cleaned = trimmed.startsWith("export ") ? trimmed.slice(7).trim() : trimmed
+      const eqIdx = cleaned.indexOf("=")
+      if (eqIdx < 0) continue
+      const key = cleaned.slice(0, eqIdx).trim()
+      let value = cleaned.slice(eqIdx + 1).trim()
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1)
+      }
+      if (key) vars[key] = value
+    }
+  } catch {
+    // File doesn't exist — that's fine
+  }
+  return vars
+}
+
 async function claimTasks(limit: number): Promise<Task[]> {
   const url = `${API_URL}/api/tasks/queue?type=exec&limit=${limit}`
   const res = await fetch(url)
@@ -263,6 +290,7 @@ async function runTask(task: Task) {
     resultPath,
   ]
 
+  const dotEnvVars = loadDotEnv(join(GO_AGENTS_HOME, ".env"))
   const proc = Bun.spawn({
     cmd,
     cwd: GO_AGENTS_HOME,
@@ -271,6 +299,7 @@ async function runTask(task: Task) {
     stdin: "pipe",
     env: {
       ...process.env,
+      ...dotEnvVars,
       GO_AGENTS_HOME,
     },
   })
@@ -391,6 +420,15 @@ async function main() {
   await ensureGoAgentsHome()
   ensureToolDeps()
   startWebhookServer()
+  startSupervisor(GO_AGENTS_HOME, () => loadDotEnv(join(GO_AGENTS_HOME, ".env")))
+
+  const shutdown = () => {
+    stopSupervisor()
+    process.exit(0)
+  }
+  process.on("SIGINT", shutdown)
+  process.on("SIGTERM", shutdown)
+
   const running = new Set<Promise<void>>()
   while (true) {
     try {

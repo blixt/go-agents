@@ -214,6 +214,81 @@ Periodically (when idle or between major tasks), review recent daily notes and d
 }
 
 // ---------------------------------------------------------------------------
+// Persistent services
+// ---------------------------------------------------------------------------
+
+function servicesBlock() {
+  return `\
+# Persistent services
+
+For long-running background processes (bots, pollers, scheduled jobs), use the services/ convention:
+
+## Creating a service
+
+\`\`\`ts
+// Write a service entry point
+await Bun.write("services/my-service/run.ts", \`
+import { sendMessage } from "core/api"
+
+// This process runs continuously, supervised by the runtime.
+// It will be restarted automatically if it crashes.
+
+while (true) {
+  // ... your logic here (poll an API, listen on a port, etc.)
+  await Bun.sleep(60_000)
+}
+\`)
+\`\`\`
+
+The runtime detects the new directory and starts it automatically within seconds.
+
+## Convention
+
+- services/<name>/run.ts — Entry point. Spawned as \`bun run.ts\` with CWD = service directory.
+- services/<name>/package.json — Optional npm dependencies (auto-installed, same as tools/).
+- services/<name>/.disabled — Create this file to stop the service. Delete it to restart.
+- services/<name>/output.log — Stdout/stderr captured here. Read it for debugging.
+
+## Environment
+
+Services inherit all environment variables plus:
+- GO_AGENTS_HOME — path to ~/.go-agents
+- GO_AGENTS_API_URL — internal API base URL
+- All variables from ~/.go-agents/.env
+
+## Lifecycle
+
+- Services are restarted on crash with exponential backoff (1s to 60s).
+- Backoff resets after 60s of stable uptime.
+- Services can import from core/ and tools/ (same as exec code).
+- To stop: write a .disabled file. To remove: delete the directory.
+- Services persist across sessions — they keep running until explicitly stopped.`
+}
+
+// ---------------------------------------------------------------------------
+// Secrets
+// ---------------------------------------------------------------------------
+
+function secretsBlock() {
+  return `\
+# Secrets
+
+Store API keys, tokens, and credentials in ~/.go-agents/.env:
+
+\`\`\`ts
+// Save a secret
+const envPath = Bun.env.GO_AGENTS_HOME + "/.env"
+const existing = await Bun.file(envPath).text().catch(() => "")
+await Bun.write(envPath, existing + "\\nTELEGRAM_BOT_TOKEN=abc123")
+\`\`\`
+
+All variables in .env are automatically available as environment variables in exec tasks and services.
+Read secrets with \`Bun.env.VARIABLE_NAME\`.
+
+Standard .env format: KEY=value, one per line. Lines starting with # are comments.`
+}
+
+// ---------------------------------------------------------------------------
 // Web search & browsing
 // ---------------------------------------------------------------------------
 
@@ -298,6 +373,21 @@ const subagent = await agent({ message: "..." })
 // subagent: { task_id, event_id?, status? }
 \`\`\`
 
+## core/api — Runtime API
+
+\`\`\`ts
+import { createTask, sendMessage, getUpdates, getState, subscribe, cancelTask } from "core/api"
+\`\`\`
+
+- createTask(opts) — Create agent or exec tasks programmatically.
+- sendMessage(taskId, message) — Send a message to an agent.
+- getUpdates(taskId, opts?) — Read task stdout, stderr, and status updates.
+- getState() — Get full runtime state (all agents, tasks, events).
+- subscribe(opts?) — Subscribe to real-time event streams (SSE).
+- cancelTask(taskId) — Cancel a running task.
+
+Use these for building integrations, monitoring, and automation.
+
 ## Creating new tools
 
 Create a directory under tools/ with an index.ts that exports your functions.
@@ -334,6 +424,7 @@ function workflowBlock() {
 - For repeated tasks, build and reuse small helpers in tools/.
 - Keep context lean. Write large outputs to files and return the path with a short summary.
 - Write things down as you go. Decisions, failures, and lessons belong in today's daily note — not just in the conversation.
+- For persistent work (bots, pollers, listeners), create a service in services/ instead of a long-running exec task.
 - Ask for compaction only when context is genuinely overloaded.`
 }
 
@@ -352,6 +443,8 @@ export function buildPrompt(extra?: string) {
     noopBlock(),
     subagentBlock(),
     memoryBlock(),
+    servicesBlock(),
+    secretsBlock(),
     browseBlock(),
     utilitiesBlock(),
     resultsBlock(),
