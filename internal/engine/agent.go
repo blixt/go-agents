@@ -1457,8 +1457,8 @@ func (r *Runtime) appendContextUpdateHistory(
 	if turnCtx.DateChanged {
 		r.appendHistory(ctx, agentID, "system_update", "system", "date changed", taskID, generation, map[string]any{
 			"kind":          "date_changed",
-			"previous_date": turnCtx.Previous.UTC().Format("2006-01-02"),
-			"current_date":  turnCtx.Now.UTC().Format("2006-01-02"),
+			"previous_date": turnCtx.Previous.UTC().Format("Monday, 2006-01-02"),
+			"current_date":  turnCtx.Now.UTC().Format("Monday, 2006-01-02"),
 		})
 	}
 	for _, evt := range events {
@@ -1793,9 +1793,9 @@ func renderContextUpdatesXML(turnCtx TurnContext, frame ContextUpdateFrame) stri
 	}
 	if turnCtx.DateChanged {
 		b.WriteString("  <system_update kind=\"date_changed\" previous_date=\"")
-		b.WriteString(turnCtx.Previous.UTC().Format("2006-01-02"))
+		b.WriteString(turnCtx.Previous.UTC().Format("Monday, 2006-01-02"))
 		b.WriteString("\" current_date=\"")
-		b.WriteString(turnCtx.Now.UTC().Format("2006-01-02"))
+		b.WriteString(turnCtx.Now.UTC().Format("Monday, 2006-01-02"))
 		b.WriteString("\" />\n")
 	}
 
