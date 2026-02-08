@@ -19,8 +19,6 @@ type ViewImageParams struct {
 	Path     string `json:"path,omitempty" description:"Local image file path"`
 	URL      string `json:"url,omitempty" description:"Image URL"`
 	Fidelity string `json:"fidelity,omitempty" description:"Image fidelity: low | medium | high (default low)"`
-	MaxBytes int64  `json:"max_bytes,omitempty" description:"Maximum bytes to load (default 4MB)"`
-	Label    string `json:"label,omitempty" description:"Optional result label"`
 }
 
 func ViewImageTool() llmtools.Tool {
@@ -29,15 +27,8 @@ func ViewImageTool() llmtools.Tool {
 		"Load an image from a local path or URL and add it to model context",
 		"view_image",
 		func(r llmtools.Runner, p ViewImageParams) llmtools.Result {
-			maxBytes := p.MaxBytes
-			if maxBytes <= 0 {
-				maxBytes = defaultViewImageMaxBytes
-			}
+			maxBytes := int64(defaultViewImageMaxBytes)
 			fidelity := normalizeImageFidelity(p.Fidelity)
-			label := strings.TrimSpace(p.Label)
-			if label == "" {
-				label = "Loaded image"
-			}
 
 			path := strings.TrimSpace(p.Path)
 			source := map[string]any{}
@@ -68,7 +59,7 @@ func ViewImageTool() llmtools.Tool {
 				return llmtools.ErrorWithLabel("view_image failed", fmt.Errorf("stat image: %w", err))
 			}
 			if info.Size() > maxBytes {
-				return llmtools.Errorf("image exceeds max_bytes (%d > %d)", info.Size(), maxBytes)
+				return llmtools.Errorf("image too large (%d > %d bytes)", info.Size(), maxBytes)
 			}
 
 			highQuality := fidelity != "low"
@@ -78,18 +69,17 @@ func ViewImageTool() llmtools.Tool {
 			}
 
 			result := map[string]any{
-				"source":    source,
-				"fidelity":  fidelity,
-				"max_bytes": maxBytes,
-				"name":      name,
-				"path":      absPath,
+				"source":   source,
+				"fidelity": fidelity,
+				"name":     name,
+				"path":     absPath,
 			}
 			payload, err := content.FromAny(result)
 			if err != nil {
 				return llmtools.ErrorWithLabel("view_image failed", err)
 			}
 			payload.AddImage(dataURI)
-			return llmtools.SuccessWithContent(label, payload)
+			return llmtools.SuccessWithContent("Loaded image", payload)
 		},
 	)
 }

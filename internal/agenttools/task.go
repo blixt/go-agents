@@ -1,7 +1,6 @@
 package agenttools
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -14,14 +13,12 @@ import (
 
 type AwaitTaskParams struct {
 	TaskID      string `json:"task_id" description:"Task id to wait for"`
-	WaitSeconds *int   `json:"wait_seconds" description:"Required seconds to wait before returning; use 0 for default timeout"`
+	WaitSeconds *int   `json:"wait_seconds" description:"Seconds to wait before returning (must be > 0)"`
 }
 
 type SendTaskParams struct {
-	TaskID  string `json:"task_id" description:"Task id to send input to"`
-	Message string `json:"message,omitempty" description:"Message to send to an agent task"`
-	Text    string `json:"text,omitempty" description:"Text to send to a task (exec stdin)"`
-	JSON    string `json:"json,omitempty" description:"Raw JSON object string to send as input"`
+	TaskID string `json:"task_id" description:"Task id to send input to"`
+	Body   string `json:"body" description:"Content to send to the task"`
 }
 
 type CancelTaskParams struct {
@@ -50,8 +47,8 @@ func AwaitTaskTool(manager *tasks.Manager) llmtools.Tool {
 				return llmtools.Errorf("wait_seconds is required")
 			}
 			waitSeconds := *p.WaitSeconds
-			if waitSeconds < 0 {
-				return llmtools.Errorf("wait_seconds must be >= 0")
+			if waitSeconds <= 0 {
+				return llmtools.Errorf("wait_seconds must be > 0")
 			}
 			timeout := time.Duration(waitSeconds) * time.Second
 			r.Report("waiting")
@@ -122,12 +119,11 @@ func SendTaskTool(manager *tasks.Manager, bus *eventbus.Bus) llmtools.Tool {
 			if p.TaskID == "" {
 				return llmtools.Errorf("task_id is required")
 			}
-			task, err := manager.Get(r.Context(), p.TaskID)
-			if err != nil {
-				return llmtools.ErrorWithLabel("send_task failed", err)
+			body := strings.TrimSpace(p.Body)
+			if body == "" {
+				return llmtools.Errorf("body is required")
 			}
-
-			input, err := buildTaskInput(p)
+			task, err := manager.Get(r.Context(), p.TaskID)
 			if err != nil {
 				return llmtools.ErrorWithLabel("send_task failed", err)
 			}
@@ -135,10 +131,6 @@ func SendTaskTool(manager *tasks.Manager, bus *eventbus.Bus) llmtools.Tool {
 			if task.Type == "agent" || task.Type == "llm" {
 				if bus == nil {
 					return llmtools.Errorf("event bus unavailable")
-				}
-				message := extractMessage(input)
-				if message == "" {
-					return llmtools.Errorf("message or text is required for agent tasks")
 				}
 				target := ""
 				if task.Metadata != nil {
@@ -161,7 +153,7 @@ func SendTaskTool(manager *tasks.Manager, bus *eventbus.Bus) llmtools.Tool {
 					ScopeType: "task",
 					ScopeID:   target,
 					Subject:   fmt.Sprintf("Message from %s", source),
-					Body:      message,
+					Body:      body,
 					Metadata: map[string]any{
 						"kind":     "message",
 						"source":   source,
@@ -175,6 +167,7 @@ func SendTaskTool(manager *tasks.Manager, bus *eventbus.Bus) llmtools.Tool {
 				return llmtools.Success(map[string]any{"ok": true, "event_id": evt.ID, "agent_id": target})
 			}
 
+			input := map[string]any{"text": body}
 			if err := manager.Send(r.Context(), p.TaskID, input); err != nil {
 				return llmtools.ErrorWithLabel("send_task failed", err)
 			}
@@ -223,43 +216,3 @@ func KillTaskTool(manager *tasks.Manager) llmtools.Tool {
 	)
 }
 
-func extractMessage(input map[string]any) string {
-	if input == nil {
-		return ""
-	}
-	if val, ok := input["message"].(string); ok {
-		return val
-	}
-	if val, ok := input["text"].(string); ok {
-		return val
-	}
-	data, err := json.Marshal(input)
-	if err != nil {
-		return ""
-	}
-	return string(data)
-}
-
-func buildTaskInput(p SendTaskParams) (map[string]any, error) {
-	if strings.TrimSpace(p.JSON) != "" {
-		var payload map[string]any
-		if err := json.Unmarshal([]byte(p.JSON), &payload); err != nil {
-			return nil, fmt.Errorf("invalid json: %w", err)
-		}
-		if payload == nil {
-			return nil, fmt.Errorf("json payload is empty")
-		}
-		return payload, nil
-	}
-	payload := map[string]any{}
-	if strings.TrimSpace(p.Message) != "" {
-		payload["message"] = p.Message
-	}
-	if strings.TrimSpace(p.Text) != "" {
-		payload["text"] = p.Text
-	}
-	if len(payload) == 0 {
-		return nil, fmt.Errorf("message, text, or json is required")
-	}
-	return payload, nil
-}
