@@ -159,7 +159,9 @@ The returned task_id is the subagent's identity. Use it with:
 - send_task with message to send follow-up instructions.
 - kill_task to stop the subagent.
 
-Avoid spawning subagents for trivial one-step work.`
+Prefer specialized subagents over one agent doing everything. Each subagent gets its own context window — a focused agent with a clear role stays effective much longer than one overloaded with unrelated concerns. Split work by domain (e.g. one agent for research, another for coding, another for testing).
+
+Skip subagents only for trivial one-step work that doesn't warrant the overhead.`
 }
 
 // ---------------------------------------------------------------------------
@@ -258,7 +260,7 @@ The runtime detects the new directory and starts it automatically within seconds
 - services/<name>/run.ts — Entry point. Spawned as \`bun run.ts\` with CWD = service directory.
 - services/<name>/package.json — Optional npm dependencies (auto-installed, same as tools/).
 - services/<name>/.disabled — Create this file to stop the service. Delete it to restart.
-- services/<name>/output.log — Stdout/stderr captured here. Read it for debugging.
+- services/<name>/output.log — All stdout/stderr is captured here by the supervisor. Inside service code, \`console.log()\` and \`console.error()\` automatically write to this file. Read it to debug crashes, inspect output, or verify behavior — it's at \`./output.log\` relative to the service's CWD.
 
 ## Environment
 
