@@ -219,6 +219,9 @@ function spawnService(svc: ServiceState): void {
 
   svc.proc = proc
 
+  const startBanner = `--- service started at ${new Date().toISOString()} ---\n`
+  appendLog(svc.logFile, startBanner).catch(() => {})
+
   // Pipe stdout and stderr to log file
   pipeToLog(svc, proc.stdout)
   pipeToLog(svc, proc.stderr)
