@@ -166,10 +166,11 @@ func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request, taskID s
 	}
 	var payload struct {
 		// Agent message fields
-		Message   string `json:"message"`
-		Source    string `json:"source"`
-		Priority  string `json:"priority"`
-		RequestID string `json:"request_id"`
+		Message   string         `json:"message"`
+		Source    string         `json:"source"`
+		Priority  string         `json:"priority"`
+		RequestID string         `json:"request_id"`
+		Context   map[string]any `json:"context"`
 		// Generic task input
 		Input map[string]any `json:"input"`
 	}
@@ -191,11 +192,15 @@ func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request, taskID s
 		if requestID == "" {
 			requestID = idgen.New()
 		}
-		_, err := s.Runtime.SendMessageWithMeta(r.Context(), taskID, message, source, map[string]any{
+		meta := map[string]any{
 			"priority":   priority,
 			"request_id": requestID,
 			"kind":       "message",
-		})
+		}
+		if len(payload.Context) > 0 {
+			meta["context"] = payload.Context
+		}
+		_, err := s.Runtime.SendMessageWithMeta(r.Context(), taskID, message, source, meta)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return

@@ -27,6 +27,7 @@ export async function createTask(opts: {
   payload?: Record<string, unknown>
   source?: string
   priority?: "interrupt" | "wake" | "normal" | "low"
+  context?: Record<string, unknown>
 }): Promise<{ task_id: string; status: string; type: string }> {
   const res = await request("POST", "/api/tasks", {
     id: opts.id,
@@ -35,31 +36,28 @@ export async function createTask(opts: {
     payload: opts.payload,
     source: opts.source,
     priority: opts.priority,
+    context: opts.context,
   })
   return (await res.json()) as { task_id: string; status: string; type: string }
 }
 
-/** Send a message to an agent task. */
-export async function sendMessage(
+/** Send input to a task. For agent tasks, delivers a message. */
+export async function sendInput(
   taskId: string,
   message: string,
-  opts?: { source?: string; priority?: string; request_id?: string },
+  opts?: { source?: string; priority?: string; request_id?: string; context?: Record<string, unknown> },
 ): Promise<void> {
   await request("POST", `/api/tasks/${encodeURIComponent(taskId)}/send`, {
     message,
     source: opts?.source || "agent",
     priority: opts?.priority || "wake",
     request_id: opts?.request_id,
+    context: opts?.context,
   })
 }
 
-/** Send raw input to an exec task (written to stdin). */
-export async function sendInput(taskId: string, input: Record<string, unknown>): Promise<void> {
-  await request("POST", `/api/tasks/${encodeURIComponent(taskId)}/updates`, {
-    kind: "input",
-    payload: input,
-  })
-}
+/** @deprecated Use sendInput instead. */
+export const sendMessage = sendInput
 
 /** Get updates for a task (stdout, stderr, start, exit, etc.). */
 export async function getUpdates(

@@ -1,4 +1,4 @@
-import { createTask, sendMessage } from "./api.ts"
+import { createTask, sendInput } from "./api.ts"
 
 type AgentModel = "fast" | "balanced" | "smart"
 
@@ -11,6 +11,7 @@ type AgentOptions = {
   source?: string
   priority?: "interrupt" | "wake" | "normal" | "low"
   request_id?: string
+  context?: Record<string, unknown>
 }
 
 type AgentResult = {
@@ -25,10 +26,11 @@ export async function agent(options: AgentOptions): Promise<AgentResult> {
   }
   const targetTaskID = options.task_id && options.task_id.trim() ? options.task_id.trim() : ""
   if (targetTaskID) {
-    await sendMessage(targetTaskID, options.message, {
+    await sendInput(targetTaskID, options.message, {
       source: options.source || "agent",
       priority: options.priority || "wake",
       request_id: options.request_id,
+      context: options.context,
     })
     return { task_id: targetTaskID }
   }
@@ -42,6 +44,7 @@ export async function agent(options: AgentOptions): Promise<AgentResult> {
     },
     source: options.source || "agent",
     priority: options.priority || "wake",
+    context: options.context,
   })
   return {
     task_id: result.task_id || "",

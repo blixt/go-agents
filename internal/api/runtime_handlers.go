@@ -21,6 +21,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		Payload  map[string]any `json:"payload"`
 		Source   string         `json:"source"`
 		Priority string         `json:"priority"`
+		Context  map[string]any `json:"context"`
 	}
 	if err := decodeJSON(r.Body, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -90,11 +91,15 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		if payload.Payload != nil {
 			if message, ok := payload.Payload["message"].(string); ok && strings.TrimSpace(message) != "" {
 				requestID := idgen.New()
-				_, _ = s.Runtime.SendMessageWithMeta(r.Context(), created.ID, message, source, map[string]any{
+				meta := map[string]any{
 					"priority":   priority,
 					"request_id": requestID,
 					"kind":       "message",
-				})
+				}
+				if len(payload.Context) > 0 {
+					meta["context"] = payload.Context
+				}
+				_, _ = s.Runtime.SendMessageWithMeta(r.Context(), created.ID, message, source, meta)
 			}
 		}
 	}
