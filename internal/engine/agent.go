@@ -640,7 +640,11 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 			}
 		}
 		if source != "" && source != agentID {
-			_, _ = r.SendMessageWithMeta(ctx, source, session.LastOutput, agentID, nil)
+			var replyMeta map[string]any
+			if reqID := schema.GetMetaString(messageMeta, "request_id"); reqID != "" {
+				replyMeta = map[string]any{"request_id": reqID}
+			}
+			_, _ = r.SendMessageWithMeta(ctx, source, session.LastOutput, agentID, replyMeta)
 		}
 		r.ackContextEvents(bgCtx, agentID, rawContextEvents)
 		return session, nil
@@ -993,7 +997,11 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 				} else {
 					reply = fmt.Sprintf("%s\n\n[error] %s", reply, session.LastError)
 				}
-				_, _ = r.SendMessageWithMeta(ctx, source, reply, agentID, nil)
+				var replyMeta map[string]any
+				if reqID := schema.GetMetaString(messageMeta, "request_id"); reqID != "" {
+					replyMeta = map[string]any{"request_id": reqID}
+				}
+				_, _ = r.SendMessageWithMeta(ctx, source, reply, agentID, replyMeta)
 			}
 			return session, err
 		}
@@ -1030,7 +1038,11 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 		})
 	}
 	if source != "" && source != agentID && strings.TrimSpace(output) != "" {
-		_, _ = r.SendMessageWithMeta(ctx, source, output, agentID, nil)
+		var replyMeta map[string]any
+		if reqID := schema.GetMetaString(messageMeta, "request_id"); reqID != "" {
+			replyMeta = map[string]any{"request_id": reqID}
+		}
+		_, _ = r.SendMessageWithMeta(ctx, source, output, agentID, replyMeta)
 	}
 	return session, nil
 }
@@ -1416,9 +1428,12 @@ func eventPriority(metadata map[string]any) string {
 
 func eventPriorityForEvent(evt eventbus.Event) string {
 	priority := eventPriority(evt.Metadata)
-	if priority == "normal" && schema.GetMetaString(evt.Metadata, "kind") == "message" {
-		if schema.GetMetaString(evt.Metadata, "priority") == "" {
+	if schema.GetMetaString(evt.Metadata, "kind") == "message" {
+		switch priority {
+		case "normal":
 			return "wake"
+		case "wake":
+			return "interrupt"
 		}
 	}
 	return priority
@@ -1769,6 +1784,13 @@ func buildInputWithHistory(source, message string, metadata map[string]any, turn
 		b.WriteString("  <message>")
 		b.WriteString(xmlEscape(message))
 		b.WriteString("</message>\n")
+	}
+	if ctx, ok := metadata["context"]; ok {
+		if ctxJSON := previewJSON(ctx, maxContextEventBodyWake); ctxJSON != "" {
+			b.WriteString("  <context>")
+			b.WriteString(xmlEscape(ctxJSON))
+			b.WriteString("</context>\n")
+		}
 	}
 
 	b.WriteString(indentXML(renderContextUpdatesXML(turnCtx, frame), "  "))

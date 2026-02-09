@@ -242,7 +242,14 @@ func (m *Manager) Spawn(ctx context.Context, spec Spec) (Task, error) {
 	}
 
 	if m.bus != nil {
-		scopeType, scopeID := scopeForTarget(schema.GetMetaString(metadata, "input_target"))
+		target := schema.GetMetaString(metadata, "input_target")
+		if target == "" {
+			target = schema.GetMetaString(metadata, "notify_target")
+		}
+		if target == "" {
+			target = strings.TrimSpace(spec.Owner)
+		}
+		scopeType, scopeID := scopeForTarget(target)
 		_, _ = m.bus.Push(ctx, eventbus.EventInput{
 			Stream:    schema.StreamSignals,
 			ScopeType: scopeType,

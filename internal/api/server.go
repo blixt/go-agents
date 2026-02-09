@@ -188,16 +188,17 @@ func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request, taskID s
 			return
 		}
 		source := strings.TrimSpace(payload.Source)
-		priority := string(schema.ParsePriority(payload.Priority))
 		s.Runtime.EnsureAgentLoop(taskID)
 		requestID := strings.TrimSpace(payload.RequestID)
 		if requestID == "" {
 			requestID = idgen.New()
 		}
 		meta := map[string]any{
-			"priority":   priority,
 			"request_id": requestID,
 			"kind":       "message",
+		}
+		if strings.TrimSpace(payload.Priority) != "" {
+			meta["priority"] = string(schema.ParsePriority(payload.Priority))
 		}
 		if len(payload.Context) > 0 {
 			meta["context"] = payload.Context

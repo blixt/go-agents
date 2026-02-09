@@ -15,6 +15,8 @@ type ServiceState = {
   runTsMtime: number
   /** mtime of ~/.go-agents/.env when service was last spawned */
   dotEnvMtime: number
+  generation: number
+  pendingExit: Promise<void> | null
 }
 
 const MIN_BACKOFF = 1000
@@ -23,6 +25,8 @@ const HEALTHY_THRESHOLD = 60_000
 const SCAN_INTERVAL = 2000
 const MAX_LOG_BYTES = 1_000_000
 const TRUNCATE_TO_BYTES = 500_000
+const DRAIN_DELAY = 2000    // ms after process exit for network cleanup
+const KILL_TIMEOUT = 5000   // ms before SIGKILL escalation
 
 const services = new Map<string, ServiceState>()
 let goAgentsHome = ""
@@ -101,6 +105,8 @@ function scan(): void {
     }
 
     if (existing) {
+      // Skip services that are still draining
+      if (existing.pendingExit) continue
       // Check if run.ts or .env changed since last spawn — if so, restart
       const currentRunMtime = fileMtime(runFile)
       const currentEnvMtime = fileMtime(dotEnvPath())
@@ -114,7 +120,7 @@ function scan(): void {
         stopService(existing)
         existing.backoffMs = MIN_BACKOFF
         existing.restartCount = 0
-        installAndStart(existing)
+        installAndStart(existing).catch(err => console.error(`[supervisor] restart failed for ${name}:`, err))
       }
       continue
     }
@@ -130,9 +136,11 @@ function scan(): void {
       logFile: join(dir, "output.log"),
       runTsMtime: 0,
       dotEnvMtime: 0,
+      generation: 0,
+      pendingExit: null,
     }
     services.set(name, svc)
-    installAndStart(svc)
+    installAndStart(svc).catch(err => console.error(`[supervisor] start failed for ${name}:`, err))
   }
 
   // Stop services whose directories were removed
@@ -144,7 +152,7 @@ function scan(): void {
   }
 }
 
-function installAndStart(svc: ServiceState): void {
+async function installAndStart(svc: ServiceState): Promise<void> {
   const pkgJson = join(svc.dir, "package.json")
   const nodeModules = join(svc.dir, "node_modules")
 
@@ -160,10 +168,19 @@ function installAndStart(svc: ServiceState): void {
     }
   }
 
-  spawnService(svc)
+  await spawnService(svc)
 }
 
-function spawnService(svc: ServiceState): void {
+async function spawnService(svc: ServiceState): Promise<void> {
+  // Wait for previous process to fully drain before starting a new one
+  if (svc.pendingExit) {
+    await svc.pendingExit
+    svc.pendingExit = null
+  }
+
+  svc.generation++
+  const gen = svc.generation
+
   const dotEnvVars = dotEnvLoader ? dotEnvLoader() : {}
   const runFile = join(svc.dir, "run.ts")
   const envFile = dotEnvPath()
@@ -227,6 +244,9 @@ function spawnService(svc: ServiceState): void {
   pipeToLog(svc, proc.stderr)
 
   proc.exited.then((exitCode) => {
+    // Bail if a newer generation has taken over
+    if (svc.generation !== gen) return
+
     svc.proc = null
 
     // Check if service was intentionally stopped
@@ -241,8 +261,9 @@ function spawnService(svc: ServiceState): void {
     }
     svc.restartCount++
 
+    const delay = Math.max(svc.backoffMs, DRAIN_DELAY)
     console.error(
-      `[supervisor] service ${svc.name} exited (code ${exitCode}), restarting in ${svc.backoffMs}ms`,
+      `[supervisor] service ${svc.name} exited (code ${exitCode}), restarting in ${delay}ms`,
     )
 
     svc.restartTimer = setTimeout(() => {
@@ -250,7 +271,7 @@ function spawnService(svc: ServiceState): void {
       if (services.has(svc.name)) {
         spawnService(svc)
       }
-    }, svc.backoffMs)
+    }, delay)
   })
 }
 
@@ -299,12 +320,18 @@ function stopService(svc: ServiceState): void {
     clearTimeout(svc.restartTimer)
     svc.restartTimer = null
   }
-  if (svc.proc) {
-    try {
-      svc.proc.kill()
-    } catch {
-      // already dead
-    }
-    svc.proc = null
+  const proc = svc.proc
+  if (!proc) return
+  svc.proc = null
+  try {
+    proc.kill()
+  } catch {
+    // already dead
   }
+  const killTimer = setTimeout(() => {
+    try { proc.kill(9) } catch { /* already dead */ }
+  }, KILL_TIMEOUT)
+  svc.pendingExit = proc.exited
+    .then(() => Bun.sleep(DRAIN_DELAY))
+    .finally(() => clearTimeout(killTimer))
 }
