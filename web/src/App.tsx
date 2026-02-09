@@ -9,17 +9,16 @@ const SELECTED_AGENT_STORAGE_KEY = "go-agents.selected-agent";
 export function App(): React.ReactElement {
   const { state, status, refresh } = useRuntimeState();
   const darkMode = usePrefersDark();
-  const [selectedAgent, setSelectedAgent] = useState(() => {
-    if (typeof window === "undefined") {
-      return "";
-    }
-    return (window.localStorage.getItem(SELECTED_AGENT_STORAGE_KEY) || "").trim();
-  });
-  const [newAgentId, setNewAgentId] = useState("");
+  const [selectedAgent, setSelectedAgent] = useState("");
+  const savedAgentRef = useRef(
+    typeof window !== "undefined" ? (window.localStorage.getItem(SELECTED_AGENT_STORAGE_KEY) || "").trim() : "",
+  );
+  const [newAgentId, setNewAgentId] = useState("operator");
   const [message, setMessage] = useState("");
   const [sendStatus, setSendStatus] = useState("");
   const [compactStatus, setCompactStatus] = useState("");
   const timelineRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const agents = useMemo(() => {
     const fromServer = Array.isArray(state.agents) ? (state.agents as Agent[]) : [];
@@ -38,12 +37,10 @@ export function App(): React.ReactElement {
         ...fromServer,
       ];
     }
+    // No agents from server — build from server-known IDs only (no localStorage phantoms).
     const ids = new Set<string>();
     Object.keys(state.histories || {}).forEach((id) => ids.add(id));
     Object.keys(state.sessions || {}).forEach((id) => ids.add(id));
-    if (selectedAgent) {
-      ids.add(selectedAgent);
-    }
     return Array.from(ids)
       .filter((id) => typeof id === "string" && id.trim() !== "")
       .map((id) => ({
@@ -56,10 +53,13 @@ export function App(): React.ReactElement {
   }, [selectedAgent, state.agents, state.histories, state.sessions]);
 
   useEffect(() => {
-    if (selectedAgent) {
-      return;
-    }
-    if (agents.length > 0) {
+    if (agents.length === 0) return;
+    if (selectedAgent && agents.some((a) => a.id === selectedAgent)) return;
+    // Restore saved selection if the server knows about it, otherwise pick the first agent.
+    const saved = savedAgentRef.current;
+    if (saved && agents.some((a) => a.id === saved)) {
+      setSelectedAgent(saved);
+    } else {
       setSelectedAgent(agents[0]?.id || "");
     }
   }, [agents, selectedAgent]);
@@ -69,10 +69,16 @@ export function App(): React.ReactElement {
       return;
     }
     if (selectedAgent) {
+      savedAgentRef.current = selectedAgent;
       window.localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, selectedAgent);
       return;
     }
     window.localStorage.removeItem(SELECTED_AGENT_STORAGE_KEY);
+  }, [selectedAgent]);
+
+  // Autofocus the textarea on mount and when the selected agent changes.
+  useEffect(() => {
+    textareaRef.current?.focus();
   }, [selectedAgent]);
 
   const selectedHistory = (state.histories?.[selectedAgent] || { generation: 1, entries: [] }) as History;
@@ -131,7 +137,7 @@ export function App(): React.ReactElement {
       }
       if (!selectedAgent) {
         setSelectedAgent(targetAgent);
-        setNewAgentId("");
+        setNewAgentId("operator");
       }
       setMessage("");
       setSendStatus("sent");
@@ -234,6 +240,8 @@ export function App(): React.ReactElement {
               </div>
             ) : null}
             <textarea
+              ref={textareaRef}
+              autoFocus
               value={message}
               onChange={(event) => setMessage(event.target.value)}
               onKeyDown={(event) => {
