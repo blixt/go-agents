@@ -1,12 +1,12 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/flitsinc/go-agents/internal/engine"
 	"github.com/flitsinc/go-agents/internal/idgen"
-	"github.com/flitsinc/go-agents/internal/schema"
 	"github.com/flitsinc/go-agents/internal/tasks"
 )
 
@@ -47,12 +47,10 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	}
 	taskType := strings.TrimSpace(payload.Type)
 	if taskType == "" {
-		taskType = "agent"
+		writeError(w, http.StatusBadRequest, fmt.Errorf("type is required"))
+		return
 	}
 	source := strings.TrimSpace(payload.Source)
-	if source == "" {
-		source = "external"
-	}
 
 	if s.Tasks == nil {
 		writeError(w, http.StatusInternalServerError, errNotFound("task manager"))
@@ -133,11 +131,4 @@ func (s *Server) handleTaskCompact(w http.ResponseWriter, r *http.Request, taskI
 		"task_id":    taskID,
 		"generation": generation,
 	})
-}
-
-func normalizePriority(raw string) string {
-	if strings.TrimSpace(raw) == "" {
-		return string(schema.PriorityWake)
-	}
-	return string(schema.ParsePriority(raw))
 }

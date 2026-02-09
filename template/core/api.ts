@@ -38,22 +38,6 @@ export async function createAgent(opts: {
   return (await res.json()) as { task_id: string; status: string; created: boolean }
 }
 
-/** Create a task (agent or exec). Lower-level API for advanced use. */
-export async function createTask(opts: {
-  id?: string
-  type?: "agent" | "exec"
-  payload?: Record<string, unknown>
-  source?: string
-}): Promise<{ task_id: string; status: string; type: string; created: boolean }> {
-  const res = await request("POST", "/api/tasks", {
-    id: opts.id,
-    type: opts.type || "exec",
-    payload: opts.payload,
-    source: opts.source,
-  })
-  return (await res.json()) as { task_id: string; status: string; type: string; created: boolean }
-}
-
 /** Send input to an existing task. For agent tasks, delivers a message. 404 if not found. */
 export async function sendInput(
   taskId: string,

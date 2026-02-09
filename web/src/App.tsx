@@ -15,6 +15,7 @@ export function App(): React.ReactElement {
     }
     return (window.localStorage.getItem(SELECTED_AGENT_STORAGE_KEY) || "").trim();
   });
+  const [newAgentId, setNewAgentId] = useState("");
   const [message, setMessage] = useState("");
   const [sendStatus, setSendStatus] = useState("");
   const [compactStatus, setCompactStatus] = useState("");
@@ -96,10 +97,16 @@ export function App(): React.ReactElement {
   const handleSend = useCallback(async () => {
     const trimmed = message.trim();
     if (!trimmed) return;
+
+    // Resolve the target: selected agent, or the new agent ID field.
+    const targetAgent = selectedAgent || newAgentId.trim();
+    if (!targetAgent) {
+      setSendStatus("enter an agent ID first");
+      return;
+    }
+
     setSendStatus("sending");
     try {
-      // Determine the target agent — use the selected one or upsert "operator".
-      const targetAgent = selectedAgent || "operator";
       // Upsert: create the agent if it doesn't exist (idempotent).
       const createRes = await fetch("/api/tasks", {
         method: "POST",
@@ -115,7 +122,7 @@ export function App(): React.ReactElement {
       const res = await fetch(`/api/tasks/${encodeURIComponent(targetAgent)}/send`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: trimmed, source: "external", priority: "wake" }),
+        body: JSON.stringify({ message: trimmed, source: "web", priority: "wake" }),
       });
       if (!res.ok) {
         const text = await res.text();
@@ -124,6 +131,7 @@ export function App(): React.ReactElement {
       }
       if (!selectedAgent) {
         setSelectedAgent(targetAgent);
+        setNewAgentId("");
       }
       setMessage("");
       setSendStatus("sent");
@@ -132,7 +140,7 @@ export function App(): React.ReactElement {
       const errorMessage = err instanceof Error ? err.message : String(err);
       setSendStatus(`error: ${errorMessage}`);
     }
-  }, [message, refresh, selectedAgent]);
+  }, [message, refresh, selectedAgent, newAgentId]);
 
   const handleCompact = useCallback(async () => {
     if (!selectedAgent) {
@@ -192,7 +200,7 @@ export function App(): React.ReactElement {
                 <StatusBadge status={agent.status || "idle"} />
               </button>
             ))}
-            {agents.length === 0 ? <div className="muted">No agents yet. Send a message to create one.</div> : null}
+            {agents.length === 0 ? <div className="muted">No agents yet.</div> : null}
           </div>
         </aside>
         <section className="panel detail">
@@ -214,6 +222,17 @@ export function App(): React.ReactElement {
             )}
           </div>
           <div className="composer">
+            {!selectedAgent ? (
+              <div className="new-agent-row">
+                <label>Agent ID</label>
+                <input
+                  type="text"
+                  value={newAgentId}
+                  onChange={(event) => setNewAgentId(event.target.value)}
+                  placeholder="e.g. operator"
+                />
+              </div>
+            ) : null}
             <textarea
               value={message}
               onChange={(event) => setMessage(event.target.value)}
@@ -223,7 +242,7 @@ export function App(): React.ReactElement {
                   void handleSend();
                 }
               }}
-              placeholder={selectedAgent ? `Message ${selectedAgent}...` : "Message a new agent..."}
+              placeholder={selectedAgent ? `Message ${selectedAgent}...` : "Type a message for the new agent..."}
             />
             <div className="composer-actions">
               <button onClick={() => void handleSend()}>Send</button>

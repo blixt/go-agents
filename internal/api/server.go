@@ -188,10 +188,7 @@ func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request, taskID s
 			return
 		}
 		source := strings.TrimSpace(payload.Source)
-		if source == "" {
-			source = "external"
-		}
-		priority := normalizePriority(payload.Priority)
+		priority := string(schema.ParsePriority(payload.Priority))
 		s.Runtime.EnsureAgentLoop(taskID)
 		requestID := strings.TrimSpace(payload.RequestID)
 		if requestID == "" {

@@ -390,11 +390,10 @@ const subagent = await agent({ message: "..." })
 ## core/api — Runtime API
 
 \`\`\`ts
-import { createAgent, createTask, sendInput, getUpdates, getState, subscribe, cancelTask } from "core/api"
+import { createAgent, sendInput, getUpdates, getState, subscribe, cancelTask } from "core/api"
 \`\`\`
 
 - createAgent(opts) — Create or ensure an agent exists. Upserts by id — safe to call on every restart. Accepts optional system, model, source.
-- createTask(opts) — Lower-level task creation for exec tasks or custom payloads.
 - sendInput(taskId, message, opts?) — Send input to an existing task. Returns 404 if the task doesn't exist. Accepts optional \`context\` metadata.
 - getUpdates(taskId, opts?) — Read task stdout, stderr, and status updates.
 - getState() — Get full runtime state (all agents, tasks, events).
