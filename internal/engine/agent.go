@@ -886,6 +886,10 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 			case llms.ThinkingDoneUpdate:
 				r.recordLLMUpdate(llmCtx, llmTask.ID, "llm_thinking_done", map[string]any{"done": true})
 			case llms.ToolStartUpdate:
+				// Flush pre-tool text so it appears before tool events in history.
+				if pendingText := strings.TrimPrefix(output, publishedAssistantPrefix); strings.TrimSpace(pendingText) != "" {
+					publishAssistantTurn(lastLLMTurn, pendingText, true)
+				}
 				r.recordLLMUpdate(llmCtx, llmTask.ID, "llm_tool_start", map[string]any{
 					"tool_call_id": u.ToolCallID,
 					"tool_name":    u.Tool.FuncName(),
