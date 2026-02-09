@@ -441,11 +441,9 @@ export function EntryCard({ entry, darkMode }: { entry: DisplayEntry; darkMode: 
           <span className="history-title compact">{typed.tool_name || "tool"}</span>
           <StatusBadge status={typed.tool_status || "running"} />
         </div>
-        {typed.tool_call_id ? <div className="muted mono">call: {typed.tool_call_id}</div> : null}
         {renderToolArgs(typed, darkMode)}
         {renderMaybeCollapsedJSON("Result", typed.result, { collapseAt: 600, darkMode })}
         {typed.result_error ? <div className="error">{typed.result_error}</div> : null}
-        {renderMaybeCollapsedJSON("Metadata", typed.metadata, { collapseAt: 380, darkMode })}
       </div>
     );
   }

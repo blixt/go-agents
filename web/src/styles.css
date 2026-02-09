@@ -275,8 +275,12 @@ h2 {
   border-left: 4px solid color-mix(in srgb, var(--muted) 75%, transparent);
 }
 
+.history-system {
+  border-left: 4px solid color-mix(in srgb, var(--muted) 75%, transparent);
+}
+
 .history-compaction {
-  border-left: 4px solid var(--danger);
+  border-left: 4px solid color-mix(in srgb, var(--muted) 75%, transparent);
 }
 
 .history-meta {
