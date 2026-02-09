@@ -144,9 +144,10 @@ Agents are tasks. For longer, parallel, or specialized work, spawn a subagent vi
 \`\`\`ts
 import { agent } from "core/agent.ts"
 
+// agent() creates the agent (upsert) then sends the message — two steps in one helper.
 const subagent = await agent({
-  id: "log-analyst",                   // optional: custom task ID
-  message: "Analyze the error logs",   // required
+  id: "log-analyst",                   // optional: custom task ID (upserts)
+  message: "Analyze the error logs",   // required — sent after creation
   system: "You are a log analyst",     // optional system prompt override
   model: "fast",                       // optional: "fast" | "balanced" | "smart"
 })
@@ -225,20 +226,26 @@ function servicesBlock() {
 
 For long-running background processes (bots, pollers, scheduled jobs), use the services/ convention:
 
-When sending input to an agent, use \`context\` to pass along any metadata the agent might need (e.g. where to send a reply).
+When building a service that communicates with an agent, follow the "create then send" pattern:
+1. Call createAgent with a custom id (this upserts — safe on every restart).
+2. Call sendInput to deliver each message, with context carrying any metadata the agent needs.
 
 ## Creating a service
 
 \`\`\`ts
 // Write a service entry point
 await Bun.write("services/my-service/run.ts", \`
-import { sendInput } from "core/api"
+import { createAgent, sendInput } from "core/api"
+
+// Upsert the agent on every restart — safe and idempotent.
+await createAgent({ id: "operator", system: "You are a helpful assistant." })
 
 // This process runs continuously, supervised by the runtime.
 // It will be restarted automatically if it crashes.
 
 while (true) {
   // ... your logic here (poll an API, listen on a port, etc.)
+  // await sendInput("operator", "new data arrived", { context: { reply_to: "..." } })
   await Bun.sleep(60_000)
 }
 \`)
@@ -383,11 +390,12 @@ const subagent = await agent({ message: "..." })
 ## core/api — Runtime API
 
 \`\`\`ts
-import { createTask, sendInput, getUpdates, getState, subscribe, cancelTask } from "core/api"
+import { createAgent, createTask, sendInput, getUpdates, getState, subscribe, cancelTask } from "core/api"
 \`\`\`
 
-- createTask(opts) — Create agent or exec tasks programmatically. Accepts optional \`context\` metadata.
-- sendInput(taskId, message, opts?) — Send input to a task. Accepts optional \`context\` metadata.
+- createAgent(opts) — Create or ensure an agent exists. Upserts by id — safe to call on every restart. Accepts optional system, model, source.
+- createTask(opts) — Lower-level task creation for exec tasks or custom payloads.
+- sendInput(taskId, message, opts?) — Send input to an existing task. Returns 404 if the task doesn't exist. Accepts optional \`context\` metadata.
 - getUpdates(taskId, opts?) — Read task stdout, stderr, and status updates.
 - getState() — Get full runtime state (all agents, tasks, events).
 - subscribe(opts?) — Subscribe to real-time event streams (SSE).

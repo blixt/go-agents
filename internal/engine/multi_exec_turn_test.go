@@ -223,6 +223,7 @@ func TestRunOnceMultiExecNextTurnOnAnyExecCompletion(t *testing.T) {
 	}, "all done")
 	client := &ai.Client{LLM: llms.New(provider, agenttools.ExecTool(mgr))}
 	rt := NewRuntime(bus, mgr, client)
+	createTestAgent(t, mgr, "operator")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -273,6 +274,7 @@ func TestRunOnceMultiExecNextTurnOnExecTimeout(t *testing.T) {
 	}, "timed out and continued")
 	client := &ai.Client{LLM: llms.New(provider, agenttools.ExecTool(mgr))}
 	rt := NewRuntime(bus, mgr, client)
+	createTestAgent(t, mgr, "operator")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -324,6 +326,7 @@ func TestRunOnceMultiExecNextTurnOnExternalWakeWhileWaiting(t *testing.T) {
 	}, "woken and continued")
 	client := &ai.Client{LLM: llms.New(provider, agenttools.ExecTool(mgr))}
 	rt := NewRuntime(bus, mgr, client)
+	createTestAgent(t, mgr, "operator")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

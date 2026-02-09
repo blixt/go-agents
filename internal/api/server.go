@@ -182,6 +182,11 @@ func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request, taskID s
 	// If a message is provided and we have a runtime, deliver it as an agent message.
 	message := strings.TrimSpace(payload.Message)
 	if message != "" && s.Runtime != nil {
+		// Verify the task exists before delivering. No auto-creation.
+		if _, err := s.Tasks.Get(r.Context(), taskID); err != nil {
+			writeError(w, http.StatusNotFound, errNotFound("task"))
+			return
+		}
 		source := strings.TrimSpace(payload.Source)
 		if source == "" {
 			source = "external"

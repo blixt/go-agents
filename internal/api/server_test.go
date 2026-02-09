@@ -104,7 +104,7 @@ func TestServerStateAndQueue(t *testing.T) {
 	}
 }
 
-func TestServerCreateTaskWithName(t *testing.T) {
+func TestServerCreateTaskUpsert(t *testing.T) {
 	db, closeFn := testutil.OpenTestDB(t)
 	defer closeFn()
 
@@ -115,32 +115,38 @@ func TestServerCreateTaskWithName(t *testing.T) {
 	server := &Server{Tasks: mgr, Bus: bus, Runtime: rt}
 	client := testutil.NewInProcessClient(server.Handler())
 
+	// First call creates the agent.
 	resp := doJSON(t, client, "POST", "/api/tasks", map[string]any{
-		"type":    "agent",
-		"name":    "planner",
-		"payload": map[string]any{"message": "first"},
+		"type": "agent",
+		"id":   "planner",
 	})
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("create task status: %d body=%s", resp.StatusCode, readBody(t, resp))
 	}
 	var first map[string]any
 	decodeJSONResponse(t, resp, &first)
-	if first["task_id"] != "planner-1" {
-		t.Fatalf("expected planner-1, got %#v", first["task_id"])
+	if first["task_id"] != "planner" {
+		t.Fatalf("expected planner, got %#v", first["task_id"])
+	}
+	if first["created"] != true {
+		t.Fatalf("expected created=true, got %#v", first["created"])
 	}
 
+	// Second call upserts — returns the existing agent.
 	resp = doJSON(t, client, "POST", "/api/tasks", map[string]any{
-		"type":    "agent",
-		"name":    "planner",
-		"payload": map[string]any{"message": "second"},
+		"type": "agent",
+		"id":   "planner",
 	})
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("create task status: %d body=%s", resp.StatusCode, readBody(t, resp))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("upsert task status: %d body=%s", resp.StatusCode, readBody(t, resp))
 	}
 	var second map[string]any
 	decodeJSONResponse(t, resp, &second)
-	if second["task_id"] != "planner-2" {
-		t.Fatalf("expected planner-2, got %#v", second["task_id"])
+	if second["task_id"] != "planner" {
+		t.Fatalf("expected planner, got %#v", second["task_id"])
+	}
+	if second["created"] != false {
+		t.Fatalf("expected created=false, got %#v", second["created"])
 	}
 }
 

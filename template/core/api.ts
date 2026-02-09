@@ -19,29 +19,42 @@ async function request(method: string, path: string, body?: unknown): Promise<Re
   return res
 }
 
-/** Create a task (agent or exec). Returns { task_id, status, type }. */
+/** Create or ensure an agent exists. Upserts by id. */
+export async function createAgent(opts: {
+  id?: string
+  system?: string
+  model?: string
+  source?: string
+}): Promise<{ task_id: string; status: string; created: boolean }> {
+  const res = await request("POST", "/api/tasks", {
+    id: opts.id,
+    type: "agent",
+    payload: {
+      ...(opts.system && { system: opts.system }),
+      ...(opts.model && { model: opts.model }),
+    },
+    source: opts.source,
+  })
+  return (await res.json()) as { task_id: string; status: string; created: boolean }
+}
+
+/** Create a task (agent or exec). Lower-level API for advanced use. */
 export async function createTask(opts: {
   id?: string
   type?: "agent" | "exec"
-  name?: string
   payload?: Record<string, unknown>
   source?: string
-  priority?: "interrupt" | "wake" | "normal" | "low"
-  context?: Record<string, unknown>
-}): Promise<{ task_id: string; status: string; type: string }> {
+}): Promise<{ task_id: string; status: string; type: string; created: boolean }> {
   const res = await request("POST", "/api/tasks", {
     id: opts.id,
     type: opts.type || "exec",
-    name: opts.name,
     payload: opts.payload,
     source: opts.source,
-    priority: opts.priority,
-    context: opts.context,
   })
-  return (await res.json()) as { task_id: string; status: string; type: string }
+  return (await res.json()) as { task_id: string; status: string; type: string; created: boolean }
 }
 
-/** Send input to a task. For agent tasks, delivers a message. */
+/** Send input to an existing task. For agent tasks, delivers a message. 404 if not found. */
 export async function sendInput(
   taskId: string,
   message: string,
@@ -49,15 +62,12 @@ export async function sendInput(
 ): Promise<void> {
   await request("POST", `/api/tasks/${encodeURIComponent(taskId)}/send`, {
     message,
-    source: opts?.source || "agent",
-    priority: opts?.priority || "wake",
+    source: opts?.source,
+    priority: opts?.priority,
     request_id: opts?.request_id,
     context: opts?.context,
   })
 }
-
-/** @deprecated Use sendInput instead. */
-export const sendMessage = sendInput
 
 /** Get updates for a task (stdout, stderr, start, exit, etc.). */
 export async function getUpdates(

@@ -1,4 +1,4 @@
-import { createTask, sendInput } from "./api.ts"
+import { createAgent, sendInput } from "./api.ts"
 
 type AgentModel = "fast" | "balanced" | "smart"
 
@@ -24,32 +24,30 @@ export async function agent(options: AgentOptions): Promise<AgentResult> {
   if (!options || !options.message || options.message.trim() === "") {
     throw new Error("agent: message is required")
   }
-  const targetTaskID = options.task_id && options.task_id.trim() ? options.task_id.trim() : ""
+
+  let taskId: string
+  const targetTaskID = options.task_id?.trim()
+
   if (targetTaskID) {
-    await sendInput(targetTaskID, options.message, {
-      source: options.source || "agent",
-      priority: options.priority || "wake",
-      request_id: options.request_id,
-      context: options.context,
-    })
-    return { task_id: targetTaskID }
-  }
-  const result = await createTask({
-    id: options.id,
-    type: "agent",
-    payload: {
-      message: options.message,
+    taskId = targetTaskID
+  } else {
+    const result = await createAgent({
+      id: options.id,
       system: options.system,
       model: options.model,
-    },
-    source: options.source || "agent",
-    priority: options.priority || "wake",
+      source: options.source,
+    })
+    taskId = result.task_id
+  }
+
+  await sendInput(taskId, options.message, {
+    source: options.source,
+    priority: options.priority,
+    request_id: options.request_id,
     context: options.context,
   })
-  return {
-    task_id: result.task_id || "",
-    status: result.status,
-  }
+
+  return { task_id: taskId }
 }
 
 export type { AgentOptions, AgentResult, AgentModel }

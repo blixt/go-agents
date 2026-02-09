@@ -491,29 +491,13 @@ func (r *Runtime) ensureRootTask(ctx context.Context, taskID string) (tasks.Task
 	if strings.TrimSpace(taskID) == "" {
 		return tasks.Task{}, fmt.Errorf("task_id is required")
 	}
-	// The agent IS the task — look up by ID directly
+	// The agent IS the task — look up by ID directly.
+	// Tasks must be created explicitly via createAgent / handleCreateTask.
 	task, err := r.Tasks.Get(ctx, taskID)
 	if err == nil && task.ID != "" {
 		return task, nil
 	}
-	// Create a root agent task if it doesn't exist yet.
-	// Use the exact taskID as the task ID so agent identity = task identity.
-	metadata := map[string]any{
-		"input_target":  taskID,
-		"notify_target": taskID,
-	}
-	created, err := r.Tasks.Spawn(ctx, tasks.Spec{
-		ID:       taskID,
-		Type:     "agent",
-		Owner:    taskID,
-		Mode:     "async",
-		Metadata: metadata,
-	})
-	if err != nil {
-		return tasks.Task{}, err
-	}
-	_ = r.Tasks.MarkRunning(ctx, created.ID)
-	return created, nil
+	return tasks.Task{}, fmt.Errorf("agent task %q not found — create it first", taskID)
 }
 
 func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message string, messageMeta map[string]any) (Session, error) {

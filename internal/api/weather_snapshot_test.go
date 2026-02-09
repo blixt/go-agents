@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/flitsinc/go-agents/internal/tasks"
 	"github.com/flitsinc/go-llms/content"
 	"github.com/flitsinc/go-llms/llms"
 )
@@ -72,6 +73,22 @@ globalThis.result = {
 			}),
 		},
 	})
+
+	// Pre-create the agent task — ensureRootTask no longer auto-creates.
+	_, err := fixture.Manager.Spawn(context.Background(), tasks.Spec{
+		ID:    "operator",
+		Type:  "agent",
+		Owner: "operator",
+		Mode:  "async",
+		Metadata: map[string]any{
+			"input_target":  "operator",
+			"notify_target": "operator",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create operator task: %v", err)
+	}
+	_ = fixture.Manager.MarkRunning(context.Background(), "operator")
 
 	session, err := fixture.Runtime.RunOnce(context.Background(), "operator", "what's the weather in amsterdam")
 	if err != nil {

@@ -98,28 +98,32 @@ export function App(): React.ReactElement {
     if (!trimmed) return;
     setSendStatus("sending");
     try {
-      let res: Response;
-      if (selectedAgent) {
-        res = await fetch(`/api/tasks/${encodeURIComponent(selectedAgent)}/send`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: trimmed, source: "external", priority: "wake" }),
-        });
-      } else {
-        res = await fetch("/api/tasks", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ type: "agent", payload: { message: trimmed }, source: "external", priority: "wake" }),
-        });
+      // Determine the target agent — use the selected one or upsert "operator".
+      const targetAgent = selectedAgent || "operator";
+      // Upsert: create the agent if it doesn't exist (idempotent).
+      const createRes = await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: targetAgent, type: "agent" }),
+      });
+      if (!createRes.ok) {
+        const text = await createRes.text();
+        setSendStatus(`error ${createRes.status}: ${text}`);
+        return;
       }
+      // Send the message to the agent.
+      const res = await fetch(`/api/tasks/${encodeURIComponent(targetAgent)}/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: trimmed, source: "external", priority: "wake" }),
+      });
       if (!res.ok) {
         const text = await res.text();
         setSendStatus(`error ${res.status}: ${text}`);
         return;
       }
-      const data = await res.json().catch(() => null);
-      if (data && typeof data.task_id === "string" && data.task_id.trim() !== "") {
-        setSelectedAgent(data.task_id.trim());
+      if (!selectedAgent) {
+        setSelectedAgent(targetAgent);
       }
       setMessage("");
       setSendStatus("sent");

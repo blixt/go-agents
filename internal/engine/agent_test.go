@@ -20,6 +20,25 @@ import (
 	llmtools "github.com/flitsinc/go-llms/tools"
 )
 
+// createTestAgent pre-creates an agent task so tests can call RunOnce/HandleMessage.
+func createTestAgent(t *testing.T, mgr *tasks.Manager, agentID string) {
+	t.Helper()
+	_, err := mgr.Spawn(context.Background(), tasks.Spec{
+		ID:    agentID,
+		Type:  "agent",
+		Owner: agentID,
+		Mode:  "async",
+		Metadata: map[string]any{
+			"input_target":  agentID,
+			"notify_target": agentID,
+		},
+	})
+	if err != nil {
+		t.Fatalf("create agent task %q: %v", agentID, err)
+	}
+	_ = mgr.MarkRunning(context.Background(), agentID)
+}
+
 type fakeProvider struct{}
 
 type fakeStream struct{}
@@ -191,6 +210,7 @@ func TestRuntimeRunOnceStoresSession(t *testing.T) {
 	mgr := tasks.NewManager(db, bus)
 	client := &ai.Client{LLM: llms.New(&fakeProvider{})}
 	rt := NewRuntime(bus, mgr, client)
+	createTestAgent(t, mgr, "operator")
 
 	session, err := rt.RunOnce(context.Background(), "operator", "hello")
 	if err != nil {
@@ -224,6 +244,9 @@ func TestRuntimeInterruptCancelsLLM(t *testing.T) {
 	rt := NewRuntime(bus, mgr, client)
 
 	ctx := context.Background()
+
+	createTestAgent(t, mgr, "operator")
+
 	done := make(chan error, 1)
 	var session Session
 	go func() {
@@ -285,6 +308,7 @@ func TestRuntimeSelfEventsPreReadBySourceID(t *testing.T) {
 	cp := &captureProvider{}
 	client := &ai.Client{LLM: llms.New(cp)}
 	rt := NewRuntime(bus, mgr, client)
+	createTestAgent(t, mgr, "agent-a")
 
 	// Seed LLM tasks as if agent-a produced them (context carries agentID).
 	agentCtx := agentcontext.WithTaskID(context.Background(), "agent-a")
@@ -342,6 +366,7 @@ func TestRuntimeInjectsAndAcksContextUpdates(t *testing.T) {
 	cp := &captureProvider{}
 	client := &ai.Client{LLM: llms.New(cp)}
 	rt := NewRuntime(bus, mgr, client)
+	createTestAgent(t, mgr, "agent-a")
 
 	ctx := context.Background()
 	evt, err := bus.Push(ctx, eventbus.EventInput{
@@ -520,6 +545,7 @@ func TestRuntimeInjectsTimeAndDateSystemUpdates(t *testing.T) {
 	cp := &captureProvider{}
 	client := &ai.Client{LLM: llms.New(cp)}
 	rt := NewRuntime(bus, mgr, client)
+	createTestAgent(t, mgr, "agent-a")
 
 	now := time.Now().UTC()
 	rt.turnMu.Lock()
@@ -551,6 +577,7 @@ func TestRuntimeSkipsLLMDebugSignalsInPromptContext(t *testing.T) {
 	cp := &captureProvider{}
 	client := &ai.Client{LLM: llms.New(cp)}
 	rt := NewRuntime(bus, mgr, client)
+	createTestAgent(t, mgr, "agent-a")
 
 	evt, err := bus.Push(context.Background(), eventbus.EventInput{
 		Stream:    "signals",
@@ -607,6 +634,7 @@ func TestRuntimeAppendsAgentHistoryEntries(t *testing.T) {
 	mgr := tasks.NewManager(db, bus)
 	client := &ai.Client{LLM: llms.New(&fakeProvider{})}
 	rt := NewRuntime(bus, mgr, client)
+	createTestAgent(t, mgr, "agent-a")
 
 	if _, err := rt.RunOnce(context.Background(), "agent-a", "hello history"); err != nil {
 		t.Fatalf("run once: %v", err)
@@ -655,6 +683,7 @@ func TestRuntimeWritesSystemPromptAndToolsConfigOncePerGeneration(t *testing.T) 
 	mgr := tasks.NewManager(db, bus)
 	client := &ai.Client{LLM: llms.New(&fakeProvider{})}
 	rt := NewRuntime(bus, mgr, client)
+	createTestAgent(t, mgr, "agent-a")
 
 	if _, err := rt.RunOnce(context.Background(), "agent-a", "hello"); err != nil {
 		t.Fatalf("first run once: %v", err)
@@ -725,6 +754,7 @@ func TestConversationHistoryPersistsAcrossHandleMessage(t *testing.T) {
 
 	ctx := context.Background()
 	agentID := "agent-conv"
+	createTestAgent(t, mgr, agentID)
 
 	// First turn.
 	sess1, err := rt.HandleMessage(ctx, agentID, "user", "hello", nil)
@@ -802,6 +832,7 @@ func TestConversationHistoryUsesStoredSystemPrompt(t *testing.T) {
 
 	ctx := context.Background()
 	agentID := "agent-prompt"
+	createTestAgent(t, mgr, agentID)
 
 	// First turn — stores the system prompt.
 	_, err := rt.HandleMessage(ctx, agentID, "user", "first", nil)
