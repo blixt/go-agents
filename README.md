@@ -14,21 +14,21 @@ Minimal, event-driven agent runtime. Agents are long-lived tasks that consume me
 ┌───────────────────────────────────────────────────────────────────┐
 │                          agentd (Go)                              │
 │                                                                   │
-│  ┌─────────────┐   ┌──────────────┐   ┌────────────────────────┐ │
-│  │  HTTP API   │──▶│ Task Manager │──▶│       Event Bus        │ │
-│  │             │   │              │   │                        │ │
-│  │ /api/tasks  │   │ spawn, await │   │  task_input  signals   │ │
-│  │ /api/state  │   │ complete,    │   │  task_output errors    │ │
-│  │ /api/stream │   │ fail, cancel │   │  external    history   │ │
-│  └─────────────┘   └──────┬───────┘   └───────────┬────────────┘ │
-│                           │                       │              │
-│                    ┌──────┴───────┐               │              │
-│                    │   Runtime    │◀──────────────┘              │
+│  ┌─────────────┐   ┌──────────────┐   ┌────────────────────────┐  │
+│  │  HTTP API   │──▶│ Task Manager │──▶│       Event Bus        │  │
+│  │             │   │              │   │                        │  │
+│  │ /api/tasks  │   │ spawn, await │   │  task_input  signals   │  │
+│  │ /api/state  │   │ complete,    │   │  task_output errors    │  │
+│  │ /api/stream │   │ fail, cancel │   │  external    history   │  │
+│  └─────────────┘   └──────┬───────┘   └───────────┬────────────┘  │
+│                           │                       │               │
+│                    ┌──────┴───────┐               │               │
+│                    │   Runtime    │◀──────────────┘               │
 │                    │              │                               │
-│                    │ per-agent    │   ┌─────────┐                │
-│                    │ message loop │──▶│   LLM   │                │
-│                    │              │   │ provider │                │
-│                    └──────────────┘   └─────────┘                │
+│                    │ per-agent    │   ┌─────────┐                 │
+│                    │ message loop │──▶│   LLM   │                 │
+│                    │              │   │ provider│                 │
+│                    └──────────────┘   └─────────┘                 │
 │                                                                   │
 │                        SQLite (tasks, events, history)            │
 └───────────────────────────────────────────────────────────────────┘
