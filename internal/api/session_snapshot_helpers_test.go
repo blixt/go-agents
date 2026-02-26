@@ -126,10 +126,15 @@ func NewSnapshotFixture(t *testing.T, opts SnapshotFixtureOptions) *SnapshotFixt
 	if opts.Provider == nil {
 		t.Fatalf("snapshot fixture requires provider")
 	}
+	start := opts.StartTime
+	if start.IsZero() {
+		start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	}
+	t.Setenv("GO_AGENTS_PROMPT_DATE_LABEL", start.UTC().Format("Monday, January 2, 2006"))
 	db, closeFn := testutil.OpenTestDB(t)
 	t.Cleanup(closeFn)
 
-	clock := newDeterministicSource(opts.StartTime, opts.Tick)
+	clock := newDeterministicSource(start, opts.Tick)
 	bus := eventbus.NewBus(db,
 		eventbus.WithClock(clock.Now),
 		eventbus.WithIDGenerator(clock.NewID),

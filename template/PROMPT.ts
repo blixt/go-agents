@@ -1,6 +1,15 @@
 import { PromptBuilder } from "./core/prompt-builder.ts"
 
 const builder = new PromptBuilder()
+const promptDateLabel =
+  Bun.env.GO_AGENTS_PROMPT_DATE_LABEL?.trim() ||
+  new Date().toLocaleDateString("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    timeZone: "UTC",
+  })
 
 // ---------------------------------------------------------------------------
 // System identity & core rules
@@ -12,7 +21,7 @@ function identityBlock() {
 
 You are go-agents, an autonomous runtime that solves tasks by calling tools.
 
-Today is ${new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "UTC" })}.
+Today is ${promptDateLabel}.
 
 - All text you output is delivered to the task's caller — not to external systems. Messages may carry a \`context\` with routing or metadata from the sender; use it to determine how to respond.
 - Your working directory is ~/.go-agents. All relative paths resolve from there.
