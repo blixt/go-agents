@@ -1,15 +1,17 @@
 #!/usr/bin/env bun
 
-import { join, resolve } from "path"
+import { dirname, join, resolve } from "path"
 import { homedir, tmpdir } from "os"
 import { existsSync, readdirSync, readFileSync } from "fs"
-import { mkdir, readdir, stat, symlink, copyFile } from "fs/promises"
+import { appendFile, mkdir, readdir, stat, symlink, copyFile } from "fs/promises"
 import { startSupervisor, stopSupervisor } from "./service-supervisor.ts"
 
 type Task = {
   id: string
   type: string
   status: string
+  owner?: string
+  metadata?: Record<string, unknown>
   payload?: Record<string, unknown>
 }
 
@@ -83,6 +85,12 @@ const API_URL = normalizeHTTPAddr(apiURLArg || config.http_addr || ":8080")
 const POLL_MS = parseInt(pollArg || "1000", 10)
 const PARALLEL = Math.max(1, parseInt(parallelArg || Bun.env.EXEC_PARALLEL || "2", 10))
 const webhookAddr = webhookArg || config.webhook_addr
+const MAX_AGENT_STDERR_CHARS = 16 * 1024
+const STREAM_FLUSH_INTERVAL_MS = 120
+const STREAM_MAX_EVENT_CHARS = 8 * 1024
+const STREAM_INLINE_BYTE_LIMIT = 64 * 1024
+const RESULT_INLINE_BYTE_LIMIT = 64 * 1024
+const MAX_BINDINGS_HISTORY = 200
 
 process.env.GO_AGENTS_API_URL = API_URL
 
@@ -220,6 +228,24 @@ async function sendFail(taskId: string, error: string) {
   })
 }
 
+async function sendAssistantOutput(
+  taskId: string,
+  payload: {
+    text: string
+    source?: string
+    from_task_id?: string
+    request_id?: string
+    service_id?: string
+    context?: Record<string, unknown>
+  },
+) {
+  await fetch(`${API_URL}/api/tasks/${taskId}/assistant_output`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+}
+
 async function fetchInputs(taskId: string, afterId: string) {
   const params = new URLSearchParams()
   params.set("kind", "input")
@@ -234,16 +260,268 @@ async function fetchInputs(taskId: string, afterId: string) {
   return (await res.json()) as TaskUpdate[]
 }
 
-async function forwardStream(taskId: string, kind: string, stream: ReadableStream<Uint8Array> | null) {
-  if (!stream) return
+function taskNotifyTarget(task: Task): string {
+  const owner = String(task.owner || "").trim()
+  if (owner !== "") return owner
+  const metadata = task.metadata && typeof task.metadata === "object" ? task.metadata : {}
+  const notifyTarget = typeof metadata.notify_target === "string" ? metadata.notify_target.trim() : ""
+  return notifyTarget
+}
+
+function sanitizePathKey(raw: string, fallback = "global"): string {
+  raw = String(raw || "").trim().toLowerCase()
+  if (raw === "") return fallback
+  let out = ""
+  for (const ch of raw) {
+    const code = ch.charCodeAt(0)
+    if ((code >= 97 && code <= 122) || (code >= 48 && code <= 57) || ch === "-" || ch === "_") {
+      out += ch
+    } else {
+      out += "_"
+    }
+  }
+  out = out.replace(/^_+|_+$/g, "")
+  return out || fallback
+}
+
+function execBindingsPath(task: Task): string {
+  const owner = taskNotifyTarget(task)
+  const safeOwner = sanitizePathKey(owner, "global")
+  return join(GO_AGENTS_HOME, "exec", "bindings", `${safeOwner}.bin`)
+}
+
+type FileArtifact = {
+  abs: string
+  rel: string
+}
+
+type TaskArtifacts = {
+  dir: FileArtifact
+  stdout: FileArtifact
+  stderr: FileArtifact
+  result: FileArtifact
+}
+
+function taskArtifacts(taskId: string): TaskArtifacts {
+  const safeTaskID = sanitizePathKey(taskId, "task")
+  const relDir = join("exec", "artifacts", safeTaskID)
+  const absDir = join(GO_AGENTS_HOME, relDir)
+  return {
+    dir: { abs: absDir, rel: relDir },
+    stdout: {
+      abs: join(absDir, "stdout.log"),
+      rel: join(relDir, "stdout.log"),
+    },
+    stderr: {
+      abs: join(absDir, "stderr.log"),
+      rel: join(relDir, "stderr.log"),
+    },
+    result: {
+      abs: join(absDir, "result.json"),
+      rel: join(relDir, "result.json"),
+    },
+  }
+}
+
+function textByteLength(text: string): number {
+  return Buffer.byteLength(text, "utf8")
+}
+
+function clipTextByBytes(raw: string, maxBytes: number): { text: string; truncated: boolean } {
+  const text = String(raw || "")
+  if (text === "") return { text: "", truncated: false }
+  if (maxBytes <= 0) return { text: "", truncated: text !== "" }
+  if (textByteLength(text) <= maxBytes) return { text, truncated: false }
+  let lo = 0
+  let hi = text.length
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2)
+    if (textByteLength(text.slice(0, mid)) <= maxBytes) {
+      lo = mid
+    } else {
+      hi = mid - 1
+    }
+  }
+  const clipped = text.slice(0, lo)
+  return { text: clipped, truncated: clipped.length < text.length }
+}
+
+type StreamForwardResult = {
+  captured: string
+  truncated: boolean
+  total_bytes: number
+  overflowed: boolean
+  output_file?: string
+  output_file_abs?: string
+}
+
+async function forwardStream(
+  taskId: string,
+  kind: "stdout" | "stderr",
+  stream: ReadableStream<Uint8Array> | null,
+  opts?: {
+    captureLimit?: number
+    inlineByteLimit?: number
+    outputFile?: FileArtifact
+  },
+): Promise<StreamForwardResult> {
+  const outputFile = opts?.outputFile
+  if (!stream) {
+    return {
+      captured: "",
+      truncated: false,
+      total_bytes: 0,
+      overflowed: false,
+      output_file: outputFile?.rel,
+      output_file_abs: outputFile?.abs,
+    }
+  }
   const reader = stream.getReader()
   const decoder = new TextDecoder()
+  const captureLimit = opts?.captureLimit || 0
+  const inlineByteLimit = opts?.inlineByteLimit || STREAM_INLINE_BYTE_LIMIT
+  let capture = ""
+  let captureTruncated = false
+  let pending = ""
+  let lastFlushAt = 0
+  let totalBytes = 0
+  let emittedBytes = 0
+  let overflowed = false
+  let overflowNoticeSent = false
+  let outputWriteFailed = false
+
+  const writeOutput = async (text: string) => {
+    if (!outputFile?.abs || outputWriteFailed || text === "") return
+    try {
+      await appendFile(outputFile.abs, text)
+    } catch {
+      outputWriteFailed = true
+    }
+  }
+
+  const sendOverflowNotice = async () => {
+    if (!overflowed || overflowNoticeSent) return
+    overflowNoticeSent = true
+    const payload: Record<string, unknown> = {
+      truncated: true,
+      overflow_to_file: !outputWriteFailed && !!outputFile?.rel,
+      byte_limit: inlineByteLimit,
+      bytes_seen: totalBytes,
+    }
+    if (!outputWriteFailed && outputFile?.rel) {
+      payload.output_file = outputFile.rel
+    }
+    if (!outputWriteFailed && outputFile?.abs) {
+      payload.output_file_abs = outputFile.abs
+    }
+    payload.text = outputWriteFailed
+      ? `${kind} exceeded ${inlineByteLimit} bytes and inline streaming was truncated.`
+      : `${kind} exceeded ${inlineByteLimit} bytes. Full output is available in ${outputFile?.rel}.`
+    await sendUpdate(taskId, kind, payload)
+  }
+
+  const flush = async (force: boolean) => {
+    if (pending === "") return
+    while (pending !== "") {
+      if (overflowed) {
+        pending = ""
+        await sendOverflowNotice()
+        return
+      }
+      if (pending.trim() === "") {
+        pending = ""
+        return
+      }
+      const now = Date.now()
+      if (!force && pending.length < STREAM_MAX_EVENT_CHARS && now - lastFlushAt < STREAM_FLUSH_INTERVAL_MS) {
+        return
+      }
+      const chunk = pending.slice(0, STREAM_MAX_EVENT_CHARS)
+      pending = pending.slice(chunk.length)
+      if (chunk === "") {
+        continue
+      }
+      const chunkBytes = textByteLength(chunk)
+      if (inlineByteLimit > 0) {
+        const remaining = inlineByteLimit - emittedBytes
+        if (remaining <= 0) {
+          overflowed = true
+          pending = ""
+          await sendOverflowNotice()
+          return
+        }
+        if (chunkBytes > remaining) {
+          const { text } = clipTextByBytes(chunk, remaining)
+          if (text !== "") {
+            await sendUpdate(taskId, kind, { text })
+            emittedBytes += textByteLength(text)
+            lastFlushAt = now
+          }
+          overflowed = true
+          pending = ""
+          await sendOverflowNotice()
+          return
+        }
+      }
+      await sendUpdate(taskId, kind, { text: chunk })
+      emittedBytes += chunkBytes
+      lastFlushAt = now
+    }
+  }
+
   while (true) {
     const { value, done } = await reader.read()
     if (done) break
-    const text = decoder.decode(value)
-    if (text.trim() === "") continue
-    await sendUpdate(taskId, kind, { text })
+    if (!value) continue
+    const text = decoder.decode(value, { stream: true })
+    if (text === "") continue
+    totalBytes += textByteLength(text)
+    await writeOutput(text)
+
+    if (captureLimit > 0 && !captureTruncated) {
+      const remaining = captureLimit - capture.length
+      if (remaining <= 0) {
+        captureTruncated = true
+      } else if (text.length > remaining) {
+        capture += text.slice(0, remaining)
+        captureTruncated = true
+      } else {
+        capture += text
+      }
+    }
+    if (!overflowed) {
+      pending += text
+      await flush(false)
+    }
+  }
+  const tail = decoder.decode()
+  if (tail !== "") {
+    totalBytes += textByteLength(tail)
+    await writeOutput(tail)
+    if (captureLimit > 0 && !captureTruncated) {
+      const remaining = captureLimit - capture.length
+      if (remaining <= 0) {
+        captureTruncated = true
+      } else if (tail.length > remaining) {
+        capture += tail.slice(0, remaining)
+        captureTruncated = true
+      } else {
+        capture += tail
+      }
+    }
+    if (!overflowed) {
+      pending += tail
+    }
+  }
+  await flush(true)
+  await sendOverflowNotice()
+  return {
+    captured: capture.trim(),
+    truncated: captureTruncated,
+    total_bytes: totalBytes,
+    overflowed,
+    output_file: outputFile?.rel,
+    output_file_abs: outputFile?.abs,
   }
 }
 
@@ -279,6 +557,13 @@ async function runTask(task: Task) {
   await Bun.write(codeFile, code)
 
   const resultPath = join(execDir, "result.json")
+  const userMessagesPath = join(execDir, "user_messages.json")
+  const bindingsPath = execBindingsPath(task)
+  const artifacts = taskArtifacts(task.id)
+  await mkdir(dirname(bindingsPath), { recursive: true })
+  await mkdir(artifacts.dir.abs, { recursive: true })
+  await Bun.write(artifacts.stdout.abs, "")
+  await Bun.write(artifacts.stderr.abs, "")
 
   await sendUpdate(task.id, "start", {})
 
@@ -289,6 +574,12 @@ async function runTask(task: Task) {
     codeFile,
     "--result-path",
     resultPath,
+    "--bindings-path",
+    bindingsPath,
+    "--bindings-max-history",
+    `${MAX_BINDINGS_HISTORY}`,
+    "--user-messages-path",
+    userMessagesPath,
   ]
 
   const dotEnvVars = loadDotEnv(join(GO_AGENTS_HOME, ".env"))
@@ -305,8 +596,15 @@ async function runTask(task: Task) {
     },
   })
 
-  const stdoutPromise = forwardStream(task.id, "stdout", proc.stdout)
-  const stderrPromise = forwardStream(task.id, "stderr", proc.stderr)
+  const stdoutPromise = forwardStream(task.id, "stdout", proc.stdout, {
+    inlineByteLimit: STREAM_INLINE_BYTE_LIMIT,
+    outputFile: artifacts.stdout,
+  })
+  const stderrPromise = forwardStream(task.id, "stderr", proc.stderr, {
+    captureLimit: MAX_AGENT_STDERR_CHARS,
+    inlineByteLimit: STREAM_INLINE_BYTE_LIMIT,
+    outputFile: artifacts.stderr,
+  })
   const inputPromise = (async () => {
     const stdin = proc.stdin as
       | undefined
@@ -380,17 +678,71 @@ async function runTask(task: Task) {
   })
 
   const exitCode = await proc.exited
-  await Promise.all([stdoutPromise, stderrPromise, inputPromise])
+  const [stdoutCapture, stderrCapture] = await Promise.all([stdoutPromise, stderrPromise, inputPromise])
 
   await sendUpdate(task.id, "exit", { exit_code: exitCode })
 
+  const notifyTarget = taskNotifyTarget(task)
+  if (notifyTarget !== "") {
+    try {
+      const parsed = await Bun.file(userMessagesPath).json().catch(() => ({})) as {
+        messages?: Array<{ text?: string }>
+      }
+      const source = task.id ? `exec:${task.id}` : "exec"
+      const messages = Array.isArray(parsed.messages) ? parsed.messages : []
+      for (const msg of messages) {
+        const text = typeof msg?.text === "string" ? msg.text.trim() : ""
+        if (text === "") continue
+        await sendAssistantOutput(notifyTarget, {
+          text,
+          source,
+          from_task_id: task.id,
+        })
+      }
+    } catch (err) {
+      await sendUpdate(task.id, "send_to_user_error", { error: String(err) })
+    }
+  }
+
   if (exitCode !== 0) {
-    await sendFail(task.id, `exec failed with exit code ${exitCode}`)
+    let error = `exec failed with exit code ${exitCode}`
+    if (stderrCapture.captured) {
+      error = `${error}\n${stderrCapture.captured}`.trim()
+    }
+    if (stderrCapture.overflowed && stderrCapture.output_file) {
+      error = `${error}\nFull stderr: ${stderrCapture.output_file}`.trim()
+    }
+    if (stdoutCapture.overflowed && stdoutCapture.output_file) {
+      error = `${error}\nFull stdout: ${stdoutCapture.output_file}`.trim()
+    }
+    await sendFail(task.id, error)
     return
   }
 
   let result: Record<string, unknown> = {}
   try {
+    const resultInfo = await stat(resultPath)
+    if (resultInfo.size > RESULT_INLINE_BYTE_LIMIT) {
+      try {
+        await copyFile(resultPath, artifacts.result.abs)
+        result = {
+          result_too_large: true,
+          message: `Result exceeded ${RESULT_INLINE_BYTE_LIMIT} bytes. Read ${artifacts.result.rel}.`,
+          result_file: artifacts.result.rel,
+          result_file_abs: artifacts.result.abs,
+          result_bytes: resultInfo.size,
+          result_byte_limit: RESULT_INLINE_BYTE_LIMIT,
+        }
+      } catch (copyErr) {
+        result = {
+          error: `result exceeded inline limit (${RESULT_INLINE_BYTE_LIMIT} bytes) and failed to spill: ${copyErr}`,
+          result_bytes: resultInfo.size,
+          result_byte_limit: RESULT_INLINE_BYTE_LIMIT,
+        }
+      }
+      await sendComplete(task.id, result)
+      return
+    }
     const data = await Bun.file(resultPath).text()
     if (data.trim() !== "") {
       const parsed = JSON.parse(data)
