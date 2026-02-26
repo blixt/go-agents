@@ -8,7 +8,10 @@ import (
 	goagents_template "github.com/flitsinc/go-agents/template"
 )
 
-func copyTemplate(dest string) error {
+// ManagedHarnessPromptFile is the runtime-managed prompt fragment with harness API contract.
+const ManagedHarnessPromptFile = "PROMPT_HARNESS_API.ts"
+
+func copyTemplate(dest string, overwrite bool) error {
 	sub, err := fs.Sub(goagents_template.FS, ".")
 	if err != nil {
 		return err
@@ -34,6 +37,25 @@ func copyTemplate(dest string) error {
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
+		if !overwrite {
+			if _, err := os.Stat(target); err == nil {
+				return nil
+			} else if !os.IsNotExist(err) {
+				return err
+			}
+		}
 		return os.WriteFile(target, data, 0o644)
 	})
+}
+
+func syncManagedHarnessPrompt(destRoot string) error {
+	data, err := fs.ReadFile(goagents_template.FS, ManagedHarnessPromptFile)
+	if err != nil {
+		return err
+	}
+	target := filepath.Join(destRoot, ManagedHarnessPromptFile)
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(target, data, 0o644)
 }

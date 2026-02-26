@@ -13,6 +13,7 @@ import (
 	"github.com/flitsinc/go-agents/internal/agentcontext"
 	"github.com/flitsinc/go-agents/internal/ai"
 	"github.com/flitsinc/go-agents/internal/eventbus"
+	"github.com/flitsinc/go-agents/internal/schema"
 	"github.com/flitsinc/go-agents/internal/tasks"
 	"github.com/flitsinc/go-agents/internal/testutil"
 	"github.com/flitsinc/go-llms/content"
@@ -626,6 +627,301 @@ func TestRuntimeSkipsLLMDebugSignalsInPromptContext(t *testing.T) {
 	t.Fatalf("expected llm_debug signal summary")
 }
 
+func TestRuntimeAssistantOutputUpdateHiddenFromPromptContext(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	cp := &captureProvider{}
+	client := &ai.Client{LLM: llms.New(cp)}
+	rt := NewRuntime(bus, mgr, client)
+	createTestAgent(t, mgr, "agent-a")
+
+	ctx := context.Background()
+	firstSession, err := rt.RunOnce(ctx, "agent-a", "hello")
+	if err != nil {
+		t.Fatalf("first run once: %v", err)
+	}
+
+	updates, err := mgr.ListUpdates(ctx, firstSession.TaskID, 200)
+	if err != nil {
+		t.Fatalf("list root updates: %v", err)
+	}
+	foundAssistantUpdate := false
+	for _, upd := range updates {
+		if upd.Kind != "assistant_output" {
+			continue
+		}
+		if strings.TrimSpace(schema.GetMetaString(upd.Payload, "text")) != "ok" {
+			t.Fatalf("expected assistant_output text payload to be ok, got %#v", upd.Payload)
+		}
+		foundAssistantUpdate = true
+		break
+	}
+	if !foundAssistantUpdate {
+		t.Fatalf("expected assistant_output task update on root task %s", firstSession.TaskID)
+	}
+
+	taskOutputSummaries, err := bus.List(ctx, "task_output", eventbus.ListOptions{
+		Reader: "agent-a",
+		Limit:  200,
+		Order:  "fifo",
+	})
+	if err != nil {
+		t.Fatalf("list task_output: %v", err)
+	}
+	ids := make([]string, 0, len(taskOutputSummaries))
+	for _, summary := range taskOutputSummaries {
+		ids = append(ids, summary.ID)
+	}
+	taskOutputEvents, err := bus.Read(ctx, "task_output", ids, "agent-a")
+	if err != nil {
+		t.Fatalf("read task_output: %v", err)
+	}
+
+	assistantEventID := ""
+	for _, evt := range taskOutputEvents {
+		if schema.GetMetaString(evt.Metadata, "task_id") != firstSession.TaskID {
+			continue
+		}
+		if schema.GetMetaString(evt.Metadata, "task_kind") != "assistant_output" {
+			continue
+		}
+		assistantEventID = evt.ID
+		if schema.MetaVisibleToConsumer(evt.Metadata, schema.ConsumerAgentContext, true) {
+			t.Fatalf("assistant_output event should be hidden from agent context: %#v", evt.Metadata)
+		}
+		break
+	}
+	if assistantEventID == "" {
+		t.Fatalf("expected assistant_output task_output event for task %s", firstSession.TaskID)
+	}
+
+	if _, err := rt.RunOnce(ctx, "agent-a", "follow up"); err != nil {
+		t.Fatalf("second run once: %v", err)
+	}
+
+	last := cp.LastInput()
+	if strings.Contains(last, "assistant_output") {
+		t.Fatalf("did not expect assistant_output events in prompt context: %q", last)
+	}
+
+	taskOutputSummariesAfter, err := bus.List(ctx, "task_output", eventbus.ListOptions{
+		Reader: "agent-a",
+		Limit:  200,
+		Order:  "fifo",
+	})
+	if err != nil {
+		t.Fatalf("list task_output after second run: %v", err)
+	}
+	for _, summary := range taskOutputSummariesAfter {
+		if summary.ID != assistantEventID {
+			continue
+		}
+		if !summary.Read {
+			t.Fatalf("expected hidden assistant_output event to be acked")
+		}
+		return
+	}
+	t.Fatalf("expected assistant_output event summary %s", assistantEventID)
+}
+
+func TestRuntimeAssistantOutputCarriesServiceRoutingMetadata(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	client := &ai.Client{LLM: llms.New(&fakeProvider{})}
+	rt := NewRuntime(bus, mgr, client)
+	createTestAgent(t, mgr, "agent-a")
+
+	session, err := rt.HandleMessage(context.Background(), "agent-a", "telegram-bot", "hello", map[string]any{
+		"request_id": "req-abc",
+		"service_id": "telegram-bot",
+		"context": map[string]any{
+			"conversation_id": "chat-42",
+		},
+	})
+	if err != nil {
+		t.Fatalf("handle message: %v", err)
+	}
+
+	updates, err := mgr.ListUpdates(context.Background(), session.TaskID, 200)
+	if err != nil {
+		t.Fatalf("list updates: %v", err)
+	}
+	foundPayload := false
+	for _, upd := range updates {
+		if upd.Kind != "assistant_output" {
+			continue
+		}
+		if _, ok := upd.Payload["request_id"]; ok {
+			t.Fatalf("did not expect top-level request_id in assistant_output payload, got %#v", upd.Payload)
+		}
+		if _, ok := upd.Payload["service_id"]; ok {
+			t.Fatalf("did not expect service_id in assistant_output payload, got %#v", upd.Payload)
+		}
+		if _, ok := upd.Payload["source"]; ok {
+			t.Fatalf("did not expect source in assistant_output payload, got %#v", upd.Payload)
+		}
+		rawRoutes, ok := upd.Payload["routes"].([]any)
+		if !ok || len(rawRoutes) == 0 {
+			t.Fatalf("expected routes array in assistant_output payload, got %#v", upd.Payload["routes"])
+		}
+		foundRoute := false
+		for _, rawRoute := range rawRoutes {
+			route, ok := rawRoute.(map[string]any)
+			if !ok {
+				continue
+			}
+			if schema.GetMetaString(route, "request_id") == "req-abc" {
+				rawCtx, ok := route["context"].(map[string]any)
+				if !ok {
+					t.Fatalf("expected context map in assistant_output route, got %#v", route["context"])
+				}
+				if schema.GetMetaString(rawCtx, "conversation_id") != "chat-42" {
+					t.Fatalf("expected conversation_id in assistant_output route context, got %#v", rawCtx)
+				}
+				foundRoute = true
+				break
+			}
+		}
+		if !foundRoute {
+			t.Fatalf("expected req-abc in assistant_output routes, got %#v", rawRoutes)
+		}
+		foundPayload = true
+		break
+	}
+	if !foundPayload {
+		t.Fatalf("expected assistant_output update")
+	}
+
+	summaries, err := bus.List(context.Background(), "task_output", eventbus.ListOptions{
+		ScopeType: "task",
+		ScopeID:   "agent-a",
+		Limit:     50,
+		Order:     "lifo",
+	})
+	if err != nil {
+		t.Fatalf("list task_output: %v", err)
+	}
+	ids := make([]string, 0, len(summaries))
+	for _, summary := range summaries {
+		ids = append(ids, summary.ID)
+	}
+	events, err := bus.Read(context.Background(), "task_output", ids, "")
+	if err != nil {
+		t.Fatalf("read task_output: %v", err)
+	}
+	foundEvent := false
+	for _, evt := range events {
+		if schema.GetMetaString(evt.Metadata, "task_kind") != "assistant_output" {
+			continue
+		}
+		if schema.GetMetaString(evt.Metadata, "request_id") != "req-abc" {
+			continue
+		}
+		if schema.GetMetaString(evt.Metadata, "service_id") != "telegram-bot" {
+			t.Fatalf("expected service_id in event metadata, got %#v", evt.Metadata)
+		}
+		foundEvent = true
+		break
+	}
+	if !foundEvent {
+		t.Fatalf("expected assistant_output task_output event with routing metadata")
+	}
+}
+
+func TestRuntimeAssistantOutputRoutingIncludesBundledContextMessages(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	client := &ai.Client{LLM: llms.New(&fakeProvider{})}
+	rt := NewRuntime(bus, mgr, client)
+	createTestAgent(t, mgr, "agent-a")
+
+	_, err := rt.SendMessageWithMeta(context.Background(), "agent-a", "first message", "svc-bundle", map[string]any{
+		"request_id": "req-bundle-1",
+		"service_id": "svc-bundle",
+		"context": map[string]any{
+			"conversation_id": "conversation-1",
+			"service_id":      "svc-bundle",
+		},
+	})
+	if err != nil {
+		t.Fatalf("send first message: %v", err)
+	}
+	_, err = rt.SendMessageWithMeta(context.Background(), "agent-a", "second message", "svc-bundle", map[string]any{
+		"request_id": "req-bundle-2",
+		"service_id": "svc-bundle",
+		"context": map[string]any{
+			"conversation_id": "conversation-2",
+			"service_id":      "svc-bundle",
+		},
+	})
+	if err != nil {
+		t.Fatalf("send second message: %v", err)
+	}
+
+	session, err := rt.HandleMessage(context.Background(), "agent-a", "runtime", "wake turn", map[string]any{
+		"kind":     "wake",
+		"priority": "wake",
+	})
+	if err != nil {
+		t.Fatalf("handle wake message: %v", err)
+	}
+
+	updates, err := mgr.ListUpdates(context.Background(), session.TaskID, 200)
+	if err != nil {
+		t.Fatalf("list updates: %v", err)
+	}
+	var payload map[string]any
+	for _, upd := range updates {
+		if upd.Kind != "assistant_output" {
+			continue
+		}
+		payload = upd.Payload
+	}
+	if len(payload) == 0 {
+		t.Fatalf("expected assistant_output payload")
+	}
+	if _, ok := payload["source"]; ok {
+		t.Fatalf("did not expect assistant_output source in payload, got %#v", payload)
+	}
+	if _, ok := payload["service_id"]; ok {
+		t.Fatalf("did not expect assistant_output service_id in payload, got %#v", payload)
+	}
+	if _, ok := payload["request_id"]; ok {
+		t.Fatalf("did not expect top-level request_id in assistant_output payload, got %#v", payload)
+	}
+	if _, ok := payload["context"]; ok {
+		t.Fatalf("did not expect top-level context in assistant_output payload, got %#v", payload)
+	}
+
+	rawRoutes, ok := payload["routes"].([]any)
+	if !ok || len(rawRoutes) < 2 {
+		t.Fatalf("expected at least two routes in assistant_output payload, got %#v", payload["routes"])
+	}
+	foundRequestIDs := map[string]bool{}
+	for _, rawRoute := range rawRoutes {
+		route, ok := rawRoute.(map[string]any)
+		if !ok {
+			continue
+		}
+		reqID := schema.GetMetaString(route, "request_id")
+		if reqID != "" {
+			foundRequestIDs[reqID] = true
+		}
+	}
+	if !foundRequestIDs["req-bundle-1"] || !foundRequestIDs["req-bundle-2"] {
+		t.Fatalf("expected both bundled request IDs in routes, got %#v", rawRoutes)
+	}
+}
+
 func TestRuntimeAppendsAgentHistoryEntries(t *testing.T) {
 	db, closeFn := testutil.OpenTestDB(t)
 	defer closeFn()
@@ -863,4 +1159,3 @@ func TestConversationHistoryUsesStoredSystemPrompt(t *testing.T) {
 		t.Fatalf("system prompt changed between turns:\n  turn 1: %q\n  turn 2: %q", text1[:min(len(text1), 200)], text2[:min(len(text2), 200)])
 	}
 }
-

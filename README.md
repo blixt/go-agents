@@ -55,7 +55,7 @@ Minimal, event-driven agent runtime. Agents are long-lived tasks that consume me
 
 **Exec** is the primary tool. When an LLM decides to run code, it spawns an `exec` task. The external `execd` worker (Bun) polls for these, runs the TypeScript in a temp sandbox with symlinked `core/` and `tools/` libraries, and posts the result back. The agent awaits the task to get the output.
 
-**Services** are long-running background processes (e.g., a Telegram bot, a webhook listener). The service supervisor watches `~/.go-agents/services/*/run.ts`, auto-starts them, restarts on crash with exponential backoff, and reloads on file or `.env` changes. Services communicate with agents by posting to the API.
+**Services** are long-running background processes (e.g., a Telegram bot, a webhook listener). The service supervisor watches `~/.go-agents/services/*/run.ts`, auto-starts them, restarts on crash with exponential backoff, and reloads on file/config changes. Service configuration lives in `service.json` (including `service_id` and `environment` key/value config). Services communicate with agents by posting to the API.
 
 ### How a message flows
 

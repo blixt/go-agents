@@ -170,6 +170,7 @@ func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request, taskID s
 		Source    string         `json:"source"`
 		Priority  string         `json:"priority"`
 		RequestID string         `json:"request_id"`
+		ServiceID string         `json:"service_id"`
 		Context   map[string]any `json:"context"`
 		// Generic task input
 		Input map[string]any `json:"input"`
@@ -188,6 +189,14 @@ func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request, taskID s
 			return
 		}
 		source := strings.TrimSpace(payload.Source)
+		contextData, serviceID, err := normalizeServiceMessageContext(payload.ServiceID, payload.Context)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if source == "" && serviceID != "" {
+			source = serviceID
+		}
 		s.Runtime.EnsureAgentLoop(taskID)
 		requestID := strings.TrimSpace(payload.RequestID)
 		if requestID == "" {
@@ -200,15 +209,25 @@ func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request, taskID s
 		if strings.TrimSpace(payload.Priority) != "" {
 			meta["priority"] = string(schema.ParsePriority(payload.Priority))
 		}
-		if len(payload.Context) > 0 {
-			meta["context"] = payload.Context
+		if len(contextData) > 0 {
+			meta["context"] = contextData
 		}
-		_, err := s.Runtime.SendMessageWithMeta(r.Context(), taskID, message, source, meta)
+		if serviceID != "" {
+			meta["service_id"] = serviceID
+		}
+		_, err = s.Runtime.SendMessageWithMeta(r.Context(), taskID, message, source, meta)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		resp := map[string]any{
+			"ok":         true,
+			"request_id": requestID,
+		}
+		if serviceID != "" {
+			resp["service_id"] = serviceID
+		}
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 
@@ -309,7 +328,7 @@ func decodeJSON(body io.Reader, dest any) error {
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
+	_ = json.NewEncoder(w).Encode(normalizeNilSlices(payload))
 }
 
 func writeError(w http.ResponseWriter, status int, err error) {
@@ -344,6 +363,37 @@ func splitComma(value string) []string {
 	return out
 }
 
+func normalizeServiceMessageContext(explicitServiceID string, raw map[string]any) (map[string]any, string, error) {
+	ctx := copyMap(raw)
+
+	explicitServiceID = strings.TrimSpace(explicitServiceID)
+	serviceID := strings.TrimSpace(schema.GetMetaString(ctx, "service_id"))
+	if explicitServiceID != "" && serviceID != "" && !strings.EqualFold(explicitServiceID, serviceID) {
+		return nil, "", errBadRequest("service_id conflict between top-level and context")
+	}
+	if explicitServiceID != "" {
+		serviceID = explicitServiceID
+	}
+	if serviceID != "" {
+		if ctx == nil {
+			ctx = map[string]any{}
+		}
+		ctx["service_id"] = serviceID
+	}
+	return ctx, serviceID, nil
+}
+
+func copyMap(input map[string]any) map[string]any {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		out[key] = value
+	}
+	return out
+}
+
 type notFoundError struct {
 	msg string
 }
@@ -352,4 +402,14 @@ func (e notFoundError) Error() string { return e.msg }
 
 func errNotFound(target string) error {
 	return notFoundError{msg: target + " not found"}
+}
+
+type badRequestError struct {
+	msg string
+}
+
+func (e badRequestError) Error() string { return e.msg }
+
+func errBadRequest(message string) error {
+	return badRequestError{msg: message}
 }

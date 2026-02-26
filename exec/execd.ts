@@ -421,7 +421,7 @@ async function main() {
   await ensureGoAgentsHome()
   ensureToolDeps()
   startWebhookServer()
-  startSupervisor(GO_AGENTS_HOME, () => loadDotEnv(join(GO_AGENTS_HOME, ".env")))
+  startSupervisor(GO_AGENTS_HOME)
 
   const shutdown = () => {
     stopSupervisor()

@@ -19,6 +19,10 @@ async function request(method: string, path: string, body?: unknown): Promise<Re
   return res
 }
 
+function currentServiceID(): string {
+  return (Bun.env.GO_AGENTS_SERVICE_ID || "").trim()
+}
+
 /** Create or ensure an agent exists. Upserts by id. */
 export async function createAgent(opts: {
   id?: string
@@ -42,15 +46,69 @@ export async function createAgent(opts: {
 export async function sendInput(
   taskId: string,
   message: string,
-  opts?: { source?: string; priority?: string; request_id?: string; context?: Record<string, unknown> },
-): Promise<void> {
-  await request("POST", `/api/tasks/${encodeURIComponent(taskId)}/send`, {
+  opts?: {
+    source?: string
+    priority?: string
+    request_id?: string
+    service_id?: string
+    context?: Record<string, unknown>
+  },
+): Promise<{ ok: boolean; request_id?: string; service_id?: string }> {
+  const serviceID = (opts?.service_id || currentServiceID()).trim()
+  const context = { ...(opts?.context || {}) }
+  const contextServiceID = typeof context.service_id === "string" ? context.service_id.trim() : ""
+  if (serviceID !== "" && contextServiceID === "") {
+    context.service_id = serviceID
+  }
+  const source = (opts?.source || "").trim() || serviceID
+  const res = await request("POST", `/api/tasks/${encodeURIComponent(taskId)}/send`, {
     message,
-    source: opts?.source,
+    source: source || undefined,
+    service_id: serviceID || undefined,
     priority: opts?.priority,
     request_id: opts?.request_id,
-    context: opts?.context,
+    context: Object.keys(context).length > 0 ? context : undefined,
   })
+  const payload = await res.json().catch(() => ({})) as Record<string, unknown>
+  return {
+    ok: payload.ok !== false,
+    request_id: typeof payload.request_id === "string" ? payload.request_id : undefined,
+    service_id: typeof payload.service_id === "string" ? payload.service_id : undefined,
+  }
+}
+
+export type AssistantOutputRoute = {
+  request_id?: string
+  context?: Record<string, unknown>
+}
+
+function parseAssistantOutputRoute(raw: unknown): AssistantOutputRoute | null {
+  if (!raw || typeof raw !== "object") return null
+  const route = raw as Record<string, unknown>
+  const request_id = typeof route.request_id === "string" ? route.request_id : undefined
+  const contextCandidate = route.context && typeof route.context === "object"
+    ? route.context as Record<string, unknown>
+    : undefined
+  const context = contextCandidate && Object.keys(contextCandidate).length > 0
+    ? contextCandidate
+    : undefined
+  if (!request_id && !context) return null
+  return { request_id, context }
+}
+
+/**
+ * Normalize assistant_output routing metadata to a deterministic list.
+ * Uses payload.routes only.
+ */
+export function assistantOutputRoutes(payload: Record<string, unknown> | undefined): AssistantOutputRoute[] {
+  if (!payload) return []
+  const routes: AssistantOutputRoute[] = []
+  const rawRoutes = Array.isArray(payload.routes) ? payload.routes : []
+  for (const rawRoute of rawRoutes) {
+    const parsed = parseAssistantOutputRoute(rawRoute)
+    if (parsed) routes.push(parsed)
+  }
+  return routes
 }
 
 /** Get updates for a task (stdout, stderr, start, exit, etc.). */

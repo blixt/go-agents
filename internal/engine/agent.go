@@ -82,7 +82,7 @@ type Runtime struct {
 	turnMu        sync.Mutex
 	lastTurnStart map[string]time.Time
 
-	contextCursorMu        sync.Mutex
+	contextCursorMu         sync.Mutex
 	lastContextCursorByTask map[string]string
 
 	historyMu               sync.Mutex
@@ -95,12 +95,35 @@ type Runtime struct {
 const (
 	maxToolContentChars = 1200
 
-	maxContextEventsPerTurn = 24
-	maxContextEventBodyWake = 500
-	maxContextEventBodyBase = 200
-	maxContextEventData     = 900
-	minTimePassedDelta      = 60 * time.Second
+	maxContextEventsPerTurn  = 24
+	maxContextEventBodyWake  = 500
+	maxContextEventBodyBase  = 200
+	maxContextEventData      = 900
+	maxAssistantOutputRoutes = 32
+	minTimePassedDelta       = 60 * time.Second
 )
+
+type routingCandidate struct {
+	RequestID string
+	ServiceID string
+	Source    string
+	Context   map[string]any
+	EventID   string
+}
+
+type turnRouting struct {
+	Primary    routingCandidate
+	HasPrimary bool
+	Routes     []routingCandidate
+}
+
+var agentContextDefaultVisibilityByStream = map[string]bool{
+	schema.StreamTaskOutput: true,
+	schema.StreamSignals:    true,
+	schema.StreamErrors:     true,
+	schema.StreamExternal:   true,
+	schema.StreamTaskInput:  true,
+}
 
 type Option func(*Runtime)
 
@@ -555,6 +578,7 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 				"source":             source,
 				"priority":           eventPriority(messageMeta),
 				"request_id":         schema.GetMetaString(messageMeta, "request_id"),
+				"service_id":         schema.GetMetaString(messageMeta, "service_id"),
 				"event_id":           schema.GetMetaString(messageMeta, "event_id"),
 				"history_generation": currentGeneration,
 			},
@@ -572,6 +596,7 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 	}
 	turnCtx := r.nextTurnContext(agentID, session.UpdatedAt)
 	rawContextEvents, _ := r.collectUnreadContextEvents(ctx, agentID, maxContextEventsPerTurn*2)
+	turnRouting := buildTurnRouting(source, messageMeta, rawContextEvents)
 	contextEvents, initialSuperseded := projectContextEventsForPrompt(rawContextEvents, maxContextEventsPerTurn)
 	currentContextCursor := r.contextCursor(agentID)
 	initialFrame := ContextUpdateFrame{
@@ -601,6 +626,7 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 			"source":     source,
 			"priority":   eventPriority(messageMeta),
 			"request_id": schema.GetMetaString(messageMeta, "request_id"),
+			"service_id": schema.GetMetaString(messageMeta, "service_id"),
 			"event_id":   schema.GetMetaString(messageMeta, "event_id"),
 		})
 	} else if strings.EqualFold(schema.GetMetaString(messageMeta, "kind"), "wake") {
@@ -634,17 +660,24 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 		r.appendHistory(ctx, agentID, "assistant_message", "assistant", session.LastOutput, llmTask.ID, currentGeneration, map[string]any{
 			"error": true,
 		})
+		if rootTask.ID != "" && strings.TrimSpace(session.LastOutput) != "" {
+			r.recordTaskUpdate(
+				ctx,
+				rootTask.ID,
+				"assistant_output",
+				assistantOutputPayload(session.LastOutput, turnRouting),
+				assistantOutputUpdateOptions(source, turnRouting),
+			)
+		}
 		if r.Tasks != nil {
 			if llmTask.ID != "" {
 				_ = r.Tasks.Fail(bgCtx, llmTask.ID, session.LastError)
 			}
 		}
-		if source != "" && source != agentID {
-			var replyMeta map[string]any
-			if reqID := schema.GetMetaString(messageMeta, "request_id"); reqID != "" {
-				replyMeta = map[string]any{"request_id": reqID}
-			}
-			_, _ = r.SendMessageWithMeta(ctx, source, session.LastOutput, agentID, replyMeta)
+		replyTarget := responseRoutingTarget(source, agentID)
+		if replyTarget != "" {
+			replyMeta := responseRoutingMetadata(turnRouting)
+			_, _ = r.SendMessageWithMeta(ctx, replyTarget, session.LastOutput, agentID, replyMeta)
 		}
 		r.ackContextEvents(bgCtx, agentID, rawContextEvents)
 		return session, nil
@@ -990,18 +1023,25 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 					SourceID: agentID,
 				})
 			}
-			if source != "" && source != agentID {
+			replyTarget := responseRoutingTarget(source, agentID)
+			if replyTarget != "" {
 				reply := output
 				if reply == "" {
 					reply = fmt.Sprintf("[error] %s", session.LastError)
 				} else {
 					reply = fmt.Sprintf("%s\n\n[error] %s", reply, session.LastError)
 				}
-				var replyMeta map[string]any
-				if reqID := schema.GetMetaString(messageMeta, "request_id"); reqID != "" {
-					replyMeta = map[string]any{"request_id": reqID}
-				}
-				_, _ = r.SendMessageWithMeta(ctx, source, reply, agentID, replyMeta)
+				replyMeta := responseRoutingMetadata(turnRouting)
+				_, _ = r.SendMessageWithMeta(ctx, replyTarget, reply, agentID, replyMeta)
+			}
+			if rootTask.ID != "" && strings.TrimSpace(output) != "" {
+				r.recordTaskUpdate(
+					ctx,
+					rootTask.ID,
+					"assistant_output",
+					assistantOutputPayload(output, turnRouting),
+					assistantOutputUpdateOptions(source, turnRouting),
+				)
 			}
 			return session, err
 		}
@@ -1013,6 +1053,15 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 	r.ackContextEvents(context.Background(), agentID, trackedContextEvents)
 	session.LastOutput = output
 	r.SetSession(session)
+	if rootTask.ID != "" && strings.TrimSpace(output) != "" {
+		r.recordTaskUpdate(
+			ctx,
+			rootTask.ID,
+			"assistant_output",
+			assistantOutputPayload(output, turnRouting),
+			assistantOutputUpdateOptions(source, turnRouting),
+		)
+	}
 	if r.Tasks != nil {
 		if llmTask.ID != "" {
 			_ = r.Tasks.Complete(bgCtx, llmTask.ID, map[string]any{"output": output})
@@ -1037,12 +1086,10 @@ func (r *Runtime) HandleMessage(ctx context.Context, agentID, source, message st
 			SourceID: agentID,
 		})
 	}
-	if source != "" && source != agentID && strings.TrimSpace(output) != "" {
-		var replyMeta map[string]any
-		if reqID := schema.GetMetaString(messageMeta, "request_id"); reqID != "" {
-			replyMeta = map[string]any{"request_id": reqID}
-		}
-		_, _ = r.SendMessageWithMeta(ctx, source, output, agentID, replyMeta)
+	replyTarget := responseRoutingTarget(source, agentID)
+	if replyTarget != "" && strings.TrimSpace(output) != "" {
+		replyMeta := responseRoutingMetadata(turnRouting)
+		_, _ = r.SendMessageWithMeta(ctx, replyTarget, output, agentID, replyMeta)
 	}
 	return session, nil
 }
@@ -1056,13 +1103,224 @@ func (r *Runtime) registerInflight(taskID string, cancel context.CancelFunc) {
 	r.inflightMu.Unlock()
 }
 
+func buildTurnRouting(source string, messageMeta map[string]any, contextEvents []eventbus.Event) turnRouting {
+	out := turnRouting{}
+	seen := map[string]struct{}{}
+	add := func(candidate routingCandidate) {
+		if len(out.Routes) >= maxAssistantOutputRoutes {
+			return
+		}
+		key := routingCandidateKey(candidate)
+		if key != "" {
+			if _, ok := seen[key]; ok {
+				return
+			}
+			seen[key] = struct{}{}
+		}
+		if !out.HasPrimary {
+			out.Primary = candidate
+			out.HasPrimary = true
+		}
+		out.Routes = append(out.Routes, candidate)
+	}
+
+	if candidate, ok := routingCandidateFromMetadata(source, messageMeta); ok {
+		if candidate.EventID == "" {
+			candidate.EventID = strings.TrimSpace(schema.GetMetaString(messageMeta, "event_id"))
+		}
+		add(candidate)
+	}
+
+	if len(contextEvents) > 0 {
+		ordered := append([]eventbus.Event(nil), contextEvents...)
+		sort.SliceStable(ordered, func(i, j int) bool {
+			if ordered[i].CreatedAt.Equal(ordered[j].CreatedAt) {
+				return ordered[i].ID < ordered[j].ID
+			}
+			return ordered[i].CreatedAt.Before(ordered[j].CreatedAt)
+		})
+		for _, evt := range ordered {
+			candidate, ok := routingCandidateFromMetadata(schema.GetMetaString(evt.Metadata, "source"), evt.Metadata)
+			if !ok {
+				continue
+			}
+			if candidate.EventID == "" {
+				candidate.EventID = strings.TrimSpace(evt.ID)
+			}
+			add(candidate)
+		}
+	}
+
+	return out
+}
+
+func routingCandidateFromMetadata(defaultSource string, metadata map[string]any) (routingCandidate, bool) {
+	if len(metadata) == 0 {
+		return routingCandidate{}, false
+	}
+	candidate := routingCandidate{
+		RequestID: strings.TrimSpace(schema.GetMetaString(metadata, "request_id")),
+		ServiceID: strings.TrimSpace(schema.GetMetaString(metadata, "service_id")),
+		Source:    strings.TrimSpace(defaultSource),
+	}
+	if candidate.Source == "" {
+		candidate.Source = strings.TrimSpace(schema.GetMetaString(metadata, "source"))
+	}
+	if rawCtx, ok := metadata["context"].(map[string]any); ok && len(rawCtx) > 0 {
+		candidate.Context = cloneAnyMap(rawCtx)
+	}
+	if candidate.ServiceID == "" {
+		candidate.ServiceID = strings.TrimSpace(schema.GetMetaString(candidate.Context, "service_id"))
+	}
+	if candidate.Source == "" && candidate.ServiceID != "" {
+		candidate.Source = candidate.ServiceID
+	}
+	if candidate.RequestID == "" && candidate.ServiceID == "" && len(candidate.Context) == 0 {
+		return routingCandidate{}, false
+	}
+	return candidate, true
+}
+
+func routingCandidateKey(candidate routingCandidate) string {
+	if candidate.RequestID != "" {
+		return "request:" + candidate.RequestID
+	}
+	if candidate.EventID != "" {
+		return "event:" + candidate.EventID
+	}
+	if candidate.ServiceID == "" && len(candidate.Context) == 0 {
+		return ""
+	}
+	contextJSON := ""
+	if len(candidate.Context) > 0 {
+		encoded, err := json.Marshal(candidate.Context)
+		if err == nil {
+			contextJSON = string(encoded)
+		}
+	}
+	return "service:" + candidate.ServiceID + "|source:" + candidate.Source + "|context:" + contextJSON
+}
+
+func responseRoutingMetadata(routing turnRouting) map[string]any {
+	if !routing.HasPrimary {
+		return nil
+	}
+	meta := map[string]any{}
+	if reqID := strings.TrimSpace(routing.Primary.RequestID); reqID != "" {
+		meta["request_id"] = reqID
+	}
+	if serviceID := strings.TrimSpace(routing.Primary.ServiceID); serviceID != "" {
+		meta["service_id"] = serviceID
+	}
+	if len(meta) == 0 {
+		return nil
+	}
+	return meta
+}
+
+func responseRoutingTarget(source, agentID string) string {
+	target := strings.TrimSpace(source)
+	if target == "" || target == agentID || strings.EqualFold(target, "runtime") {
+		return ""
+	}
+	return target
+}
+
+func assistantOutputPayload(text string, routing turnRouting) map[string]any {
+	payload := map[string]any{
+		"text": text,
+	}
+
+	if routes := routingRoutesPayload(routing.Routes); len(routes) > 0 {
+		payload["routes"] = routes
+	}
+	return payload
+}
+
+func routingRoutesPayload(routes []routingCandidate) []map[string]any {
+	if len(routes) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(routes))
+	for _, route := range routes {
+		entry := map[string]any{}
+		if reqID := strings.TrimSpace(route.RequestID); reqID != "" {
+			entry["request_id"] = reqID
+		}
+		if len(route.Context) > 0 {
+			entry["context"] = cloneAnyMap(route.Context)
+		}
+		if len(entry) == 0 {
+			continue
+		}
+		out = append(out, entry)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func cloneAnyMap(input map[string]any) map[string]any {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		out[key] = cloneAnyValue(value)
+	}
+	return out
+}
+
+func cloneAnyValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneAnyMap(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneAnyValue(item)
+		}
+		return out
+	default:
+		return typed
+	}
+}
+
+func assistantOutputUpdateOptions(source string, routing turnRouting) tasks.UpdateOptions {
+	metadata := map[string]any{
+		schema.MetaDeliveryExclude: []string{schema.ConsumerAgentContext},
+	}
+	outputSource := strings.TrimSpace(source)
+	if routing.HasPrimary {
+		if primarySource := strings.TrimSpace(routing.Primary.Source); primarySource != "" {
+			outputSource = primarySource
+		}
+	}
+	if outputSource != "" {
+		metadata["source"] = outputSource
+	}
+	for key, value := range responseRoutingMetadata(routing) {
+		metadata[key] = value
+	}
+	return tasks.UpdateOptions{EventMetadata: metadata}
+}
+
 func (r *Runtime) recordLLMUpdate(ctx context.Context, taskID, kind string, payload map[string]any) {
+	r.recordTaskUpdate(ctx, taskID, kind, payload, tasks.UpdateOptions{})
+}
+
+func (r *Runtime) recordTaskUpdate(ctx context.Context, taskID, kind string, payload map[string]any, opts tasks.UpdateOptions) {
 	if r.Tasks == nil || taskID == "" {
 		return
 	}
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
-		err = r.Tasks.RecordUpdate(ctx, taskID, kind, payload)
+		if len(opts.EventMetadata) == 0 {
+			err = r.Tasks.RecordUpdate(ctx, taskID, kind, payload)
+		} else {
+			err = r.Tasks.RecordUpdateWithOptions(ctx, taskID, kind, payload, opts)
+		}
 		if err == nil {
 			return
 		}
@@ -1257,6 +1515,9 @@ func (r *Runtime) watchInterrupts(ctx context.Context, agentID, taskID string, c
 			if !eventTargetsTask(evt, agentID) {
 				continue
 			}
+			if !eventVisibleToAgentContext(evt) {
+				continue
+			}
 			if evt.Metadata != nil {
 				if priority, ok := evt.Metadata["priority"].(string); ok && strings.EqualFold(priority, "interrupt") {
 					cancel()
@@ -1309,6 +1570,16 @@ func eventTargetsTask(evt eventbus.Event, agentID string) bool {
 		return evt.ScopeID == "" || evt.ScopeID == "*" || evt.ScopeID == agentID
 	}
 	return false
+}
+
+func eventVisibleToAgentContext(evt eventbus.Event) bool {
+	defaultVisible := true
+	if stream := strings.TrimSpace(evt.Stream); stream != "" {
+		if configured, ok := agentContextDefaultVisibilityByStream[stream]; ok {
+			defaultVisible = configured
+		}
+	}
+	return schema.MetaVisibleToConsumer(evt.Metadata, schema.ConsumerAgentContext, defaultVisible)
 }
 
 func (r *Runtime) GetSession(agentID string) (Session, bool) {
@@ -1544,6 +1815,7 @@ func (r *Runtime) collectUnreadContextEvents(ctx context.Context, agentID string
 
 	seen := map[string]struct{}{}
 	out := make([]eventbus.Event, 0, limit)
+	suppressedByStream := map[string][]string{}
 	for stream, ids := range idsByStream {
 		events, err := r.Bus.Read(ctx, stream, ids, agentID)
 		if err != nil {
@@ -1556,6 +1828,12 @@ func (r *Runtime) collectUnreadContextEvents(ctx context.Context, agentID string
 			if !eventTargetsTask(evt, agentID) {
 				continue
 			}
+			if !eventVisibleToAgentContext(evt) {
+				if evt.ID != "" && evt.Stream != "" {
+					suppressedByStream[evt.Stream] = append(suppressedByStream[evt.Stream], evt.ID)
+				}
+				continue
+			}
 			key := evt.Stream + ":" + evt.ID
 			if _, ok := seen[key]; ok {
 				continue
@@ -1563,6 +1841,12 @@ func (r *Runtime) collectUnreadContextEvents(ctx context.Context, agentID string
 			seen[key] = struct{}{}
 			out = append(out, evt)
 		}
+	}
+	for stream, ids := range suppressedByStream {
+		if len(ids) == 0 {
+			continue
+		}
+		_ = r.Bus.Ack(ctx, stream, uniqueStrings(ids), agentID)
 	}
 	return out, nil
 }
@@ -1775,10 +2059,15 @@ func buildInputWithHistory(source, message string, metadata map[string]any, turn
 
 	var b strings.Builder
 	b.Grow(3500)
+	serviceID := strings.TrimSpace(schema.GetMetaString(metadata, "service_id"))
 	b.WriteString("<system_updates source=\"")
 	b.WriteString(xmlEscape(source))
 	b.WriteString("\" priority=\"")
 	b.WriteString(xmlEscape(priority))
+	if serviceID != "" {
+		b.WriteString("\" service_id=\"")
+		b.WriteString(xmlEscape(serviceID))
+	}
 	b.WriteString("\">\n")
 	if message != "" {
 		b.WriteString("  <message>")
@@ -1835,6 +2124,7 @@ func renderContextUpdatesXML(turnCtx TurnContext, frame ContextUpdateFrame) stri
 		priority := eventPriorityForEvent(evt)
 		taskID := schema.GetMetaString(evt.Metadata, "task_id")
 		taskKind := schema.GetMetaString(evt.Metadata, "task_kind")
+		serviceID := schema.GetMetaString(evt.Metadata, "service_id")
 		subject := clipText(strings.TrimSpace(evt.Subject), contextEventBodyLimit(priority))
 		body, bodyTruncated := buildContextEventBody(evt, priority)
 		if taskID != "" && subject == fmt.Sprintf("Task %s update", taskID) {
@@ -1862,6 +2152,11 @@ func renderContextUpdatesXML(turnCtx TurnContext, frame ContextUpdateFrame) stri
 			b.WriteString(xmlEscape(taskKind))
 			b.WriteString("\"")
 		}
+		if serviceID != "" {
+			b.WriteString(" service_id=\"")
+			b.WriteString(xmlEscape(serviceID))
+			b.WriteString("\"")
+		}
 		b.WriteString(" created_at=\"")
 		b.WriteString(evt.CreatedAt.UTC().Format(time.RFC3339))
 		b.WriteString("\">\n")
@@ -1879,7 +2174,7 @@ func renderContextUpdatesXML(turnCtx TurnContext, frame ContextUpdateFrame) stri
 			b.WriteString(xmlEscape(body))
 			b.WriteString("</body>\n")
 		}
-		if metadata := compactEventMetadataForPrompt(evt.Metadata, evt.Stream, priority, taskID, taskKind); metadata != "" {
+		if metadata := compactEventMetadataForPrompt(evt.Metadata, evt.Stream, priority, taskID, taskKind, serviceID); metadata != "" {
 			b.WriteString("    <metadata>")
 			b.WriteString(xmlEscape(metadata))
 			b.WriteString("</metadata>\n")
@@ -1952,7 +2247,7 @@ func shouldAppendPayloadToContextBody(evt eventbus.Event, priority, body string)
 	}
 }
 
-func compactEventMetadataForPrompt(metadata map[string]any, stream, priority, taskID, taskKind string) string {
+func compactEventMetadataForPrompt(metadata map[string]any, stream, priority, taskID, taskKind, serviceID string) string {
 	if len(metadata) == 0 {
 		return ""
 	}
@@ -1978,6 +2273,9 @@ func compactEventMetadataForPrompt(metadata map[string]any, stream, priority, ta
 	}
 	if taskKind != "" && schema.GetMetaString(clean, "task_kind") == taskKind {
 		delete(clean, "task_kind")
+	}
+	if serviceID != "" && schema.GetMetaString(clean, "service_id") == serviceID {
+		delete(clean, "service_id")
 	}
 	// Remove kind when it's implied by the stream or other attributes.
 	kind := strings.ToLower(strings.TrimSpace(schema.GetMetaString(clean, "kind")))

@@ -165,7 +165,6 @@ func (r *Runtime) historyGeneration(ctx context.Context, taskID string) int64 {
 	return gen
 }
 
-
 func (r *Runtime) shouldAppendGenerationPreamble(ctx context.Context, taskID string, generation int64) bool {
 	taskID = strings.TrimSpace(taskID)
 	if taskID == "" {
@@ -216,7 +215,6 @@ func (r *Runtime) shouldAppendGenerationPreamble(ctx context.Context, taskID str
 	r.historyMu.Unlock()
 	return !alreadyExists
 }
-
 
 func (r *Runtime) CompactAgentContext(ctx context.Context, taskID, reason string) (int64, error) {
 	taskID = strings.TrimSpace(taskID)

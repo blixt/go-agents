@@ -30,6 +30,7 @@ type stateResponse struct {
 	Sessions    map[string]engine.Session      `json:"sessions"`
 	Histories   map[string]engine.AgentHistory `json:"histories"`
 	Streams     map[string][]eventbus.Event    `json:"streams"`
+	Services    []serviceRuntimeState          `json:"services,omitempty"`
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
@@ -152,6 +153,8 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 			resp.Streams[stream] = ordered
 		}
 	}
+
+	resp.Services = readSupervisorServiceState()
 
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -283,7 +286,6 @@ func readAgentHistory(ctx context.Context, bus *eventbus.Bus, agentID string, li
 		Entries:    filtered,
 	}, nil
 }
-
 
 func maxTime(a, b time.Time) time.Time {
 	if a.After(b) {

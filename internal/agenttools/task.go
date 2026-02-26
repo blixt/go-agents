@@ -1,6 +1,8 @@
 package agenttools
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -11,6 +13,8 @@ import (
 	"github.com/flitsinc/go-agents/internal/tasks"
 	llmtools "github.com/flitsinc/go-llms/tools"
 )
+
+const agentOutputPollInterval = 100 * time.Millisecond
 
 type AwaitTaskParams struct {
 	TaskID      string `json:"task_id" description:"Task id to wait for"`
@@ -47,8 +51,52 @@ func AwaitTaskTool(manager *tasks.Manager) llmtools.Tool {
 				return llmtools.Errorf("wait_seconds must be > 0")
 			}
 			timeout := time.Duration(waitSeconds) * time.Second
+			startedAt := time.Now()
+
+			task, err := manager.Get(r.Context(), p.TaskID)
+			if err != nil {
+				return llmtools.ErrorWithLabel("await_task failed", err)
+			}
+
+			isAgentTask := task.Type == "agent" || task.Type == "llm"
+			assistantOutputBaseline := ""
+			if isAgentTask {
+				latest, found, latestErr := manager.LatestUpdate(r.Context(), p.TaskID, "assistant_output")
+				if latestErr != nil {
+					return llmtools.ErrorWithLabel("await_task failed", latestErr)
+				}
+				if found {
+					assistantOutputBaseline = latest.ID
+				}
+			}
+
 			r.Report("waiting")
 			awaited, awaitErr := manager.Await(r.Context(), p.TaskID, timeout)
+			if awaited.ID == "" {
+				awaited = task
+			}
+
+			if isAgentTask && awaited.Status == tasks.StatusCompleted {
+				remaining := timeout - time.Since(startedAt)
+				update, found, updateErr := waitForUpdateSince(
+					r.Context(),
+					manager,
+					p.TaskID,
+					assistantOutputBaseline,
+					"assistant_output",
+					remaining,
+				)
+				if updateErr != nil {
+					return llmtools.ErrorWithLabel("await_task failed", updateErr)
+				}
+				if found {
+					awaited.Result = mergeAssistantOutputResult(awaited.Result, update.Payload)
+					awaitErr = nil
+				} else if awaitErr == nil {
+					awaitErr = tasks.ErrAwaitTimeout
+				}
+			}
+
 			if tasks.IsTerminalStatus(awaited.Status) {
 				owner := strings.TrimSpace(agentcontext.TaskIDFromContext(r.Context()))
 				if owner != "" {
@@ -59,7 +107,11 @@ func AwaitTaskTool(manager *tasks.Manager) llmtools.Tool {
 				"task_id": p.TaskID,
 				"status":  awaited.Status,
 			}
-			if awaited.Status == tasks.StatusCompleted {
+			includeCompletedResult := awaited.Status == tasks.StatusCompleted
+			if isAgentTask && tasks.IsAwaitTimeout(awaitErr) {
+				includeCompletedResult = false
+			}
+			if includeCompletedResult {
 				resp["result"] = awaited.Result
 			}
 			if awaited.Status == tasks.StatusFailed || awaited.Status == tasks.StatusCancelled {
@@ -101,6 +153,85 @@ func AwaitTaskTool(manager *tasks.Manager) llmtools.Tool {
 			return llmtools.Success(resp)
 		},
 	)
+}
+
+func waitForUpdateSince(
+	ctx context.Context,
+	manager *tasks.Manager,
+	taskID, afterID, kind string,
+	timeout time.Duration,
+) (tasks.Update, bool, error) {
+	if manager == nil || strings.TrimSpace(taskID) == "" {
+		return tasks.Update{}, false, nil
+	}
+
+	readLatest := func() (tasks.Update, bool, error) {
+		updates, err := manager.ListUpdatesSince(ctx, taskID, afterID, kind, 20)
+		if err != nil {
+			return tasks.Update{}, false, err
+		}
+		if len(updates) == 0 {
+			return tasks.Update{}, false, nil
+		}
+		return updates[len(updates)-1], true, nil
+	}
+
+	if timeout <= 0 {
+		return readLatest()
+	}
+
+	deadline := time.Now().Add(timeout)
+	for {
+		update, found, err := readLatest()
+		if err != nil {
+			return tasks.Update{}, false, err
+		}
+		if found {
+			return update, true, nil
+		}
+
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return tasks.Update{}, false, nil
+		}
+		sleepFor := agentOutputPollInterval
+		if remaining < sleepFor {
+			sleepFor = remaining
+		}
+		timer := time.NewTimer(sleepFor)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return tasks.Update{}, false, nil
+			}
+			return tasks.Update{}, false, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func mergeAssistantOutputResult(result map[string]any, payload map[string]any) map[string]any {
+	merged := cloneAnyMap(result)
+	if merged == nil {
+		merged = cloneAnyMap(payload)
+	}
+	text := strings.TrimSpace(schema.GetMetaString(payload, "text"))
+	if text != "" {
+		merged["output"] = text
+	}
+	return merged
+}
+
+func cloneAnyMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func SendTaskTool(manager *tasks.Manager, bus *eventbus.Bus) llmtools.Tool {

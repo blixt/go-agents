@@ -19,8 +19,11 @@ type Manager struct {
 	ToolNames []string
 }
 
-const promptMemoryFile = "MEMORY.md"
-const maxPromptContextChars = 8000
+const (
+	promptUserFile        = "PROMPT.ts"
+	promptMemoryFile      = "MEMORY.md"
+	maxPromptContextChars = 8000
+)
 
 func (m *Manager) BuildSystemPrompt(ctx context.Context, _ *eventbus.Bus) (content.Content, string, error) {
 	text, err := BuildPrompt(ctx, m.Home)
@@ -38,7 +41,27 @@ func BuildPrompt(ctx context.Context, home string) (string, error) {
 			return "", err
 		}
 	}
-	promptPath := filepath.Join(home, "PROMPT.ts")
+	userPrompt, err := runPromptScript(ctx, home, promptUserFile)
+	if err != nil {
+		return "", err
+	}
+	managedPrompt, err := runPromptScript(ctx, home, goagents.ManagedHarnessPromptFile)
+	if err != nil {
+		return "", err
+	}
+	mergedPrompt, err := mergePromptSections(userPrompt, managedPrompt)
+	if err != nil {
+		return "", err
+	}
+	withContext, err := appendPromptContextFromWorkspace(home, mergedPrompt)
+	if err != nil {
+		return "", err
+	}
+	return withContext, nil
+}
+
+func runPromptScript(ctx context.Context, home, relPath string) (string, error) {
+	promptPath := filepath.Join(home, relPath)
 	cmd := exec.CommandContext(ctx, "bun", promptPath)
 	cmd.Dir = home
 	cmd.Env = append(os.Environ(), fmt.Sprintf("GO_AGENTS_HOME=%s", home))
@@ -48,19 +71,38 @@ func BuildPrompt(ctx context.Context, home string) (string, error) {
 	if err != nil {
 		details := strings.TrimSpace(stderr.String())
 		if details != "" {
-			return "", fmt.Errorf("prompt builder failed: %s", details)
+			return "", fmt.Errorf("prompt builder %s failed: %s", relPath, details)
 		}
-		return "", fmt.Errorf("prompt builder failed: %w", err)
+		return "", fmt.Errorf("prompt builder %s failed: %w", relPath, err)
 	}
 	text := strings.TrimSpace(string(out))
 	if text == "" {
+		return "", fmt.Errorf("prompt builder %s returned empty prompt", relPath)
+	}
+	return text, nil
+}
+
+func mergePromptSections(userPrompt, managedPrompt string) (string, error) {
+	userPrompt = strings.TrimSpace(userPrompt)
+	managedPrompt = strings.TrimSpace(managedPrompt)
+
+	parts := make([]string, 0, 2)
+	if userPrompt != "" {
+		parts = append(parts, userPrompt)
+	}
+	if managedPrompt != "" {
+		parts = append(parts, strings.TrimSpace(
+			"## Managed Harness API Context\n"+
+				"The following section is managed by the runtime and is authoritative for harness API behavior.\n\n"+
+				managedPrompt,
+		))
+	}
+
+	prompt := strings.TrimSpace(strings.Join(parts, "\n\n"))
+	if prompt == "" {
 		return "", fmt.Errorf("prompt builder returned empty prompt")
 	}
-	withContext, err := appendPromptContextFromWorkspace(home, text)
-	if err != nil {
-		return "", err
-	}
-	return withContext, nil
+	return prompt, nil
 }
 
 func appendPromptContextFromWorkspace(home, prompt string) (string, error) {

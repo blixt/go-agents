@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -147,6 +148,273 @@ func TestServerCreateTaskUpsert(t *testing.T) {
 	}
 	if second["created"] != false {
 		t.Fatalf("expected created=false, got %#v", second["created"])
+	}
+}
+
+func TestServerTaskSendIncludesServiceIDInMessageMetadata(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	runtimeClient := &ai.Client{LLM: llms.New(&apiFakeProvider{})}
+	rt := engine.NewRuntime(bus, mgr, runtimeClient)
+	server := &Server{Tasks: mgr, Bus: bus, Runtime: rt}
+	client := testutil.NewInProcessClient(server.Handler())
+
+	_, err := mgr.Spawn(context.Background(), tasks.Spec{
+		ID:    "operator",
+		Type:  "agent",
+		Owner: "operator",
+		Mode:  "async",
+		Metadata: map[string]any{
+			"input_target":  "operator",
+			"notify_target": "operator",
+		},
+	})
+	if err != nil {
+		t.Fatalf("spawn operator: %v", err)
+	}
+	_ = mgr.MarkRunning(context.Background(), "operator")
+
+	resp := doJSON(t, client, "POST", "/api/tasks/operator/send", map[string]any{
+		"message":    "hello from service",
+		"source":     "telegram-bot",
+		"service_id": "telegram-bot",
+		"request_id": "req-123",
+		"context": map[string]any{
+			"chat_id":    "12345",
+			"service_id": "telegram-bot",
+		},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("send status: %d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	var sendResp map[string]any
+	decodeJSONResponse(t, resp, &sendResp)
+	if sendResp["request_id"] != "req-123" {
+		t.Fatalf("expected request_id in response, got %#v", sendResp["request_id"])
+	}
+	if sendResp["service_id"] != "telegram-bot" {
+		t.Fatalf("expected service_id in response, got %#v", sendResp["service_id"])
+	}
+
+	summaries, err := bus.List(context.Background(), "task_input", eventbus.ListOptions{
+		ScopeType: "task",
+		ScopeID:   "operator",
+		Limit:     20,
+		Order:     "lifo",
+	})
+	if err != nil {
+		t.Fatalf("list task_input: %v", err)
+	}
+	if len(summaries) == 0 {
+		t.Fatalf("expected task_input events")
+	}
+	ids := make([]string, 0, len(summaries))
+	for _, summary := range summaries {
+		ids = append(ids, summary.ID)
+	}
+	events, err := bus.Read(context.Background(), "task_input", ids, "")
+	if err != nil {
+		t.Fatalf("read task_input: %v", err)
+	}
+	found := false
+	for _, evt := range events {
+		if evt.Metadata == nil {
+			continue
+		}
+		if evt.Metadata["request_id"] != "req-123" {
+			continue
+		}
+		if evt.Metadata["service_id"] != "telegram-bot" {
+			t.Fatalf("expected service_id metadata, got %#v", evt.Metadata["service_id"])
+		}
+		rawCtx, ok := evt.Metadata["context"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected context metadata map, got %#v", evt.Metadata["context"])
+		}
+		if rawCtx["service_id"] != "telegram-bot" {
+			t.Fatalf("expected context.service_id metadata, got %#v", rawCtx["service_id"])
+		}
+		found = true
+		break
+	}
+	if !found {
+		t.Fatalf("expected task_input event with request_id req-123")
+	}
+}
+
+func TestServerTaskSendDoesNotInferServiceIDFromSource(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	runtimeClient := &ai.Client{LLM: llms.New(&apiFakeProvider{})}
+	rt := engine.NewRuntime(bus, mgr, runtimeClient)
+	server := &Server{Tasks: mgr, Bus: bus, Runtime: rt}
+	client := testutil.NewInProcessClient(server.Handler())
+
+	_, err := mgr.Spawn(context.Background(), tasks.Spec{
+		ID:    "operator",
+		Type:  "agent",
+		Owner: "operator",
+		Mode:  "async",
+		Metadata: map[string]any{
+			"input_target":  "operator",
+			"notify_target": "operator",
+		},
+	})
+	if err != nil {
+		t.Fatalf("spawn operator: %v", err)
+	}
+	_ = mgr.MarkRunning(context.Background(), "operator")
+
+	resp := doJSON(t, client, "POST", "/api/tasks/operator/send", map[string]any{
+		"message":    "hello from service",
+		"source":     "telegram-bot",
+		"request_id": "req-no-service-id",
+		"context": map[string]any{
+			"chat_id": "12345",
+		},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("send status: %d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	var sendResp map[string]any
+	decodeJSONResponse(t, resp, &sendResp)
+	if _, ok := sendResp["service_id"]; ok {
+		t.Fatalf("did not expect service_id in response when omitted, got %#v", sendResp["service_id"])
+	}
+
+	summaries, err := bus.List(context.Background(), "task_input", eventbus.ListOptions{
+		ScopeType: "task",
+		ScopeID:   "operator",
+		Limit:     20,
+		Order:     "lifo",
+	})
+	if err != nil {
+		t.Fatalf("list task_input: %v", err)
+	}
+	ids := make([]string, 0, len(summaries))
+	for _, summary := range summaries {
+		ids = append(ids, summary.ID)
+	}
+	events, err := bus.Read(context.Background(), "task_input", ids, "")
+	if err != nil {
+		t.Fatalf("read task_input: %v", err)
+	}
+	for _, evt := range events {
+		if evt.Metadata == nil || evt.Metadata["request_id"] != "req-no-service-id" {
+			continue
+		}
+		if _, ok := evt.Metadata["service_id"]; ok {
+			t.Fatalf("did not expect inferred service_id from source, got %#v", evt.Metadata["service_id"])
+		}
+		return
+	}
+	t.Fatalf("expected task_input event with request_id req-no-service-id")
+}
+
+func TestServerTaskSendRejectsConflictingServiceID(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	runtimeClient := &ai.Client{LLM: llms.New(&apiFakeProvider{})}
+	rt := engine.NewRuntime(bus, mgr, runtimeClient)
+	server := &Server{Tasks: mgr, Bus: bus, Runtime: rt}
+	client := testutil.NewInProcessClient(server.Handler())
+
+	_, err := mgr.Spawn(context.Background(), tasks.Spec{
+		ID:    "operator",
+		Type:  "agent",
+		Owner: "operator",
+		Mode:  "async",
+		Metadata: map[string]any{
+			"input_target":  "operator",
+			"notify_target": "operator",
+		},
+	})
+	if err != nil {
+		t.Fatalf("spawn operator: %v", err)
+	}
+	_ = mgr.MarkRunning(context.Background(), "operator")
+
+	resp := doJSON(t, client, "POST", "/api/tasks/operator/send", map[string]any{
+		"message":    "hello",
+		"service_id": "service-a",
+		"context": map[string]any{
+			"service_id": "service-b",
+		},
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for conflicting service_id, got %d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	body := readBody(t, resp)
+	if !strings.Contains(body, "service_id conflict") {
+		t.Fatalf("expected service_id conflict error, got %q", body)
+	}
+}
+
+func TestServerEmptySlicesEncodeAsJSONArray(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	runtimeClient := &ai.Client{LLM: llms.New(&apiFakeProvider{})}
+	rt := engine.NewRuntime(bus, mgr, runtimeClient)
+	server := &Server{Tasks: mgr, Bus: bus, Runtime: rt}
+	client := testutil.NewInProcessClient(server.Handler())
+
+	resp := doJSON(t, client, "GET", "/api/tasks/queue?type=exec&limit=10", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("queue status: %d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	if body := strings.TrimSpace(readBody(t, resp)); body != "[]" {
+		t.Fatalf("expected empty queue to encode as [], got %q", body)
+	}
+
+	resp = doJSON(t, client, "GET", "/api/state?tasks=10&updates=10&streams=10", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("state status: %d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	body := readBody(t, resp)
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		t.Fatalf("decode state response: %v", err)
+	}
+	if got := strings.TrimSpace(string(payload["agents"])); got != "[]" {
+		t.Fatalf("expected state.agents to be [], got %q", got)
+	}
+	if got := strings.TrimSpace(string(payload["tasks"])); got != "[]" {
+		t.Fatalf("expected state.tasks to be [], got %q", got)
+	}
+
+	_, err := mgr.Spawn(context.Background(), tasks.Spec{
+		ID:    "operator",
+		Type:  "agent",
+		Owner: "operator",
+		Mode:  "async",
+		Metadata: map[string]any{
+			"input_target":  "operator",
+			"notify_target": "operator",
+		},
+	})
+	if err != nil {
+		t.Fatalf("spawn operator: %v", err)
+	}
+	_ = mgr.MarkRunning(context.Background(), "operator")
+
+	resp = doJSON(t, client, "GET", "/api/tasks/operator/updates?kind=does-not-exist", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("updates status: %d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	if body := strings.TrimSpace(readBody(t, resp)); body != "[]" {
+		t.Fatalf("expected empty updates to encode as [], got %q", body)
 	}
 }
 

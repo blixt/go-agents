@@ -5,6 +5,8 @@ services:
       dockerfile: go-agents/Dockerfile
     working_dir: /app/go-agents
     command: ["agentd"]
+    volumes:
+      - go_agents_home:/root/.go-agents
     env_file:
       - .env
 
@@ -30,7 +32,12 @@ services:
       dockerfile: go-agents/Dockerfile
     working_dir: /app/go-agents
     command: ["bun", "/app/go-agents/exec/execd.ts", "--api-url", "http://agentd:8080", "--parallel", "2"]
+    volumes:
+      - go_agents_home:/root/.go-agents
     depends_on:
       - agentd
     env_file:
       - .env
+
+volumes:
+  go_agents_home:

@@ -49,6 +49,12 @@ type Update struct {
 	CreatedAt time.Time      `json:"created_at"`
 }
 
+type UpdateOptions struct {
+	// EventMetadata is merged onto the emitted task_output event metadata.
+	// Use this for generic routing controls (for example delivery policies).
+	EventMetadata map[string]any
+}
+
 type Spec struct {
 	ID       string         `json:"id,omitempty"`
 	Type     string         `json:"type"`
@@ -147,9 +153,9 @@ func WithIDGenerator(newIDFn func(string) string) Option {
 
 func NewManager(db *sql.DB, bus *eventbus.Bus, opts ...Option) *Manager {
 	m := &Manager{
-		db:      db,
-		bus:     bus,
-		nowFn:   func() time.Time { return time.Now().UTC() },
+		db:    db,
+		bus:   bus,
+		nowFn: func() time.Time { return time.Now().UTC() },
 		newIDFn: func(prefix string) string {
 			if prefix != "" {
 				return idgen.TaskID(db, prefix)
@@ -367,6 +373,14 @@ func (m *Manager) List(ctx context.Context, filter ListFilter) ([]Task, error) {
 }
 
 func (m *Manager) RecordUpdate(ctx context.Context, taskID, kind string, payload map[string]any) error {
+	return m.recordUpdate(ctx, taskID, kind, payload, UpdateOptions{})
+}
+
+func (m *Manager) RecordUpdateWithOptions(ctx context.Context, taskID, kind string, payload map[string]any, opts UpdateOptions) error {
+	return m.recordUpdate(ctx, taskID, kind, payload, opts)
+}
+
+func (m *Manager) recordUpdate(ctx context.Context, taskID, kind string, payload map[string]any, opts UpdateOptions) error {
 	if taskID == "" {
 		return fmt.Errorf("task_id is required")
 	}
@@ -395,20 +409,27 @@ func (m *Manager) RecordUpdate(ctx context.Context, taskID, kind string, payload
 		scopeType, scopeID := scopeForTarget(m.taskTarget(ctx, taskID, "notify_target"))
 		priority := taskUpdatePriority(kind, payload)
 		sourceID := strings.TrimSpace(agentcontext.TaskIDFromContext(ctx))
+		metadata := map[string]any{
+			"kind":      "task_update",
+			"task_id":   taskID,
+			"task_kind": kind,
+			"priority":  priority,
+		}
+		for key, value := range opts.EventMetadata {
+			if strings.TrimSpace(key) == "" || value == nil {
+				continue
+			}
+			metadata[key] = value
+		}
 		_, _ = m.bus.Push(ctx, eventbus.EventInput{
 			Stream:    schema.StreamTaskOutput,
 			ScopeType: scopeType,
 			ScopeID:   scopeID,
 			Subject:   fmt.Sprintf("Task %s update", taskID),
 			Body:      kind,
-			Metadata: map[string]any{
-				"kind":      "task_update",
-				"task_id":   taskID,
-				"task_kind": kind,
-				"priority":  priority,
-			},
-			Payload:  payload,
-			SourceID: sourceID,
+			Metadata:  metadata,
+			Payload:   payload,
+			SourceID:  sourceID,
 		})
 	}
 	return nil
@@ -839,6 +860,36 @@ func (m *Manager) ListUpdatesSince(ctx context.Context, taskID, afterID, kind st
 		return nil, fmt.Errorf("iterate updates: %w", err)
 	}
 	return out, nil
+}
+
+func (m *Manager) LatestUpdate(ctx context.Context, taskID, kind string) (Update, bool, error) {
+	if taskID == "" {
+		return Update{}, false, fmt.Errorf("task_id is required")
+	}
+	query := `
+		SELECT id, task_id, kind, payload, created_at
+		FROM task_updates
+		WHERE task_id = ?
+	`
+	args := []any{taskID}
+	if strings.TrimSpace(kind) != "" {
+		query += " AND kind = ?"
+		args = append(args, kind)
+	}
+	query += " ORDER BY created_at DESC, id DESC LIMIT 1"
+
+	var upd Update
+	var payloadStr, createdAtStr string
+	err := m.db.QueryRowContext(ctx, query, args...).Scan(&upd.ID, &upd.TaskID, &upd.Kind, &payloadStr, &createdAtStr)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Update{}, false, nil
+		}
+		return Update{}, false, fmt.Errorf("latest update: %w", err)
+	}
+	upd.Payload = decodeJSONMap(payloadStr)
+	upd.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAtStr)
+	return upd, true, nil
 }
 
 func (m *Manager) ClaimQueued(ctx context.Context, taskType string, limit int) ([]Task, error) {

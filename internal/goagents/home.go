@@ -18,7 +18,8 @@ func HomeDir() (string, error) {
 }
 
 // EnsureHome creates ~/.go-agents and seeds it with the embedded template if it does not exist.
-// If ~/.go-agents already exists, it is left untouched.
+// When ~/.go-agents already exists, missing template files are backfilled without overwriting
+// user-managed files, and the managed harness prompt is refreshed from the embedded template.
 func EnsureHome() (string, error) {
 	home, err := HomeDir()
 	if err != nil {
@@ -29,6 +30,12 @@ func EnsureHome() (string, error) {
 		if !info.IsDir() {
 			return "", fmt.Errorf("%s exists and is not a directory", home)
 		}
+		if err := copyTemplate(home, false); err != nil {
+			return "", err
+		}
+		if err := syncManagedHarnessPrompt(home); err != nil {
+			return "", err
+		}
 		return home, nil
 	}
 	if !os.IsNotExist(err) {
@@ -37,7 +44,10 @@ func EnsureHome() (string, error) {
 	if err := os.MkdirAll(home, 0o755); err != nil {
 		return "", err
 	}
-	if err := copyTemplate(home); err != nil {
+	if err := copyTemplate(home, true); err != nil {
+		return "", err
+	}
+	if err := syncManagedHarnessPrompt(home); err != nil {
 		return "", err
 	}
 	return home, nil

@@ -530,22 +530,22 @@ func projectAgents(agents []agentState) []agentSnapshot {
 }
 
 type sessionSnapshot struct {
-	TaskID    string `json:"task_id"`
-	LLMTaskID string `json:"llm_task_id,omitempty"`
-	Prompt    string `json:"prompt"`
-	LastInput string `json:"last_input"`
+	TaskID     string `json:"task_id"`
+	LLMTaskID  string `json:"llm_task_id,omitempty"`
+	Prompt     string `json:"prompt"`
+	LastInput  string `json:"last_input"`
 	LastOutput string `json:"last_output"`
-	LastError string `json:"last_error,omitempty"`
+	LastError  string `json:"last_error,omitempty"`
 }
 
 func projectSession(s engine.Session) sessionSnapshot {
 	return sessionSnapshot{
-		TaskID:    s.TaskID,
-		LLMTaskID: s.LLMTaskID,
-		Prompt:    s.Prompt,
-		LastInput: s.LastInput,
+		TaskID:     s.TaskID,
+		LLMTaskID:  s.LLMTaskID,
+		Prompt:     s.Prompt,
+		LastInput:  s.LastInput,
 		LastOutput: s.LastOutput,
-		LastError: s.LastError,
+		LastError:  s.LastError,
 	}
 }
 

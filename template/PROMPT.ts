@@ -142,7 +142,7 @@ function subagentBlock() {
 Agents are tasks. For longer, parallel, or specialized work, spawn a subagent via exec:
 
 \`\`\`ts
-import { agent } from "core/agent.ts"
+import { agent, scopedAgent } from "core/agent.ts"
 
 // agent() creates the agent (upsert) then sends the message — two steps in one helper.
 const subagent = await agent({
@@ -152,6 +152,13 @@ const subagent = await agent({
   model: "fast",                       // optional: "fast" | "balanced" | "smart"
 })
 globalThis.result = { task_id: subagent.task_id }
+
+// Scoped conversation helper: deterministic get-or-create agent id from namespace + key.
+const convo = await scopedAgent({
+  namespace: "service-bridge",
+  key: "conversation-123",
+  message: "Continue this conversation",
+})
 \`\`\`
 
 The returned task_id is the subagent's identity. Use it with:
@@ -228,6 +235,11 @@ function servicesBlock() {
 
 For long-running background processes (bots, pollers, scheduled jobs), use the services/ convention:
 
+Singleton pattern (important):
+- One external integration should map to one service process.
+- Do not create multiple services that poll the same external queue/token/account.
+- Reuse the same service directory for edits, or disable/remove the old one before replacing it.
+
 When building a service that communicates with an agent, follow the "create then send" pattern:
 1. Call createAgent with a custom id (this upserts — safe on every restart).
 2. Call sendInput to deliver each message, with context carrying any metadata the agent needs.
@@ -235,9 +247,24 @@ When building a service that communicates with an agent, follow the "create then
 ## Creating a service
 
 \`\`\`ts
-// Write a service entry point
+// REQUIRED: service manifest (validated before start)
+await Bun.write("services/my-service/service.json", JSON.stringify({
+  service_id: "my-service",
+  singleton: true,
+  environment: {
+    MY_API_TOKEN: "replace-me",
+  },
+  required_env: ["MY_API_TOKEN"],
+  restart: { policy: "always", min_backoff_ms: 1000, max_backoff_ms: 60000 },
+  health: { heartbeat_file: ".heartbeat", heartbeat_ttl_seconds: 120, restart_on_stale: true },
+}, null, 2))
+
+// Service entry point
 await Bun.write("services/my-service/run.ts", \`
 import { createAgent, sendInput } from "core/api"
+
+const serviceId = (Bun.env.GO_AGENTS_SERVICE_ID || "").trim()
+if (serviceId === "") throw new Error("GO_AGENTS_SERVICE_ID is required")
 
 // Upsert the agent on every restart — safe and idempotent.
 await createAgent({ id: "operator", system: "You are a helpful assistant." })
@@ -247,7 +274,9 @@ await createAgent({ id: "operator", system: "You are a helpful assistant." })
 
 while (true) {
   // ... your logic here (poll an API, listen on a port, etc.)
-  // await sendInput("operator", "new data arrived", { context: { reply_to: "..." } })
+  // sendInput auto-tags source + context.service_id when called from a service process.
+  // await sendInput("operator", "new data arrived", { context: { service_id: serviceId, reply_to: "..." } })
+  // await Bun.write(".heartbeat", new Date().toISOString()) // optional health heartbeat
   await Bun.sleep(60_000)
 }
 \`)
@@ -257,6 +286,7 @@ The runtime detects the new directory and starts it automatically within seconds
 
 ## Convention
 
+- services/<name>/service.json — Required manifest. Declares required env, restart policy, and health policy.
 - services/<name>/run.ts — Entry point. Spawned as \`bun run.ts\` with CWD = service directory.
 - services/<name>/package.json — Optional npm dependencies (auto-installed, same as tools/).
 - services/<name>/.disabled — Create this file to stop the service. Delete it to restart.
@@ -264,16 +294,20 @@ The runtime detects the new directory and starts it automatically within seconds
 
 ## Environment
 
-Services inherit all environment variables plus:
+Services inherit all process environment variables plus:
 - GO_AGENTS_HOME — path to ~/.go-agents
 - GO_AGENTS_API_URL — internal API base URL
-- All variables from ~/.go-agents/.env
+- GO_AGENTS_SERVICE_ID — stable id from service.json (or directory name)
+- All key/value pairs from services/<name>/service.json \`environment\`
+
+Do not rely on ~/.go-agents/.env for service configuration.
 
 ## Lifecycle
 
 - Services are restarted on crash with exponential backoff (1s to 60s).
 - Backoff resets after 60s of stable uptime.
-- Editing run.ts or ~/.go-agents/.env automatically restarts the service within seconds.
+- Edits to run.ts, service.json, or package.json are preflight-checked before restart.
+- If preflight fails (missing env or build error), the service enters a blocked state instead of crash-looping.
 - Services can import from core/ and tools/ (same as exec code).
 - To stop: write a .disabled file. To remove: delete the directory.
 - Services persist across sessions — they keep running until explicitly stopped.`
@@ -287,21 +321,19 @@ function secretsBlock() {
   return `\
 # Secrets
 
-Store API keys, tokens, and credentials in ~/.go-agents/.env:
+For services, store API keys/tokens in the service manifest \`environment\` dictionary:
 
 \`\`\`ts
-// Save a secret
-const envPath = Bun.env.GO_AGENTS_HOME + "/.env"
-const existing = await Bun.file(envPath).text().catch(() => "")
-await Bun.write(envPath, existing + "\\nTELEGRAM_BOT_TOKEN=abc123")
+await Bun.write("services/my-service/service.json", JSON.stringify({
+  service_id: "my-service",
+  environment: {
+    TELEGRAM_BOT_TOKEN: "abc123",
+  },
+}, null, 2))
 \`\`\`
 
-All variables in .env are automatically available as environment variables in exec tasks and services.
-Read secrets with \`Bun.env.VARIABLE_NAME\`.
-
-When .env is modified, running services are automatically restarted with the updated variables within a few seconds. Exec tasks always read the latest .env on each run.
-
-Standard .env format: KEY=value, one per line. Lines starting with # are comments.`
+Services read these as normal environment variables (\`Bun.env.VARIABLE_NAME\`).
+Avoid writing ~/.go-agents/.env from agent code for service setup.`
 }
 
 // ---------------------------------------------------------------------------
@@ -392,12 +424,13 @@ const subagent = await agent({ message: "..." })
 ## core/api — Runtime API
 
 \`\`\`ts
-import { createAgent, sendInput, getUpdates, getState, subscribe, cancelTask } from "core/api"
+import { createAgent, sendInput, getUpdates, getState, subscribe, cancelTask, assistantOutputRoutes } from "core/api"
 \`\`\`
 
 - createAgent(opts) — Create or ensure an agent exists. Upserts by id — safe to call on every restart. Accepts optional system, model, source.
-- sendInput(taskId, message, opts?) — Send input to an existing task. Returns 404 if the task doesn't exist. Accepts optional \`context\` metadata.
+- sendInput(taskId, message, opts?) — Send input to an existing task. Returns 404 if the task doesn't exist. Returns \`{ ok, request_id?, service_id? }\` for correlation. Accepts optional \`context\` and \`service_id\`. When called inside a service process, \`service_id\` is auto-populated from \`GO_AGENTS_SERVICE_ID\`. \`service_id\` is authoritative routing identity and is never inferred from \`source\`.
 - getUpdates(taskId, opts?) — Read task stdout, stderr, and status updates.
+- assistantOutputRoutes(payload) — Normalize assistant output routing metadata into a deterministic list of route candidates (\`{ request_id?, context? }\`; from \`payload.routes\`).
 - getState() — Get full runtime state (all agents, tasks, events).
 - subscribe(opts?) — Subscribe to real-time event streams (SSE).
 - cancelTask(taskId) — Cancel a running task.

@@ -29,9 +29,11 @@ func main() {
 	if err := os.MkdirAll(cfg.LLMDebugDir, 0o755); err != nil {
 		log.Fatalf("create llm debug dir: %v", err)
 	}
-	if _, err := goagents.EnsureHome(); err != nil {
+	home, err := goagents.EnsureHome()
+	if err != nil {
 		log.Fatalf("ensure go-agents home: %v", err)
 	}
+	_ = os.Setenv("GO_AGENTS_HOME", home)
 
 	db, err := state.Open(cfg.DBPath)
 	if err != nil {
