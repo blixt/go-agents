@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/flitsinc/go-agents/internal/toolresult"
 	"github.com/flitsinc/go-llms/llms"
 	llmtools "github.com/flitsinc/go-llms/tools"
 )
@@ -17,12 +18,12 @@ func AddExternalTools(client *Client, schemas []llmtools.FunctionSchema, handler
 	client.LLM.AddExternalTools(schemas, func(r llmtools.Runner, params json.RawMessage) llmtools.Result {
 		toolCall, ok := llms.GetToolCall(r.Context())
 		if !ok {
-			return llmtools.Errorf("missing tool call")
+			return toolresult.Errorf("external_tool", "missing tool call")
 		}
 		result, err := handler(r.Context(), toolCall.Name, params)
 		if err != nil {
-			return llmtools.Error(err)
+			return toolresult.Error(toolCall.Name, err)
 		}
-		return llmtools.Success(result)
+		return toolresult.Success(toolCall.Name, result)
 	})
 }

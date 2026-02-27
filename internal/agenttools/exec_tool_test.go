@@ -9,7 +9,6 @@ import (
 	"github.com/flitsinc/go-agents/internal/eventbus"
 	"github.com/flitsinc/go-agents/internal/tasks"
 	"github.com/flitsinc/go-agents/internal/testutil"
-	"github.com/flitsinc/go-llms/content"
 	"github.com/flitsinc/go-llms/llms"
 	llmtools "github.com/flitsinc/go-llms/tools"
 )
@@ -37,23 +36,7 @@ func TestExecToolSpawnsTask(t *testing.T) {
 		t.Fatalf("tool error: %v", result.Error())
 	}
 
-	items := result.Content()
-	if len(items) == 0 {
-		t.Fatalf("expected content")
-	}
-
-	var payload map[string]any
-	if jsonItem, ok := items[0].(*content.JSON); ok {
-		_ = json.Unmarshal(jsonItem.Data, &payload)
-	} else {
-		for _, item := range items {
-			if jsonItem, ok := item.(*content.JSON); ok {
-				_ = json.Unmarshal(jsonItem.Data, &payload)
-				break
-			}
-		}
-	}
-
+	payload := decodeToolPayload(t, result)
 	taskID, _ := payload["task_id"].(string)
 	if taskID == "" {
 		t.Fatalf("expected task_id")
@@ -119,16 +102,7 @@ func TestExecToolWaitsForCompletion(t *testing.T) {
 		t.Fatalf("tool error: %v", result.Error())
 	}
 
-	var payload map[string]any
-	for _, item := range result.Content() {
-		if jsonItem, ok := item.(*content.JSON); ok {
-			_ = json.Unmarshal(jsonItem.Data, &payload)
-			break
-		}
-	}
-	if payload == nil {
-		t.Fatalf("expected JSON payload")
-	}
+	payload := decodeToolPayload(t, result)
 	if payload["status"] != "completed" {
 		t.Fatalf("expected completed status, got %v", payload["status"])
 	}
@@ -174,16 +148,7 @@ func TestExecToolWaitZeroReturnsBackgroundPending(t *testing.T) {
 		t.Fatalf("tool error: %v", result.Error())
 	}
 
-	var payload map[string]any
-	for _, item := range result.Content() {
-		if jsonItem, ok := item.(*content.JSON); ok {
-			_ = json.Unmarshal(jsonItem.Data, &payload)
-			break
-		}
-	}
-	if payload == nil {
-		t.Fatalf("expected JSON payload")
-	}
+	payload := decodeToolPayload(t, result)
 	if payload["task_id"] == "" {
 		t.Fatalf("expected task_id in payload")
 	}
@@ -245,16 +210,7 @@ func TestExecToolWakeIncludesWakeEventID(t *testing.T) {
 		t.Fatalf("tool error: %v", result.Error())
 	}
 
-	var payload map[string]any
-	for _, item := range result.Content() {
-		if jsonItem, ok := item.(*content.JSON); ok {
-			_ = json.Unmarshal(jsonItem.Data, &payload)
-			break
-		}
-	}
-	if payload == nil {
-		t.Fatalf("expected JSON payload")
-	}
+	payload := decodeToolPayload(t, result)
 
 	var expectedWakeID string
 	select {
@@ -313,16 +269,7 @@ func TestExecToolCanSuppressKnownWakeEvent(t *testing.T) {
 		t.Fatalf("tool error: %v", result.Error())
 	}
 
-	var payload map[string]any
-	for _, item := range result.Content() {
-		if jsonItem, ok := item.(*content.JSON); ok {
-			_ = json.Unmarshal(jsonItem.Data, &payload)
-			break
-		}
-	}
-	if payload == nil {
-		t.Fatalf("expected JSON payload")
-	}
+	payload := decodeToolPayload(t, result)
 	awaitError, _ := payload["await_error"].(string)
 	if awaitError == "" {
 		t.Fatalf("expected await_error in payload")

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/flitsinc/go-llms/content"
 	llmtools "github.com/flitsinc/go-llms/tools"
 )
 
@@ -16,16 +15,7 @@ func TestNoopToolReturnsIdle(t *testing.T) {
 		t.Fatalf("unexpected error: %v", result.Error())
 	}
 
-	var payload map[string]any
-	for _, item := range result.Content() {
-		if jsonItem, ok := item.(*content.JSON); ok {
-			_ = json.Unmarshal(jsonItem.Data, &payload)
-			break
-		}
-	}
-	if payload == nil {
-		t.Fatalf("expected JSON payload")
-	}
+	payload := decodeToolPayload(t, result)
 	if payload["status"] != "idle" {
 		t.Fatalf("expected idle status, got %v", payload["status"])
 	}

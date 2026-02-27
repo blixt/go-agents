@@ -30,17 +30,10 @@ func TestViewImageToolLoadsLocalImage(t *testing.T) {
 	if result.Error() != nil {
 		t.Fatalf("unexpected error: %v", result.Error())
 	}
-	if len(result.Content()) < 2 {
-		t.Fatalf("expected json + image content, got %d items", len(result.Content()))
-	}
-
-	var payload map[string]any
+	payload := decodeToolPayload(t, result)
 	foundImage := false
 	for _, item := range result.Content() {
-		switch v := item.(type) {
-		case *content.JSON:
-			_ = json.Unmarshal(v.Data, &payload)
-		case *content.ImageURL:
+		if v, ok := item.(*content.ImageURL); ok {
 			if v.URL != "" {
 				foundImage = true
 			}
@@ -48,9 +41,6 @@ func TestViewImageToolLoadsLocalImage(t *testing.T) {
 	}
 	if !foundImage {
 		t.Fatalf("expected image content item")
-	}
-	if payload == nil {
-		t.Fatalf("expected json payload")
 	}
 	if payload["fidelity"] != "low" {
 		t.Fatalf("expected low fidelity, got %v", payload["fidelity"])

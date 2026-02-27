@@ -3,6 +3,7 @@ package agenttools
 import (
 	"strings"
 
+	"github.com/flitsinc/go-agents/internal/toolresult"
 	llmtools "github.com/flitsinc/go-llms/tools"
 )
 
@@ -16,7 +17,7 @@ func NoopTool() llmtools.Tool {
 		"Explicitly do nothing and leave a short optional comment",
 		"noop",
 		func(r llmtools.Runner, p NoopParams) llmtools.Result {
-			return llmtools.Success(map[string]any{
+			return toolresult.Success("noop", map[string]any{
 				"status":  "idle",
 				"comment": strings.TrimSpace(p.Comment),
 			})

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/flitsinc/go-agents/internal/toolresult"
 	"github.com/flitsinc/go-llms/content"
 	llmtools "github.com/flitsinc/go-llms/tools"
 )
@@ -36,11 +37,11 @@ func ViewImageTool() llmtools.Tool {
 			if path == "" {
 				rawURL := strings.TrimSpace(p.URL)
 				if rawURL == "" {
-					return llmtools.Errorf("either path or url is required")
+					return toolresult.Errorf("view_image", "either path or url is required")
 				}
 				downloaded, err := downloadImage(rawURL, maxBytes)
 				if err != nil {
-					return llmtools.ErrorWithLabel("view_image failed", err)
+					return toolresult.ErrorWithLabel("view_image", "view_image failed", err)
 				}
 				path = downloaded
 				source["url"] = rawURL
@@ -52,20 +53,20 @@ func ViewImageTool() llmtools.Tool {
 
 			absPath, err := filepath.Abs(path)
 			if err != nil {
-				return llmtools.ErrorWithLabel("view_image failed", fmt.Errorf("resolve path: %w", err))
+				return toolresult.ErrorWithLabel("view_image", "view_image failed", fmt.Errorf("resolve path: %w", err))
 			}
 			info, err := os.Stat(absPath)
 			if err != nil {
-				return llmtools.ErrorWithLabel("view_image failed", fmt.Errorf("stat image: %w", err))
+				return toolresult.ErrorWithLabel("view_image", "view_image failed", fmt.Errorf("stat image: %w", err))
 			}
 			if info.Size() > maxBytes {
-				return llmtools.Errorf("image too large (%d > %d bytes)", info.Size(), maxBytes)
+				return toolresult.Errorf("view_image", "image too large (%d > %d bytes)", info.Size(), maxBytes)
 			}
 
 			highQuality := fidelity != "low"
 			name, dataURI, err := content.ImageToDataURI(absPath, highQuality)
 			if err != nil {
-				return llmtools.ErrorWithLabel("view_image failed", err)
+				return toolresult.ErrorWithLabel("view_image", "view_image failed", err)
 			}
 
 			result := map[string]any{
@@ -74,12 +75,9 @@ func ViewImageTool() llmtools.Tool {
 				"name":     name,
 				"path":     absPath,
 			}
-			payload, err := content.FromAny(result)
-			if err != nil {
-				return llmtools.ErrorWithLabel("view_image failed", err)
-			}
+			var payload content.Content
 			payload.AddImage(dataURI)
-			return llmtools.SuccessWithContent("Loaded image", payload)
+			return toolresult.SuccessWithContent("view_image", "Loaded image", payload, result)
 		},
 	)
 }

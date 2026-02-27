@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/flitsinc/go-agents/internal/toolresult"
 	"github.com/flitsinc/go-llms/llms"
 	llmtools "github.com/flitsinc/go-llms/tools"
 
@@ -26,17 +27,17 @@ func ExecTool(manager *tasks.Manager) llmtools.Tool {
 		"exec",
 		func(r llmtools.Runner, p ExecParams) llmtools.Result {
 			if manager == nil {
-				return llmtools.Errorf("task manager unavailable")
+				return toolresult.Errorf("exec", "task manager unavailable")
 			}
 			customID := strings.TrimSpace(p.ID)
 			if customID != "" {
 				if err := idgen.ValidateCustomID(customID); err != nil {
-					return llmtools.Errorf("%s", err)
+					return toolresult.Error("exec", err)
 				}
 			}
 			code := strings.TrimSpace(p.Code)
 			if code == "" {
-				return llmtools.Errorf("code is required")
+				return toolresult.Errorf("exec", "code is required")
 			}
 			metadata := map[string]any{}
 			if tc, ok := llms.GetToolCall(r.Context()); ok {
@@ -62,18 +63,18 @@ func ExecTool(manager *tasks.Manager) llmtools.Tool {
 			}
 			task, err := manager.Spawn(r.Context(), spec)
 			if err != nil {
-				return llmtools.ErrorWithLabel("Exec failed", fmt.Errorf("spawn exec task: %w", err))
+				return toolresult.ErrorWithLabel("exec", "Exec failed", fmt.Errorf("spawn exec task: %w", err))
 			}
 
 			if p.WaitSeconds == nil {
-				return llmtools.Errorf("wait_seconds is required (set 0 to return immediately)")
+				return toolresult.Errorf("exec", "wait_seconds is required (set 0 to return immediately)")
 			}
 			waitSeconds := *p.WaitSeconds
 			if waitSeconds < 0 {
-				return llmtools.Errorf("wait_seconds must be >= 0")
+				return toolresult.Errorf("exec", "wait_seconds must be >= 0")
 			}
 			if waitSeconds == 0 {
-				return llmtools.Success(map[string]any{
+				return toolresult.Success("exec", map[string]any{
 					"task_id":    task.ID,
 					"status":     task.Status,
 					"pending":    true,
@@ -130,7 +131,7 @@ func ExecTool(manager *tasks.Manager) llmtools.Tool {
 					resp["await_error"] = awaitErr.Error()
 				}
 			}
-			return llmtools.Success(resp)
+			return toolresult.Success("exec", resp)
 		},
 	)
 }

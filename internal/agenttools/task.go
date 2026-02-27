@@ -11,6 +11,7 @@ import (
 	"github.com/flitsinc/go-agents/internal/eventbus"
 	"github.com/flitsinc/go-agents/internal/schema"
 	"github.com/flitsinc/go-agents/internal/tasks"
+	"github.com/flitsinc/go-agents/internal/toolresult"
 	llmtools "github.com/flitsinc/go-llms/tools"
 )
 
@@ -38,24 +39,24 @@ func AwaitTaskTool(manager *tasks.Manager) llmtools.Tool {
 		"await_task",
 		func(r llmtools.Runner, p AwaitTaskParams) llmtools.Result {
 			if manager == nil {
-				return llmtools.Errorf("task manager unavailable")
+				return toolresult.Errorf("await_task", "task manager unavailable")
 			}
 			if p.TaskID == "" {
-				return llmtools.Errorf("task_id is required")
+				return toolresult.Errorf("await_task", "task_id is required")
 			}
 			if p.WaitSeconds == nil {
-				return llmtools.Errorf("wait_seconds is required")
+				return toolresult.Errorf("await_task", "wait_seconds is required")
 			}
 			waitSeconds := *p.WaitSeconds
 			if waitSeconds <= 0 {
-				return llmtools.Errorf("wait_seconds must be > 0")
+				return toolresult.Errorf("await_task", "wait_seconds must be > 0")
 			}
 			timeout := time.Duration(waitSeconds) * time.Second
 			startedAt := time.Now()
 
 			task, err := manager.Get(r.Context(), p.TaskID)
 			if err != nil {
-				return llmtools.ErrorWithLabel("await_task failed", err)
+				return toolresult.ErrorWithLabel("await_task", "await_task failed", err)
 			}
 
 			isAgentTask := task.Type == "agent" || task.Type == "llm"
@@ -63,7 +64,7 @@ func AwaitTaskTool(manager *tasks.Manager) llmtools.Tool {
 			if isAgentTask {
 				latest, found, latestErr := manager.LatestUpdate(r.Context(), p.TaskID, "assistant_output")
 				if latestErr != nil {
-					return llmtools.ErrorWithLabel("await_task failed", latestErr)
+					return toolresult.ErrorWithLabel("await_task", "await_task failed", latestErr)
 				}
 				if found {
 					assistantOutputBaseline = latest.ID
@@ -87,7 +88,7 @@ func AwaitTaskTool(manager *tasks.Manager) llmtools.Tool {
 					remaining,
 				)
 				if updateErr != nil {
-					return llmtools.ErrorWithLabel("await_task failed", updateErr)
+					return toolresult.ErrorWithLabel("await_task", "await_task failed", updateErr)
 				}
 				if found {
 					awaited.Result = mergeAssistantOutputResult(awaited.Result, update.Payload)
@@ -150,7 +151,7 @@ func AwaitTaskTool(manager *tasks.Manager) llmtools.Tool {
 					resp["await_error"] = awaitErr.Error()
 				}
 			}
-			return llmtools.Success(resp)
+			return toolresult.Success("await_task", resp)
 		},
 	)
 }
@@ -241,27 +242,27 @@ func SendTaskTool(manager *tasks.Manager, bus *eventbus.Bus) llmtools.Tool {
 		"send_task",
 		func(r llmtools.Runner, p SendTaskParams) llmtools.Result {
 			if manager == nil {
-				return llmtools.Errorf("task manager unavailable")
+				return toolresult.Errorf("send_task", "task manager unavailable")
 			}
 			if p.TaskID == "" {
-				return llmtools.Errorf("task_id is required")
+				return toolresult.Errorf("send_task", "task_id is required")
 			}
 			body := strings.TrimSpace(p.Body)
 			if body == "" {
-				return llmtools.Errorf("body is required")
+				return toolresult.Errorf("send_task", "body is required")
 			}
 			task, err := manager.Get(r.Context(), p.TaskID)
 			if err != nil {
-				return llmtools.ErrorWithLabel("send_task failed", err)
+				return toolresult.ErrorWithLabel("send_task", "send_task failed", err)
 			}
 
 			if task.Type == "agent" || task.Type == "llm" {
 				if bus == nil {
-					return llmtools.Errorf("event bus unavailable")
+					return toolresult.Errorf("send_task", "event bus unavailable")
 				}
 				target := task.Owner
 				if target == "" {
-					return llmtools.Errorf("target agent unavailable")
+					return toolresult.Errorf("send_task", "target agent unavailable")
 				}
 				source := agentcontext.TaskIDFromContext(r.Context())
 				if source == "" {
@@ -281,16 +282,16 @@ func SendTaskTool(manager *tasks.Manager, bus *eventbus.Bus) llmtools.Tool {
 					},
 				})
 				if err != nil {
-					return llmtools.ErrorWithLabel("send_task failed", err)
+					return toolresult.ErrorWithLabel("send_task", "send_task failed", err)
 				}
-				return llmtools.Success(map[string]any{"ok": true, "event_id": evt.ID})
+				return toolresult.Success("send_task", map[string]any{"ok": true, "event_id": evt.ID})
 			}
 
 			input := map[string]any{"text": body}
 			if err := manager.Send(r.Context(), p.TaskID, input); err != nil {
-				return llmtools.ErrorWithLabel("send_task failed", err)
+				return toolresult.ErrorWithLabel("send_task", "send_task failed", err)
 			}
-			return llmtools.Success(map[string]any{"ok": true})
+			return toolresult.Success("send_task", map[string]any{"ok": true})
 		},
 	)
 }
@@ -302,15 +303,15 @@ func KillTaskTool(manager *tasks.Manager) llmtools.Tool {
 		"kill_task",
 		func(r llmtools.Runner, p KillTaskParams) llmtools.Result {
 			if manager == nil {
-				return llmtools.Errorf("task manager unavailable")
+				return toolresult.Errorf("kill_task", "task manager unavailable")
 			}
 			if p.TaskID == "" {
-				return llmtools.Errorf("task_id is required")
+				return toolresult.Errorf("kill_task", "task_id is required")
 			}
 			if err := manager.Kill(r.Context(), p.TaskID, p.Reason); err != nil {
-				return llmtools.ErrorWithLabel("kill_task failed", err)
+				return toolresult.ErrorWithLabel("kill_task", "kill_task failed", err)
 			}
-			return llmtools.Success(map[string]any{"ok": true})
+			return toolresult.Success("kill_task", map[string]any{"ok": true})
 		},
 	)
 }

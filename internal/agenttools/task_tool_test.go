@@ -9,28 +9,8 @@ import (
 	"github.com/flitsinc/go-agents/internal/eventbus"
 	"github.com/flitsinc/go-agents/internal/tasks"
 	"github.com/flitsinc/go-agents/internal/testutil"
-	"github.com/flitsinc/go-llms/content"
 	llmtools "github.com/flitsinc/go-llms/tools"
 )
-
-func decodeToolJSONPayload(t *testing.T, result llmtools.Result) map[string]any {
-	t.Helper()
-	if result.Error() != nil {
-		t.Fatalf("tool error: %v", result.Error())
-	}
-
-	var payload map[string]any
-	for _, item := range result.Content() {
-		if jsonItem, ok := item.(*content.JSON); ok {
-			_ = json.Unmarshal(jsonItem.Data, &payload)
-			break
-		}
-	}
-	if payload == nil {
-		t.Fatalf("expected JSON payload")
-	}
-	return payload
-}
 
 func TestAwaitTaskToolWakeIncludesWakeEventID(t *testing.T) {
 	db, closeFn := testutil.OpenTestDB(t)
@@ -72,7 +52,7 @@ func TestAwaitTaskToolWakeIncludesWakeEventID(t *testing.T) {
 		TaskID:      task.ID,
 		WaitSeconds: &waitSec,
 	})
-	payload := decodeToolJSONPayload(t, tool.Run(llmtools.NopRunner, raw))
+	payload := decodeToolPayload(t, tool.Run(llmtools.NopRunner, raw))
 
 	var expectedWakeID string
 	select {
@@ -135,7 +115,7 @@ func TestAwaitTaskToolAgentWaitsForFreshAssistantOutput(t *testing.T) {
 		TaskID:      task.ID,
 		WaitSeconds: &waitSec,
 	})
-	payload := decodeToolJSONPayload(t, tool.Run(llmtools.NopRunner, raw))
+	payload := decodeToolPayload(t, tool.Run(llmtools.NopRunner, raw))
 	if payload["status"] != "completed" {
 		t.Fatalf("expected completed status, got %v", payload["status"])
 	}
@@ -183,7 +163,7 @@ func TestAwaitTaskToolAgentTimesOutWithoutFreshOutput(t *testing.T) {
 		TaskID:      task.ID,
 		WaitSeconds: &waitSec,
 	})
-	payload := decodeToolJSONPayload(t, tool.Run(llmtools.NopRunner, raw))
+	payload := decodeToolPayload(t, tool.Run(llmtools.NopRunner, raw))
 	if payload["pending"] != true {
 		t.Fatalf("expected pending=true when no fresh assistant output arrives, got %v", payload["pending"])
 	}

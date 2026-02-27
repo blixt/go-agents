@@ -23,6 +23,7 @@ import (
 	"github.com/flitsinc/go-agents/internal/eventbus"
 	"github.com/flitsinc/go-agents/internal/tasks"
 	"github.com/flitsinc/go-agents/internal/testutil"
+	"github.com/flitsinc/go-agents/internal/toolresult"
 	"github.com/flitsinc/go-llms/content"
 	"github.com/flitsinc/go-llms/llms"
 	llmtools "github.com/flitsinc/go-llms/tools"
@@ -88,7 +89,7 @@ func MockExecToolFactory(result map[string]any) ToolFactory {
 				if len(cloned) > 0 {
 					out["result"] = cloneAnyMap(cloned)
 				}
-				return llmtools.Success(out)
+				return toolresult.Success("exec", out)
 			},
 		)
 	}
