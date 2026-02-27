@@ -111,7 +111,7 @@ export function assistantOutputRoutes(payload: Record<string, unknown> | undefin
   return routes
 }
 
-/** Get updates for a task (stdout, stderr, start, exit, etc.). */
+/** Get updates for a task (stdout/stderr stream output, status updates, etc.). */
 export async function getUpdates(
   taskId: string,
   opts?: { kind?: string; after_id?: string; limit?: number },

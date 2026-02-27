@@ -39,6 +39,7 @@ When called inside a service process, \`sendInput\` automatically injects \`cont
 
 - \`getUpdates(taskId, { kind?, after_id?, limit? })\`
 Fetches task updates (including \`assistant_output\`, \`stdout\`, \`stderr\`, \`completed\`, \`failed\`).
+For exec tasks: \`stdout\` and \`stderr\` are stream/task signals. Use exec-global \`sendToUser(text)\` when you want a direct user-visible assistant output event.
 
 - \`assistantOutputRoutes(payload)\`
 Normalizes assistant output routing metadata into a deterministic list of route candidates.

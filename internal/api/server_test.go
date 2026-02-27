@@ -14,6 +14,7 @@ import (
 	"github.com/flitsinc/go-agents/internal/ai"
 	"github.com/flitsinc/go-agents/internal/engine"
 	"github.com/flitsinc/go-agents/internal/eventbus"
+	"github.com/flitsinc/go-agents/internal/schema"
 	"github.com/flitsinc/go-agents/internal/tasks"
 	"github.com/flitsinc/go-agents/internal/testutil"
 	"github.com/flitsinc/go-llms/content"
@@ -463,6 +464,118 @@ func TestServerAgentCompact(t *testing.T) {
 	}
 	if entry.Generation < 2 {
 		t.Fatalf("expected generation >= 2 after compact, got %d", entry.Generation)
+	}
+}
+
+func TestServerTaskAssistantOutput(t *testing.T) {
+	db, closeFn := testutil.OpenTestDB(t)
+	defer closeFn()
+
+	bus := eventbus.NewBus(db)
+	mgr := tasks.NewManager(db, bus)
+	runtimeClient := &ai.Client{LLM: llms.New(&apiFakeProvider{})}
+	rt := engine.NewRuntime(bus, mgr, runtimeClient)
+
+	server := &Server{Tasks: mgr, Bus: bus, Runtime: rt}
+	client := testutil.NewInProcessClient(server.Handler())
+
+	if _, err := mgr.Spawn(context.Background(), tasks.Spec{
+		ID:    "operator",
+		Type:  "agent",
+		Owner: "operator",
+		Metadata: map[string]any{
+			"input_target":  "operator",
+			"notify_target": "operator",
+		},
+	}); err != nil {
+		t.Fatalf("spawn operator: %v", err)
+	}
+
+	resp := doJSON(t, client, "POST", "/api/tasks/operator/assistant_output", map[string]any{
+		"text":         "message from exec",
+		"source":       "exec:exec-123",
+		"from_task_id": "exec-123",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("assistant_output status: %d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+
+	updates, err := mgr.ListUpdatesSince(context.Background(), "operator", "", "assistant_output", 20)
+	if err != nil {
+		t.Fatalf("list assistant_output updates: %v", err)
+	}
+	if len(updates) == 0 {
+		t.Fatalf("expected assistant_output update")
+	}
+	last := updates[len(updates)-1]
+	if got := strings.TrimSpace(schema.GetMetaString(last.Payload, "text")); got != "message from exec" {
+		t.Fatalf("expected assistant_output text, got %q", got)
+	}
+
+	summaries, err := bus.List(context.Background(), "task_output", eventbus.ListOptions{
+		ScopeType: "task",
+		ScopeID:   "operator",
+		Limit:     50,
+		Order:     "lifo",
+	})
+	if err != nil {
+		t.Fatalf("list task_output: %v", err)
+	}
+	if len(summaries) == 0 {
+		t.Fatalf("expected task_output events")
+	}
+	ids := make([]string, 0, len(summaries))
+	for _, summary := range summaries {
+		ids = append(ids, summary.ID)
+	}
+	events, err := bus.Read(context.Background(), "task_output", ids, "")
+	if err != nil {
+		t.Fatalf("read task_output: %v", err)
+	}
+	foundOutput := false
+	for _, evt := range events {
+		if schema.GetMetaString(evt.Metadata, "task_kind") != "assistant_output" {
+			continue
+		}
+		if schema.GetMetaString(evt.Metadata, "source") != "exec:exec-123" {
+			t.Fatalf("expected source metadata on assistant_output event, got %#v", evt.Metadata)
+		}
+		if schema.MetaVisibleToConsumer(evt.Metadata, schema.ConsumerAgentContext, true) {
+			t.Fatalf("assistant_output event should be hidden from agent context")
+		}
+		foundOutput = true
+		break
+	}
+	if !foundOutput {
+		t.Fatalf("expected assistant_output task_output event")
+	}
+
+	history, err := readAgentHistory(context.Background(), bus, "operator", 50)
+	if err != nil {
+		t.Fatalf("read agent history: %v", err)
+	}
+	foundHistory := false
+	for _, entry := range history.Entries {
+		if entry.Type != "assistant_message" {
+			continue
+		}
+		if strings.TrimSpace(entry.Content) != "message from exec" {
+			continue
+		}
+		if schema.GetMetaString(entry.Data, "origin") != "send_to_user" {
+			t.Fatalf("expected origin=send_to_user, got %#v", entry.Data)
+		}
+		if schema.GetMetaString(entry.Data, "source") != "exec:exec-123" {
+			t.Fatalf("expected source in history data, got %#v", entry.Data)
+		}
+		if schema.GetMetaString(entry.Data, "from_task_id") != "exec-123" {
+			t.Fatalf("expected from_task_id in history data, got %#v", entry.Data)
+		}
+		foundHistory = true
+		break
+	}
+	if !foundHistory {
+		t.Fatalf("expected assistant_message history entry for send_to_user")
 	}
 }
 

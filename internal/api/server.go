@@ -79,6 +79,8 @@ func (s *Server) handleTaskItem(w http.ResponseWriter, r *http.Request) {
 		s.handleTaskFail(w, r, taskID)
 	case "send":
 		s.handleTaskSend(w, r, taskID)
+	case "assistant_output":
+		s.handleTaskAssistantOutput(w, r, taskID)
 	case "cancel":
 		s.handleTaskCancel(w, r, taskID)
 	case "kill":
@@ -88,6 +90,91 @@ func (s *Server) handleTaskItem(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusNotFound, errNotFound("task action"))
 	}
+}
+
+func (s *Server) handleTaskAssistantOutput(w http.ResponseWriter, r *http.Request, taskID string) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	if _, err := s.Tasks.Get(r.Context(), taskID); err != nil {
+		writeError(w, http.StatusNotFound, errNotFound("task"))
+		return
+	}
+
+	var payload struct {
+		Text       string         `json:"text"`
+		Source     string         `json:"source"`
+		FromTaskID string         `json:"from_task_id"`
+		RequestID  string         `json:"request_id"`
+		ServiceID  string         `json:"service_id"`
+		Context    map[string]any `json:"context"`
+	}
+	if err := decodeJSON(r.Body, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	meta := map[string]any{}
+	if source := strings.TrimSpace(payload.Source); source != "" {
+		meta["source"] = source
+	}
+	if fromTaskID := strings.TrimSpace(payload.FromTaskID); fromTaskID != "" {
+		meta["from_task_id"] = fromTaskID
+	}
+	if requestID := strings.TrimSpace(payload.RequestID); requestID != "" {
+		meta["request_id"] = requestID
+	}
+	if serviceID := strings.TrimSpace(payload.ServiceID); serviceID != "" {
+		meta["service_id"] = serviceID
+	}
+	if len(payload.Context) > 0 {
+		meta["context"] = payload.Context
+	}
+	if s.Runtime != nil {
+		if err := s.Runtime.EmitAssistantOutput(r.Context(), taskID, payload.Text, meta); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+
+	text := strings.TrimSpace(payload.Text)
+	if text == "" {
+		writeError(w, http.StatusBadRequest, errBadRequest("text is required"))
+		return
+	}
+	updatePayload := map[string]any{"text": text}
+	if requestID := strings.TrimSpace(payload.RequestID); requestID != "" || len(payload.Context) > 0 {
+		route := map[string]any{}
+		if requestID != "" {
+			route["request_id"] = requestID
+		}
+		if len(payload.Context) > 0 {
+			route["context"] = payload.Context
+		}
+		updatePayload["routes"] = []map[string]any{route}
+	}
+	eventMeta := map[string]any{
+		schema.MetaDeliveryExclude: []string{schema.ConsumerAgentContext},
+	}
+	if source := strings.TrimSpace(payload.Source); source != "" {
+		eventMeta["source"] = source
+	}
+	if requestID := strings.TrimSpace(payload.RequestID); requestID != "" {
+		eventMeta["request_id"] = requestID
+	}
+	if serviceID := strings.TrimSpace(payload.ServiceID); serviceID != "" {
+		eventMeta["service_id"] = serviceID
+	}
+	if err := s.Tasks.RecordUpdateWithOptions(r.Context(), taskID, "assistant_output", updatePayload, tasks.UpdateOptions{
+		EventMetadata: eventMeta,
+	}); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handleTaskUpdates(w http.ResponseWriter, r *http.Request, taskID string) {

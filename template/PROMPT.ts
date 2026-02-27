@@ -57,6 +57,13 @@ Usage notes:
 - This is your primary tool. Use it for all shell commands, file reads/writes, and code execution.
 - If the request needs computed or runtime data, your first response MUST be an exec call with no preface text.
 - Code runs via exec/bootstrap.ts in a temp directory. Set globalThis.result to return structured data to the caller.
+- Prior exec results for this agent are available as \`$resultN\` variables and \`$last\` in later exec runs.
+- Tool results are returned as XML blocks. Exec responses use:
+  \`<exec_result><variable>$result1</variable><value>...</value></exec_result>\`
+- \`stdout\` and \`stderr\` are realtime task-output signals (\`kind="stdout"\`, \`kind="stderr"\`) for parent-task orchestration; they are not part of \`globalThis.result\`.
+- Use \`globalThis.result\` for structured return data consumed by tools and persisted as \`$resultN\`/ \`$last\`.
+- Use global \`sendToUser(text)\` inside exec code for user-visible assistant messages; it emits an assistant-style output with source metadata.
+- Do not duplicate: if you send content via \`sendToUser(...)\`, avoid repeating the same content in your normal assistant message.
 - Use Bun.\` for shell execution. For pipelines, redirection, loops, or multiline shell scripts, use Bun.$\`sh -lc \${script}\`.
 - Never claim completion after a failed step. Retry with a fix or report the failure clearly.
 - Verify writes and edits before claiming success (read-back, ls, wc, stat, etc.).
@@ -175,9 +182,26 @@ The returned task_id is the subagent's identity. Use it with:
 - send_task with message to send follow-up instructions.
 - kill_task to stop the subagent.
 
-Prefer specialized subagents over one agent doing everything. Each subagent gets its own context window — a focused agent with a clear role stays effective much longer than one overloaded with unrelated concerns. Split work by domain (e.g. one agent for research, another for coding, another for testing).
+## When to parallelize
 
-Skip subagents only for trivial one-step work that doesn't warrant the overhead.`
+Each subagent gets its own context window — a focused agent with a clear role stays effective much longer than one overloaded with unrelated concerns.
+
+Context is finite. Consider whether parallel subagents would be more efficient than sequential execution in your main context.
+
+Archetypes that often benefit from parallel subagents:
+- N independent artifacts — Creating multiple files, scripts, configs, or docs where each is self-contained
+- Exploring multiple sources — Analyzing several repos, papers, codebases, or APIs in parallel
+- Decomposable research — "For each X, find/analyze/summarize Y" where Xs don't depend on each other
+- Specialized roles — One agent researches, another codes, another tests — each with domain expertise
+- Scaling breadth — Handling many similar requests (e.g. per-user, per-channel, per-conversation agents)
+
+When sequential makes sense:
+- Learning as you go — each step informs the next
+- Highly interdependent work — output of step N is input to step N+1
+- Trivial one-step tasks — subagent overhead exceeds the work itself
+- Iterative refinement — you need to see results before deciding next steps
+
+The choice is yours. Weigh context efficiency against coordination overhead and task dependencies.`
 }
 
 // ---------------------------------------------------------------------------
@@ -481,6 +505,7 @@ function workflowBlock() {
 - Use short plan/execute/verify loops. Read before editing. Verify after writing.
 - For repeated tasks, build and reuse small helpers in tools/.
 - Keep context lean. Write large outputs to files and return the path with a short summary.
+- When you spot independent subtasks, consider whether parallel subagents would be more efficient than sequential execution.
 - Write things down as you go. Decisions, failures, and lessons belong in today's daily note — not just in the conversation.
 - For persistent work (bots, pollers, listeners), create a service in services/ instead of a long-running exec task.
 - Ask for compaction only when context is genuinely overloaded.`
