@@ -19,7 +19,7 @@ Minimal, event-driven agent runtime. Agents are long-lived tasks that consume me
 │  │             │   │              │   │                        │  │
 │  │ /api/tasks  │   │ spawn, await │   │  task_input  signals   │  │
 │  │ /api/state  │   │ complete,    │   │  task_output errors    │  │
-│  │ /api/stream │   │ fail, cancel │   │  external    history   │  │
+│  │ /api/streams│   │ fail, cancel │   │  external    history   │  │
 │  └─────────────┘   └──────┬───────┘   └───────────┬────────────┘  │
 │                           │                       │               │
 │                    ┌──────┴───────┐               │               │
@@ -61,11 +61,11 @@ Minimal, event-driven agent runtime. Agents are long-lived tasks that consume me
 
 1. A message arrives (API call, web UI, or service)
 2. The API pushes it onto `task_input` scoped to the target agent
-3. The agent loop wakes, builds a system prompt (via `PROMPT.ts` in Bun), and calls the LLM
+3. The agent loop wakes, builds a system prompt (via Bun prompt scripts), and calls the LLM
 4. The LLM may call tools (`exec`, `await_task`, `send_task`, `kill_task`, `noop`, `view_image`)
 5. Tool results flow back as task completions on `task_output`
 6. The LLM produces a final response, which is routed back to the message source
-7. Everything is recorded to `history` for observability
+7. The turn is recorded to `history` for observability
 
 ### Key directories
 
@@ -78,9 +78,9 @@ internal/
   eventbus/          SQLite-backed event bus with in-memory fanout
   agenttools/        Tool implementations (exec, await_task, send_task, etc.)
   ai/                Multi-provider LLM client (Anthropic, OpenAI, Google)
-  prompt/            Dynamic prompt builder (runs PROMPT.ts via Bun)
+  prompt/            Dynamic prompt builder (runs prompt scripts via Bun)
   state/             SQLite schema and migrations
-  config/            Configuration loading (env + config.json)
+  config/            Configuration loading (config.json + API-key env)
 exec/
   execd.ts           External Bun worker — polls and runs exec tasks
   bootstrap.ts       Per-task entry point for sandboxed execution
@@ -97,7 +97,7 @@ template/
 ## Getting started
 
 1. Install tools: `mise install`
-2. Run the server: `mise start` (or `mise dev` for auto-reload)
+2. Run the stack: `mise run start` (or `mise run dev` for auto-reload)
 3. Open `http://localhost:8080`
 
 ### Enable LLM
@@ -122,8 +122,8 @@ Provider and model are configured in `config.json` (or `data/config.json`):
 
 ### Tests / Format
 
-- `mise test`
-- `mise format`
+- `mise run test`
+- `mise run format`
 
 If `go test ./...` fails with a `version "go1.x.y" does not match go tool version` error, clear stale `GOROOT` first:
 - `unset GOROOT` (or run `GOROOT=$(go env GOROOT) go test ./...`)
